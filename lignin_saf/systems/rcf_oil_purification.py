@@ -100,7 +100,7 @@ def create_rcf_oil_purification_system(ins=None):
     oil_flash = bst.units.Flash(
         'FLASH201',
         ins=lle_column-0,
-        outs=('', 'Purified_RCF_Oil'),
+        outs=('', 'PURE_OIL_OUT'),
         T=flash_T,
         P=flash_P,
     )

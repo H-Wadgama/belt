@@ -94,4 +94,4 @@ labor = DWandB + Dsalaries_benefits + O_supplies + technical_assistance + contro
 integrated_tea = create_cellulosic_ethanol_tea(rcf_combined_system)
 integrated_tea.labor_cost = labor
 
-print(f'The MSP for RCF monomers is  {round(integrated_tea.solve_price(F.RCF_Monomers), 3)} USD/kg')
+print(f'The MSP for RCF monomers is  {round(integrated_tea.solve_price(F.RCF_Oil), 3)} USD/kg')

@@ -225,7 +225,7 @@ def create_rcf_system(ins=None):
                                     V=0, rigorous=True)
 
     rcf_flsh_3 = bst.units.Flash('RCF_FLSH3', ins=rcf_col_1-1,
-                                    outs=('To_WW_Treatment_2', 'RCF_Oil'), T=400, P=101325)
+                                    outs=('To_WW_Treatment_2', 'RCF_CRUDE_OUT'), T=400, P=101325)
 
     rcf_mix_4 = bst.Mixer('RCF_MIX4',
         ins=(rcf_col_2.outs[1], rcf_flsh_3.outs[0]), outs='RCF_WW_OUTS'

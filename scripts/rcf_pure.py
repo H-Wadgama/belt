@@ -1,9 +1,11 @@
-# Just for RCF only 
+# RCF + oil purification system
+
 
 from lignin_saf.ligsaf_chemicals import create_chemicals
 from lignin_saf.ligsaf_settings import feed_parameters, prices
 from lignin_saf.systems.rcf import create_rcf_system
 from lignin_saf.cellulosic_tea import create_cellulosic_ethanol_tea
+from lignin_saf.systems.rcf_oil_purification import create_rcf_oil_purification_system
 
 from biosteam import main_flowsheet as F
 import biosteam as bst
@@ -30,7 +32,13 @@ poplar_in = bst.Stream('Poplar_In',
 rcf_system = create_rcf_system(ins=poplar_in)
 rcf_system.simulate()
 
-WWT = bst.create_conventional_wastewater_treatment_system('WWT', ins=F.RCF_WW_OUTS)
+
+
+
+rcf_oil_purification_sys = create_rcf_oil_purification_system(ins=F.RCF_CRUDE_OUT)
+rcf_oil_purification_sys.simulate()
+
+WWT = bst.create_conventional_wastewater_treatment_system('WWT', ins=(F.WW_10, F.WastePulp, F.RCF_WW_OUTS))
 
 
 for unit in WWT.units:
@@ -50,15 +58,15 @@ BT.ins[1] = gas_mixer.outs[0]   # Connecting biogas from WW treatment and PSA wa
 
 
 
-rcf_solo_system = bst.System(
+rcf_pure_oil_system = bst.System(
     'Solo RCF system',
-    path=(rcf_system, WWT),
+    path=(rcf_system, rcf_oil_purification_sys, WWT),
     facilities=[gas_mixer, BT],
 )
-rcf_solo_system.simulate()
+rcf_pure_oil_system.simulate()
 
-integrated_tea = create_cellulosic_ethanol_tea(rcf_solo_system)
+integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_oil_system)
 
-print(f'The MSP for RCF crude oil is  {round(integrated_tea.solve_price(F.RCF_CRUDE_OUT), 3)} USD/kg')
+print(f'The MSP for RCF crude oil is  {round(integrated_tea.solve_price(F.PURE_OIL_OUT), 3)} USD/kg')
 
 
