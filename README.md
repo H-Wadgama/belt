@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="belt-logo.png" alt="BELT logo" width="300"/>
+</p>
+
 # agile ATJ 
 
 This package provides an open-source modular framework for Sustainable Aviation Fuel (SAF) production via the  Alcohol-to-Jet (ATJ) pathway.
