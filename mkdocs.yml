@@ -1,0 +1,33 @@
+site_name: BELT
+site_description: Biorefinery Economic and Lifecycle Assessment Tool — open-source modular framework for SAF production modeling via BioSTEAM
+site_url: https://h-wadgama.github.io/belt/
+repo_url: https://github.com/H-Wadgama/belt
+repo_name: H-Wadgama/belt
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: green
+      accent: light green
+  features:
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+    - toc.integrate
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Modules:
+    - ATJ (Alcohol-to-Jet): atj-module.md
+    - LigSAF (Lignin Valorization): ligsaf-module.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - admonition
+  - tables
+  - attr_list
