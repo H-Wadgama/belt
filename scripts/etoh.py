@@ -36,9 +36,6 @@ rcf_system = create_rcf_system(ins=poplar_in)
 rcf_system.simulate()
 
 
-
-
-
 # ── Cellulosic ethanol — Carbohydrate_Pulp feeds directly into fermentation ─
 etoh_system = create_cellulosic_ethanol_system(ins=F.Carbohydrate_Pulp)
 etoh_system.simulate()

@@ -117,7 +117,7 @@ def create_monomer_purification_system(ins=None):
     monomer_flash = bst.units.Flash(
         'FLASH301',
         ins=lle_column-0,
-        outs=('', 'RCF_Monomers'),
+        outs=('', 'MON_MONOMERS_OUT'),
         T=oil_flash_T,
         P=oil_flash_P,
     )
