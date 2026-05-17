@@ -4,8 +4,8 @@
 *.svg
 
 # Allow logo
-!belt-logo.png
-!docs/belt-logo.png
+!belt-logo-updated.png
+!docs/belt-logo-updated.png
 
 # Python
 __pycache__/

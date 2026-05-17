@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="belt-logo.png" alt="BELT logo" width="300"/>
+  <img src="belt-logo-updated.png" alt="BELT logo" width="300"/>
 </p>
 
 # agile ATJ 
