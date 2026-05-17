@@ -3,6 +3,10 @@
 *.png
 *.svg
 
+# Allow logo
+!belt-logo.png
+!docs/belt-logo.png
+
 # Python
 __pycache__/
 *.py[cod]
