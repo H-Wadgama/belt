@@ -6,6 +6,8 @@ repo_name: H-Wadgama/belt
 
 theme:
   name: material
+  logo: belt-logo.png
+  favicon: belt-logo.png
   palette:
     - scheme: default
       primary: green
