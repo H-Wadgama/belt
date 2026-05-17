@@ -195,7 +195,7 @@ def create_rcf_system(ins=None):
     def set_psa_inlet_phase():
         rcf_hx_3.outs[0].phase = 'g'
 
-    rcf_psa_1 = PSA('RCF_PSA1', ins=rcf_hx_3.outs[0], outs=('', 'Purge_Light_Gases'))
+    rcf_psa_1 = PSA('RCF_PSA1', ins=rcf_hx_3.outs[0], outs=('', 'RCF_PSAWASTE_OUTS'))
 
     rcf_pump_2 = bst.units.IsentropicCompressor('RCF_PUMP2', ins=rcf_psa_1-0, outs=rcf_h2_recycle,
                                               P=3e6, vle=True)
@@ -228,7 +228,7 @@ def create_rcf_system(ins=None):
                                     outs=('To_WW_Treatment_2', 'RCF_Oil'), T=400, P=101325)
 
     rcf_mix_4 = bst.Mixer('RCF_MIX4',
-        ins=(rcf_col_2.outs[1], rcf_flsh_3.outs[0]), outs='RCF_WW'
+        ins=(rcf_col_2.outs[1], rcf_flsh_3.outs[0]), outs='RCF_WW_OUTS'
     )
 
       # outs[0]: evaporated MeOH/water from pulp — currently unrecovered (future: route to WWT or solvent recovery)
