@@ -1,8 +1,4 @@
-# RCF + cellulosic ethanol without dilute-acid pretreatment.
-# Carbohydrate_Pulp from RCF feeds directly into enzymatic saccharification.
-
-# This script has some issues at the moment 
-
+# RCF + cellulosic ethanol without dilute-acid pretreatment
 
 from lignin_saf.ligsaf_chemicals import create_chemicals
 from lignin_saf.ligsaf_settings import feed_parameters, prices
@@ -47,7 +43,7 @@ etoh_solids = [F.unit.S401.outs[0]]
 # ── WWT: RCF wastewater + ethanol stillage filtrate ────────────────────────
 WWT = bst.create_conventional_wastewater_treatment_system(
     'WWT',
-    ins=[F.RCF_WW] + etoh_ww,
+    ins=[F.RCF_WW_OUTS] + etoh_ww,
 )
 for unit in WWT.units:
     if hasattr(unit, 'strict_moisture_content'):
@@ -59,36 +55,20 @@ for unit in WWT.units:
 F.unit.PWC.ins[0] = WWT.outs[2]
 
 solids_to_BT = bst.Mixer('MIX_BT_solids', ins=[WWT.outs[1]] + etoh_solids)
-gas_mixer    = bst.Mixer('MIX_BT_gas',    ins=[F.Purge_Light_Gases, WWT.outs[0]])
+gas_mixer    = bst.Mixer('MIX_BT_gas',    ins=[F.RCF_PSAWASTE_OUTS, WWT.outs[0]])
 
-BT = bst.facilities.BoilerTurbogenerator('BT', fuel_price=0.2612)
+BT = bst.facilities.BoilerTurbogenerator('BT', fuel_price=prices['CH4'])
 BT.ins[0] = solids_to_BT.outs[0]
 BT.ins[1] = gas_mixer.outs[0]
 
-combined_system = bst.System(
-    'Combined_Ethanol_System',
+rcf_etoh_system = bst.System(
+    'RCF_ETOH_system',
     path=(rcf_system, etoh_system, WWT),
     facilities=[solids_to_BT, gas_mixer, BT],
 )
-combined_system.simulate()
+rcf_etoh_system.simulate()
 
+integrated_tea = create_cellulosic_ethanol_tea(rcf_etoh_system)
 
+print(f'The MSP for RCF crude oil is  {round(integrated_tea.solve_price(F.RCF_CRUDE_OUT), 3)} USD/kg')
 
-# ── Labor (Seider methodology) ─────────────────────────────────────────────
-operators_per_section = 1
-num_process_sections = 3
-num_operators_per_shift = operators_per_section * num_process_sections * 1
-num_shifts = 5
-pay_rate = 40
-DWandB = num_operators_per_shift * num_shifts * 2080 * pay_rate
-Dsalaries_benefits = 0.15 * DWandB
-O_supplies = 0.06 * DWandB
-technical_assistance = 5 * 75000
-control_lab = 5 * 80000
-labor = DWandB + Dsalaries_benefits + O_supplies + technical_assistance + control_lab
-
-# ── TEA and MSP ────────────────────────────────────────────────────────────
-integrated_tea = create_cellulosic_ethanol_tea(rcf_combined_system)
-integrated_tea.labor_cost = labor
-
-print(f'The MSP for RCF monomers is  {round(integrated_tea.solve_price(F.RCF_Oil), 3)} USD/kg')
