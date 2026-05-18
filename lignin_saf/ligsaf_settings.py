@@ -133,6 +133,8 @@ hexane_price = (712/1000) * usd_per_pound * (226.6/285.6)   # [USD/kg] Price of 
 ethyl_acetate_price = 2.5 * usd_per_pound * (226.6/218.9)   # [USD/kg] Price of 2.5 pounds per kg for 2020 from https://doi.org/10.1039%2Fd3ee00965c. Price updated to 2016 USD using https://fred.stlouisfed.org/series/WPU0614
 # ethanol_price = 2.15 *   # TODO: complete CEPCI ratio before adding to prices dict
 natural_gas_price = 0.264
+dodecane_price = 2                                          # [USD/kg] Highly assumed - couldn't get a price for it. 
+hdo_cat_price = 158.4                                             # [USD/kg] Same price as Nickel on SIlica Alumina for ETJ oligomerization
 
 prices = {
     'Feedstock' : feedstock_price,
@@ -151,7 +153,10 @@ prices = {
     'Boiler_chemicals' : boiler_chemicals_price,
     'Hexane' : hexane_price,
     'EthylAcetate': ethyl_acetate_price,
-    'CH4' :  natural_gas_price
+    'CH4' :  natural_gas_price,
+    'Dodecane' : dodecane_price,
+    'HDO_Cat' : hdo_cat_price
+
 }
 
 

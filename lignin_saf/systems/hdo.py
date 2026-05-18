@@ -2,7 +2,6 @@ import biosteam as bst
 from lignin_saf.ligsaf_units import HydrodeoxygenationReactor, PSA
 from lignin_saf.ligsaf_settings import hdo_params, h2_pressure, prices
 
-
 def create_hdo_system(ins=None):
     """
     Build and return the HDO loop as a bst.System.
@@ -61,10 +60,10 @@ def create_hdo_system(ins=None):
     )
     hdo_dodecane_in = bst.Stream(
         ID='HDO_DODECANE_IN', Dodecane=0, units='kg/hr',
-        P=101325, T=300, phase='l',
+        P=101325, T=300, phase='l', price = prices['Dodecane'],
     )
     hdo_cat_in = bst.Stream(
-        ID='HDO_CAT_IN', Ni2PSiO2=0, units='kg/hr', phase='s',
+        ID='HDO_CAT_IN', Ni2PSiO2=0, units='kg/hr', phase='s', price =  prices['HDO_Cat']
     )
 
     # ── H2 mixer: adjusts fresh H2 to make up for recycle shortfall ──────────
@@ -178,7 +177,7 @@ def create_hdo_system(ins=None):
     hdo_col_2 = bst.units.BinaryDistillation(
         ID='HDO_COL2',
         ins=hdo_col_1-0,
-        outs=('HDO_WW', 'SAF_CycloAlkane'),
+        outs=('HDO_WW', 'HDO_CYCLOALKANES_OUT'),
         LHK=('Water', 'Propylcyclohexane'),
         y_top=0.9, x_bot=0.001, P=101325, k=2,
     )
