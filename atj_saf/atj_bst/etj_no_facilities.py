@@ -173,7 +173,7 @@ def create_etj_system_no_facilities(ins=None):
 
     flash_2 = bst.Flash('T202', ins = cooler_5-0, T = 250, P = 5e5)
 
-    psa_splitter = bst.Splitter('S203', ins = flash_2-0, outs = (h2_recycle,'etj_waste_gases'),  split = {'Hydrogen':h2_recovery})
+    psa_splitter = bst.Splitter('S203', ins = flash_2-0, outs = (h2_recycle,'ETJ_PSAWASTE_OUTS'),  split = {'Hydrogen':h2_recovery})
 
 
     # Area 300: Product Fractionation
@@ -214,13 +214,13 @@ def create_etj_system_no_facilities(ins=None):
 
     # Area 500: Product Storage
     rn_storage  = HydrocarbonProductTank('T501', ins = cooler_6.outs[0], outs = 'RN')
-    saf_storage = HydrocarbonProductTank('T502', ins = cooler_7.outs[0], outs = 'SAF')
+    saf_storage = HydrocarbonProductTank('T502', ins = cooler_7.outs[0], outs = 'ETJ_SAF_OUT')
     rd_storage  = HydrocarbonProductTank('T503', ins = cooler_8.outs[0], outs = 'RD')
 
 
     # Area 600: Wastewater collection (no WWT facility — routed to central utilities in combined system)
     WW_mixer = bst.Mixer('ETJ_WW_MIX', ins = (flash_1-1, distillation_1-1, distillation_2-1), rigorous = True)
-    WW_cooler = bst.HXutility('H602', ins = WW_mixer.outs[0], V = 0, rigorous = True)
+    WW_cooler = bst.HXutility('H602', ins = WW_mixer.outs[0], outs = 'ETJ_WW_OUTS', V = 0, rigorous = True)
 
     catalyst_replacement_unit = CatalystMixer(ins = (syndol_replacement, ni_si_al_replacement, co_mo_replacement))
 
