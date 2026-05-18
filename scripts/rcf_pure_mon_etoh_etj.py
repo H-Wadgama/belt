@@ -1,4 +1,5 @@
 # RCF + cellulosic ethanol without dilute-acid pretreatment with oil and monomer purification and with etj
+# SAF selling price is very high (15.56 USD/gal) but expected as monomers need to be valorized to HDO to maximize profitability. 
 
 from lignin_saf.ligsaf_chemicals import create_chemicals
 from lignin_saf.ligsaf_settings import feed_parameters, prices
@@ -87,6 +88,8 @@ rcf_pure_mon_etoh_etj_system = bst.System(
     facilities=[solids_to_BT, gas_mixer, BT],
 )
 rcf_pure_mon_etoh_etj_system.simulate()
+
+F.MON_MONOMERS_OUT.price = 3.63    # USD/kg price taken from Bartling et al https://doi.org/10.1039/D1EE01642C
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_etoh_etj_system)
 
