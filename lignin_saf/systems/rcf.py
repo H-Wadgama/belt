@@ -66,7 +66,9 @@ def create_rcf_system(ins=None):
     
     # Catalyst
     rcf_cat_in = bst.Stream(
-        ID='RCF_CAT_IN', NiC=rcf_conditions['cat_loading'] * feed_parameters['flow'] *rcf_conditions['tau_h']* (operating_days/(rcf_conditions['cat_lifetime']*30)), units='kg/day', phase='s', price =  prices['NiC_catalyst']
+        ID='RCF_CAT_IN',
+        NiC=(rcf_conditions['cat_loading'] * (feed_parameters['flow'] * 1e3 / 24) * rcf_conditions['tau_h']) / (rcf_conditions['cat_lifetime'] * 30),
+        units='kg/day', phase='s', price=prices['NiC_catalyst']
     )
 
     rcf_h2_in = bst.Stream('RCF_H2_IN',
@@ -252,7 +254,7 @@ def create_rcf_system(ins=None):
             rcf_mix_2, rcf_hx_2, rcf_rxr_2,
             rcf_flsh_1, rcf_comp_1, rcf_flsh_2, rcf_hx_3,
             rcf_psa_1, rcf_pump_2, rcf_col_1, rcf_col_2,
-            rcf_mix_3, rcf_mix_3, rcf_hx_4, rcf_flsh_3, rcf_mix_4, rcf_flsh_4
+            rcf_mix_3, rcf_hx_4, rcf_flsh_3, rcf_mix_4, rcf_flsh_4
         ),
         recycle=(rcf_meoh_recycle, rcf_h2_recycle),
     )

@@ -686,7 +686,7 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         weight = design['Weight']
         N_reactors = design['Number of reactors']
 
-        catalyst_cost = prices['NiC_catalyst'] * rcf_conditions['cat_loading'] * (feed_parameters['flow'] * 1e3) * self.tau_residence
+        catalyst_cost = prices['NiC_catalyst'] * rcf_conditions['cat_loading'] * ((feed_parameters['flow'] * 1e3)/24) * self.tau_residence
         design['Catalyst loading cost'] = catalyst_cost
 
         baseline_purchase_costs.update(

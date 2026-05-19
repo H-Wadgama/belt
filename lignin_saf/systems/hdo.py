@@ -1,6 +1,6 @@
 import biosteam as bst
 from lignin_saf.ligsaf_units import HydrodeoxygenationReactor, PSA
-from lignin_saf.ligsaf_settings import hdo_params, h2_pressure, prices
+from lignin_saf.ligsaf_settings import hdo_params, h2_pressure, prices, operating_days
 
 def create_hdo_system(ins=None):
     """
@@ -91,7 +91,7 @@ def create_hdo_system(ins=None):
         fresh_dod.imass['Dodecane'] = max(
             0.0, dod_vol * dod_rho - recycle_dod.imass['Dodecane']
         )
-        hdo_cat_in.imass['Ni2PSiO2'] = ins.F_mass * hdo_params['catalyst_req'] * (hdo_params['cat_lifetime']/12) 
+        hdo_cat_in.imass['Ni2PSiO2'] = (hdo_params['catalyst_req'] * ins.F_mass * hdo_params['tau']) / (hdo_params['cat_lifetime'] * 30 * 24)
 
 
     # ── Main feed mixer ───────────────────────────────────────────────────────
