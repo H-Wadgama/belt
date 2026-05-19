@@ -10,7 +10,6 @@ from lignin_saf.ligsaf_settings import feed_parameters, prices
 from lignin_saf.systems.rcf import create_rcf_system
 from lignin_saf.systems.rcf_oil_purification import create_rcf_oil_purification_system
 from lignin_saf.systems.monomer_purification import create_monomer_purification_system
-from lignin_saf.systems.ligsaf_utilities import create_rcf_utilities_system
 from lignin_saf.systems.hdo import create_hdo_system
 
 
@@ -38,32 +37,38 @@ rcf_system = create_rcf_system(ins=poplar_in)
 rcf_system.simulate()
 
 # ── Area 300: Purification ─────────────────────────────────────────────────
-rcf_oil_purification_sys = create_rcf_oil_purification_system(ins=F.RCF_Oil)
-monomer_purification_sys = create_monomer_purification_system(ins=F.Purified_RCF_Oil)
+rcf_oil_purification_sys = create_rcf_oil_purification_system(ins=F.RCF_CRUDE_OUT)
+monomer_purification_sys = create_monomer_purification_system(ins=F.PURE_OIL_OUT)
 rcf_oil_purification_sys.simulate()
 monomer_purification_sys.simulate()
-BT, WWT, gas_mixer = create_rcf_utilities_system()
-
 
 # ── Area 400: Hydrodeoxygenation ───────────────────────────────────────────
-hdo_system = create_hdo_system(ins=F.RCF_Monomers)
+hdo_system = create_hdo_system(ins=F.MON_MONOMERS_OUT)
 hdo_system.simulate()
 
-# Route HDO purge gases to BT gas combustion
-gas_mixer.ins.append(F.HDO_purge_gases)
+
+WWT = bst.create_conventional_wastewater_treatment_system('WWT', ins=(F.WW_10, F.WastePulp, F.RCF_WW_OUTS, F.WW_11, F.WW_12, F.HDO_WW, F.HDO_wash_water))
+
+for unit in WWT.units:
+    if hasattr(unit, 'strict_moisture_content'):
+        unit.strict_moisture_content = False
 
 
-# Route HDO wastewater streams to WWT inlet mixer
-F.unit.M601.ins.extend([F.HDO_wash_water, F.HDO_WW])
-# Sludge from WWT is already connected to BT in this system. 
-# For rcf_etoh script, a solids_to_BT mixer is needed because ethanol system adds a second combustible stream (filter cake from S401.outs[0])
-# Since BT.ins[0] (solid intake stream for BT) only has 1 input, a mixer is needed in rcf integrated with cellulosic ethanol systems
+BT = bst.facilities.BoilerTurbogenerator('BT', fuel_price=prices['CH4'])
 
 
-rcf_hdo_system = bst.System(
-    'Combined_RCF_System',
+gas_mixer= bst.Mixer('MIX_BT_gas', ins=(WWT.outs[0], F.RCF_PSAWASTE_OUTS, F.HDO_purge_gases))
+
+BT.ins[0] = WWT.outs[1]   # Connecting sludge to BT solids feed
+BT.ins[1] = gas_mixer.outs[0]   # Connecting biogas from WW treatment and PSA waste gases from RCF
+
+
+
+
+rcf_pure_mon_hdo_system = bst.System(
+    'RCF_HDO_Combined_System',
     path=(rcf_system, rcf_oil_purification_sys, monomer_purification_sys, hdo_system, WWT),
     facilities=[gas_mixer, BT],
 )
 
-rcf_hdo_system.simulate()
+rcf_pure_mon_hdo_system.simulate()
