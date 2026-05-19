@@ -144,7 +144,7 @@ hdo_cat_price = 158.4                                             # [USD/kg] Sam
 prices = {
     'Feedstock' : feedstock_price,
     'Methanol' :  0.27455,               # [USD/kg] from Bartling et al
-    'Hydrogen' : 1.606,                  # [USD/kg] from Bartling et al
+    'Hydrogen' : 8.46,                  # [USD/kg] same as ATJ model
     'NiC_catalyst' : 37.5,              # [USD/kg] from Bartling et al
     'H2SO4' : sulfuric_acid_price,
     'NH3' : ammonia_price,

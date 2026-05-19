@@ -108,3 +108,4 @@ integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_hdo_etoh_etj_system)
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
 
 print(f'The MSP for SAF range cycloalkanes is  {mjsp} USD/gal')
+
