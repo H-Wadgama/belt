@@ -138,13 +138,15 @@ hexane_price = (712/1000) * usd_per_pound * (226.6/285.6)   # [USD/kg] Price of 
 ethyl_acetate_price = 2.5 * usd_per_pound * (226.6/218.9)   # [USD/kg] Price of 2.5 pounds per kg for 2020 from https://doi.org/10.1039%2Fd3ee00965c. Price updated to 2016 USD using https://fred.stlouisfed.org/series/WPU0614
 # ethanol_price = 2.15 *   # TODO: complete CEPCI ratio before adding to prices dict
 natural_gas_price = 0.264
-dodecane_price = 2                                          # [USD/kg] Highly assumed - couldn't get a price for it. 
+dodecane_price = 1                                          # [USD/kg] Highly assumed - couldn't get a price for it. 
 hdo_cat_price = 158.4                                             # [USD/kg] Same price as Nickel on SIlica Alumina for ETJ oligomerization
+h2_price = 4.45
+
 
 prices = {
     'Feedstock' : feedstock_price,
     'Methanol' :  0.27455,               # [USD/kg] from Bartling et al
-    'Hydrogen' : 8.46,                  # [USD/kg] same as ATJ model
+    'Hydrogen' : h2_price,                  # [USD/kg] same as ATJ model
     'NiC_catalyst' : 37.5,              # [USD/kg] from Bartling et al
     'H2SO4' : sulfuric_acid_price,
     'NH3' : ammonia_price,
@@ -221,3 +223,15 @@ hexane_partition_IDs = (
     'Water', 'Propylguaiacol', 'Propylsyringol',
 )
 hexane_partition_K = (0.01, 2.0, 2.0)
+
+price_data = {
+    'NG' : natural_gas_price,           # [USD/kg]
+    'hydrogen' : h2_price,                  # [USD/kg] for PEM electrolysis. Includes complete value chain costs (production. compression, delivery. Storage accounted for separately through storage tank costs)
+    'renewable_naphtha' : 0.71,         # [USD/kg] 
+    'renewable_diesel' : 1.888,         # [USD/kg] [2]
+    'wastewater_treatment' : 1.85e-3,   # [USD/kg] of standard WW from [1]
+    'dehydration_catalyst' : 36.81,     # [USD/kg] 
+    'oligomerization_catalyst' : 158.4, # [USD/kg]
+    'hydrogenation_catalyst' : 59.12,   # [USD/kg]
+    'electricity' : 0.0782              # [USD/kWh]
+ }
