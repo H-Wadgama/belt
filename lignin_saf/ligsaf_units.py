@@ -1025,7 +1025,7 @@ class CatalystMixer(bst.Unit):
         
 
         
-from lignin_saf.ligsaf_settings import hdo_params
+from lignin_saf.ligsaf_settings import hdo_params, prices
  
 
 import biosteam as bst, numpy as np
@@ -1091,6 +1091,7 @@ class HydrodeoxygenationReactor(bst.Unit, bst.units.design_tools.PressureVessel)
               'Beds in service': "",
               'Total volume': 'm3',
               'Reactor volume': 'm3',
+              'Catalyst loading cost' : 'USD',
               'Duty' : 'kJ/hr'}
     
 
@@ -1241,6 +1242,10 @@ class HydrodeoxygenationReactor(bst.Unit, bst.units.design_tools.PressureVessel)
         design = self.design_results # Calling the dictionary used to store design results in design method above 
 
         baseline_purchase_costs = self.baseline_purchase_costs # Dictionary for storing baseline costs
+
+        monomer_flow = (self.ins[0].imass['Propylguaiacol'] + self.ins[0].imass['Propylsyringol'])
+        catalyst_cost = prices['HDO_Cat'] * hdo_params['catalyst_req'] * monomer_flow * self.tau
+        design['Catalyst loading cost'] = catalyst_cost
 
         weight = design['Weight']  # weight parameter stores the value from the 'Weight' key in the design dictionnary
         

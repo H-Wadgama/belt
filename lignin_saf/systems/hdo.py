@@ -91,7 +91,8 @@ def create_hdo_system(ins=None):
         fresh_dod.imass['Dodecane'] = max(
             0.0, dod_vol * dod_rho - recycle_dod.imass['Dodecane']
         )
-        hdo_cat_in.imass['Ni2PSiO2'] = ins.F_mass * hdo_params['catalyst_req']
+        hdo_cat_in.imass['Ni2PSiO2'] = ins.F_mass * hdo_params['catalyst_req'] * (hdo_params['cat_lifetime']/12) 
+
 
     # ── Main feed mixer ───────────────────────────────────────────────────────
     hdo_mix_3 = bst.units.Mixer(
