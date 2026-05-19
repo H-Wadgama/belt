@@ -466,7 +466,7 @@ class SolvolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
 
 
 
-from lignin_saf.ligsaf_settings import rcf_oil_yield, h2_consumption, feed_parameters, RCF_catalyst, prices
+from lignin_saf.ligsaf_settings import rcf_oil_yield, h2_consumption, feed_parameters, prices, rcf_conditions
 
 class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
 
@@ -476,8 +476,8 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
     #)
     _F_BM_default = {**bst.design_tools.PressureVessel._F_BM_default}
     
-    _N_ins = 2
-    _N_outs = 1
+    _N_ins = 3
+    _N_outs = 2
     
     _units = {**PressureVessel._units,
               'Duty': 'kJ/hr',
@@ -604,13 +604,16 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         return length, diameter, V_per_reactor, V_reactor_total, N_reactors
         
     def _run(self):
-        solvent, hydrogen = self.ins
-        effluent, = self.outs
+        solvent, hydrogen, cat_in = self.ins
+        effluent, cat_out = self.outs
 
         
 
         effluent.copy_like(solvent)
         self.reaction(effluent)
+
+        cat_out.copy_like(cat_in)
+
 
         h2 = hydrogen.imass['Hydrogen'] 
 
@@ -683,8 +686,8 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         weight = design['Weight']
         N_reactors = design['Number of reactors']
 
-        catalyst_cost_total = prices['NiC_catalyst'] * RCF_catalyst['loading'] * (feed_parameters['flow'] * 1e3)
-        design['Catalyst loading cost'] = catalyst_cost_total
+        catalyst_cost = prices['NiC_catalyst'] * rcf_conditions['cat_loading'] * (feed_parameters['flow'] * 1e3) * self.tau_residence
+        design['Catalyst loading cost'] = catalyst_cost
 
         baseline_purchase_costs.update(
             self._vessel_purchase_cost(weight, design['Diameter'], design['Length'])

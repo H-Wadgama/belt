@@ -3,9 +3,9 @@ from lignin_saf.ligsaf_units import SolvolysisReactor, HydrogenolysisReactor, PS
 from lignin_saf.ligsaf_chemicals import create_chemicals
 from lignin_saf.ligsaf_settings import (
     rcf_oil_yield, prices, feed_parameters, rcf_conditions,
-    solvolysis_parameters, meoh_h2o, h2_biomass_ratio, RCF_catalyst,
+    solvolysis_parameters, meoh_h2o, h2_biomass_ratio,
     poplar_density, free_frac,
-    V_max_limit, condensation_extent, h2_pressure
+    V_max_limit, condensation_extent, h2_pressure, operating_days
 )
 
 
@@ -55,10 +55,19 @@ def create_rcf_system(ins=None):
     rcf_meoh_recycle = bst.MultiStream('Meoh_recycle', phases=('s', 'l', 'g'))
     rcf_h2_recycle = bst.Stream('hydrogen_recycle', P=3e6, phase='g')
 
+
+    
+
     # ── Co-feeds ──────────────────────────────────────────────────────────────
     # Methanol and water split into separate streams so price applies only to methanol
     rcf_meoh_in = bst.Stream('RCF_MEOH_IN', Methanol=0.0, phase='l', units='kg/hr', price=prices['Methanol'])
     rcf_water_in = bst.Stream('RCF_H2O_IN', Water=0.0, phase='l', units='kg/hr')
+
+    
+    # Catalyst
+    rcf_cat_in = bst.Stream(
+        ID='RCF_CAT_IN', NiC=rcf_conditions['cat_loading'] * feed_parameters['flow'] *rcf_conditions['tau_h']* (operating_days/(rcf_conditions['cat_lifetime']*30)), units='kg/day', phase='s', price =  prices['NiC_catalyst']
+    )
 
     rcf_h2_in = bst.Stream('RCF_H2_IN',
                              Hydrogen=h2_biomass_ratio * 2e6,
@@ -177,9 +186,10 @@ def create_rcf_system(ins=None):
 
     rcf_rxr_2 = HydrogenolysisReactor(
         'RCF_RXR2',
-        ins=(rcf_rxr_1.outs[1], rcf_hx_2-0),
+        ins=(rcf_rxr_1.outs[1], rcf_hx_2-0, rcf_cat_in),
         P=rcf_conditions['P'],
         T=rcf_conditions['T'],
+        tau_residence = rcf_conditions['tau_h'],
         superficial_velocity=0.003,
         reaction=hydrogenolysis,
     )
@@ -234,14 +244,6 @@ def create_rcf_system(ins=None):
       # outs[0]: evaporated MeOH/water from pulp — currently unrecovered (future: route to WWT or solvent recovery)
     rcf_flsh_4 = bst.Flash('RCF_FLSH4', rcf_rxr_1.outs[0], outs=('', 'Carbohydrate_Pulp'), T=400, P=1e5)
 
-
-    rcf_cat_in = bst.Stream(
-        'RCF_CAT_IN',
-        NiC=RCF_catalyst['loading'] * (feed_parameters['flow'] * 1e3) * RCF_catalyst['loading'],
-        units='kg/yr', price=prices['NiC_catalyst'],
-    )
-    rcf_cat_mix = CatalystMixer(ins=rcf_cat_in)
-
     # ── Assemble system ───────────────────────────────────────────────────────
     return bst.System(
         'RCF_System',
@@ -250,8 +252,7 @@ def create_rcf_system(ins=None):
             rcf_mix_2, rcf_hx_2, rcf_rxr_2,
             rcf_flsh_1, rcf_comp_1, rcf_flsh_2, rcf_hx_3,
             rcf_psa_1, rcf_pump_2, rcf_col_1, rcf_col_2,
-            rcf_mix_3, rcf_mix_3, rcf_hx_4, rcf_flsh_3, rcf_mix_4, rcf_flsh_4,
-            rcf_cat_mix,
+            rcf_mix_3, rcf_mix_3, rcf_hx_4, rcf_flsh_3, rcf_mix_4, rcf_flsh_4
         ),
         recycle=(rcf_meoh_recycle, rcf_h2_recycle),
     )

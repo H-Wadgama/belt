@@ -1,4 +1,7 @@
 
+operating_days = 330
+
+
 # Process conditions from Bartling et al 2021 unless specified otherwise
 
 
@@ -16,7 +19,13 @@ rcf_conditions =  {
     'tau_s'   : 3,                 # [hr] Time on stream per solvolysis batch (3 hr total RCF, 1 hr cleaning → 4 hr cycle, 6 batches/reactor/day)
     'tau_s_res': 18/60,              # [hr] Hydraulic residence time of solvent in solvolysis bed (20 min)
     'tau_h'   : 1/3,               # [hr] Hydrogenolysis reaction residence time
+    'cat_loading' : 0.1,           # [kg/kg]  1:10 catalyst: dry biomass feed by wt
+    'cat_lifetime' : 12,              # [months] Catalyst lifetime from Bartling et al,
+    'tau_h' : 1/3                    # [hr] Hydrogenolysis residence time
 }
+
+
+
 
 poplar_density = 485               # [kg/m³] Bulk density of poplar chips
 free_frac      = 0.10              # [-] Fraction of reactor volume kept free (headspace / gas disengagement)
@@ -52,11 +61,6 @@ solvolysis_parameters = {
                                     # reactor was batch and hydrogen was fed at 3 MPa within the reactor, also biomass was birchwood so this might be different in my case
 }
 
-
-RCF_catalyst = {
-    'replacement' : 1,   # [/yr] catalyst replacement rate from Bartling et al
-    'loading' : 0.1    # [kg/kg]  1:10 catalyst: dry biomass feed by wt
-}
 
 
 
