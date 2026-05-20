@@ -357,10 +357,10 @@ class HydrogenStorageTank(bst.Unit):
 
 
 
-        
     def _init(self, storage_period = 7, tank_exp = 0.75):
         self.storage_period = storage_period
         self.tank_exp = tank_exp        
+        self.max_size = 1300   # Maximum compressor sizing limited to 1,300 kg because of high capital costs [1]
     
 
         
@@ -371,14 +371,14 @@ class HydrogenStorageTank(bst.Unit):
         h2_flow = self.ins[0].F_mass 
         capacity = h2_flow * self.storage_period * 24 
         D['Total Capacity'] = capacity
-        N_vessels = ceil(capacity/1300)
+        N_vessels = ceil(capacity/self.max_size)   
         self.parallel['self'] = N_vessels
 
     def _cost(self):
         D = self.design_results
         purchase_costs = self.baseline_purchase_costs
-        
-        total_cost = (600*500) * (1300 /(500/2.2))**self.tank_exp
+
+        total_cost = (600*500) * (self.max_size /(500/2.2))**self.tank_exp
         purchase_costs['Total Cost'] = total_cost
 
         # total_cost_cepci_update = total_cost * (bst.CE/381.1)

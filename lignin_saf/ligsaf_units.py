@@ -1261,6 +1261,76 @@ class HydrodeoxygenationReactor(bst.Unit, bst.units.design_tools.PressureVessel)
         self.parallel['self'] = N_reactors # Used to create multiple of the same beds
 
 
+
+
+class HydrogenStorageTank(bst.Unit):
+    '''
+    Hydrogen storage tank based off the method by [1]
+
+    Method assumes compressd H2 gas storage at 20 MPa
+    Installed cost of tank calculated was ($600/lb)*(500 lb tank) = $300,000 per tank [1]
+    Installed cost of tank is then subsequently scaled up using an exponent of 0.75 from [1]
+    Costs are in 1995 dollars (CEPCI : 381.1) in Amos et al., and are updated to biosteams default CEPCI (CEPCI: 567.5)
+    
+    _N_ins = 1 (hydrogen feed)
+    _N_outs = 1
+    storage_period = defaults to 7 days of storage [1]
+    tank_exp = scale up factor for storage tank based off [1]
+
+    [1] Amos, W. A. (1999). Costs of storing and transporting hydrogen (No. NREL/TP-570-25106; ON: DE00006574). National Renewable Energy Lab.(NREL), Golden, CO (United States).
+
+    '''
+
+    _F_BM_default = {**bst.design_tools.PressureVessel._F_BM_default}
+
+    _N_ins = 1
+    _N_outs = 1
+
+    _units = {
+        'Storage Days': 'days',
+        'Total Capacity': 'kg'}
+
+    # default storage period
+    storage_default: float = 7.0                       # [days] 7 days of storage - assumed, as no good heuristic yet for hydrogen storage
+
+    #: Default operating pressure [Pa]
+    max_capacity_default:  float = 1300                # [kg] [5 MPa from [1][2][5]]
+    
+
+        
+    def _init(
+            self, 
+            storage_period : Optional[float] = None, 
+            max_capacity : Optional[float] = None, 
+            tank_exp = 0.75):
+    
+        self.storage_period = self.storage_default if storage_period is None else storage_period
+        self.max_capacity = self.max_capacity_default if max_capacity is None else max_capacity
+        self.tank_exp = tank_exp
+    
+
+
+    def _design(self):
+        D = self.design_results
+        h2_flow = self.ins[0].imass['Hydrogen'] 
+        capacity = h2_flow * self.storage_period * 24 
+        D['Total Capacity'] = self.max_capacity
+        N_vessels = ceil(capacity/self.max_capacity)   
+        self.parallel['self'] = N_vessels
+
+    def _cost(self):
+        D = self.design_results
+        purchase_costs = self.baseline_purchase_costs
+        CEPCI_1995 = 381.1
+        CEPCI_2017 = 567.5
+
+        cost_update = 600 * (CEPCI_2017/CEPCI_1995)  # Updating tank cost from 1995 (original report by Amos et al) to 2017 (biosteam default)
+                
+        total_cost = (cost_update*500) * (self.max_capacity /(500/2.2))**self.tank_exp  # Scale up costs to 1300 kg 
+        purchase_costs['Total Cost'] = total_cost
+
+
+
         
        
     
