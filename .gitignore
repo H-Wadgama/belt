@@ -6,6 +6,8 @@
 # Allow logo
 !belt-logo-updated.png
 !docs/belt-logo-updated.png
+!belt-logo-5_19_2026.png
+!docs/belt-logo-5_19_2026.png
 
 # Python
 __pycache__/
