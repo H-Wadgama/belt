@@ -7,7 +7,7 @@ from lignin_saf.systems.rcf import create_rcf_system
 from lignin_saf.systems.cellulosic_ethanol_no_preatreatment import create_cellulosic_ethanol_system
 from lignin_saf.systems.rcf_oil_purification import create_rcf_oil_purification_system
 from lignin_saf.systems.monomer_purification import create_monomer_purification_system
-from atj_saf.atj_bst.etj_no_facilities import create_etj_system_no_facilities
+from atj_saf.atj_bst.etj_ligfirst import create_etj_system_no_facilities
 
 from lignin_saf.cellulosic_tea import create_cellulosic_ethanol_tea
 

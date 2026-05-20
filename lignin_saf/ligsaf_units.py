@@ -1324,12 +1324,62 @@ class HydrogenStorageTank(bst.Unit):
         CEPCI_1995 = 381.1
         CEPCI_2017 = 567.5
 
-        cost_update = 600 * (CEPCI_2017/CEPCI_1995)  # Updating tank cost from 1995 (original report by Amos et al) to 2017 (biosteam default)
+        cost_update = 600 * (bst.CE/CEPCI_1995)  # Updating tank cost from 1995 (original report by Amos et al) to 2017 (biosteam default)
                 
         total_cost = (cost_update*500) * (self.max_capacity /(500/2.2))**self.tank_exp  # Scale up costs to 1300 kg 
         purchase_costs['Total Cost'] = total_cost
 
 
+class HydrocarbonProductTank(bst.Unit):
+    '''
+    Hydrocarbon storage tank from [1].
+    Study assumed same storage vessels for gasoline and diesel. In the study, costing is based off Aspen Capital Cost Estimator tool
+    Gasoline similar to renewable naphtha and diesel similar to SAF, so we assume 1 type of storage 
+    for hydrocarbon products.
+    Cost is given as installed equipment cost in 2013 dollars, for a 500,000 gal storage tank at 15 psi, and 250 F
+    Material of construction is carbon steel. 
+    Scaling exponent is 0.7. Study also accounts for one spare tank
+    
+
+    [2] Dutta, A., Sahir, A. H., Tan, E., Humbird, D., Snowden-Swan, L. J., Meyer, P. A., ... & Lukas, J. 
+    (2015). Process design and economics for the conversion of lignocellulosic biomass to hydrocarbon fuels:
+    Thermochemical research pathways with in situ and ex situ upgrading of fast pyrolysis vapors 
+    (No. PNNL-23823). Pacific Northwest National Lab.(PNNL), Richland, WA (United States).
+
+
+    '''
+
+
+    _F_BM_default = {**bst.design_tools.PressureVessel._F_BM_default}
+
+    _N_ins = 1
+    _N_outs = 1
+
+    _units = {
+        'Storage Days': 'days',
+        'Total Capacity': 'gals'}
+
+    
+    def _init(self, storage_period = 14,
+                tank_exp = 0.7):
+        self.storage_period = storage_period
+        self.tank_exp = tank_exp
+        
+            
+    def _design(self):
+        D = self.design_results
+        hydrocarbon_flow = self.ins[0].F_vol
+        capacity = hydrocarbon_flow  * 264.172* self.storage_period *24
+        D['Total Capacity'] = capacity
+
+    def _cost(self):
+        D = self.design_results
+        purchase_costs = self.baseline_purchase_costs
+        total_cost = 1553400*(bst.CE/567.3)*(D['Total Capacity']/500000)**self.tank_exp
+
+        purchase_costs['Total Cost'] = total_cost
+        
+        
 
         
        
