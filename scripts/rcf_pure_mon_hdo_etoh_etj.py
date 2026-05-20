@@ -103,9 +103,9 @@ rcf_pure_mon_hdo_etoh_etj_system = bst.System(
 
 rcf_pure_mon_hdo_etoh_etj_system.simulate()
 
-F.Hydrogen_In.price = price_data['hydrogen']   # 8.46 USD/kg
-F.RN.price = price_data['renewable_naphtha']   # 0.71 USD/kg
-F.RD.price = price_data['renewable_diesel']    # 1.888 USD/kg
+F.ETJ_H2_IN.price = price_data['hydrogen']   # 8.46 USD/kg
+F.ETJ_RN_OUT.price = price_data['renewable_naphtha']   # 0.71 USD/kg
+F.ETJ_RD_OUT.price = price_data['renewable_diesel']    # 1.888 USD/kg
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_hdo_etoh_etj_system)
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)

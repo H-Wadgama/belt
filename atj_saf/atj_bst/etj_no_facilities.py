@@ -219,7 +219,7 @@ def create_etj_system_no_facilities(ins=None):
 
 
     # Area 600: Wastewater collection (no WWT facility — routed to central utilities in combined system)
-    WW_mixer = bst.Mixer('ETJ_WW_MIX', ins = (etj_flsh_1-1, etj_col_1-1, etj_col_2-1), rigorous = True)
+    WW_mixer = bst.Mixer('ETJ_WW_MIX', ins = (etj_flsh_1-1, etj_col_1-1, etj_col_2-1), outs = 'ETJ_WW_OUTS', rigorous = True)
 
     catalyst_replacement_unit = CatalystMixer(ins = (syndol_replacement, ni_si_al_replacement, co_mo_replacement))
 
