@@ -53,7 +53,7 @@ def create_rcf_system(ins=None):
 
     # ── Recycle streams ───────────────────────────────────────────────────────
     rcf_meoh_recycle = bst.MultiStream('Meoh_recycle', phases=('s', 'l', 'g'))
-    rcf_h2_recycle = bst.Stream('hydrogen_recycle', P=3e6, phase='g')
+    rcf_h2_recycle = bst.Stream('hydrogen_recycle', P=rcf_conditions['P'], phase='g')
 
 
     
@@ -75,9 +75,10 @@ def create_rcf_system(ins=None):
                              Hydrogen=h2_biomass_ratio * 2e6,
                              units='kg/day',
                              T=80 + 273.15,   # 80°C PEM electrolyzer outlet
-                             P=h2_pressure,           # 30 bar PEM electrolyzer outlet
+                             P=rcf_conditions['P'],           # 30 bar PEM electrolyzer outlet
                              phase='g',
                              price = prices['Hydrogen'])
+
 
     # ── Unit operations ───────────────────────────────────────────────────────
 
@@ -210,7 +211,7 @@ def create_rcf_system(ins=None):
     rcf_psa_1 = PSA('RCF_PSA1', ins=rcf_hx_3.outs[0], outs=('', 'RCF_PSAWASTE_OUTS'))
 
     rcf_pump_2 = bst.units.IsentropicCompressor('RCF_PUMP2', ins=rcf_psa_1-0, outs=rcf_h2_recycle,
-                                              P=3e6, vle=True)
+                                              P=rcf_conditions['P'], vle=True)
 
     @rcf_pump_2.add_specification(run=True)
     def set_h2_pump_phase():

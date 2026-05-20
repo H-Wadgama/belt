@@ -90,8 +90,17 @@ BT.ins[1] = gas_mixer.outs[0]   # Connecting biogas from WW treatment and PSA wa
 
 combined_saf = bst.units.Mixer(ins = (F.ETJ_SAF_OUT, F.HDO_CYCLOALKANES_OUT), outs = 'TOTAL_SAF', rigorous = True)
 
+h2_rcf = bst.Stream()
+h2_rcf.copy_like(F.RCF_H2_IN)
+
+h2_hdo = bst.Stream()
+h2_hdo.copy_like(F.HDO_H2_IN)
+
+h2_etj = bst.Stream()
+h2_etj.copy_like(F.ETJ_H2_IN)
+
 # Shared H2 storage — sized from combined ETJ + HDO fresh H2 demand
-h2_feed_mixer = bst.Mixer('H2_FEED_MIX', ins=(F.ETJ_H2_IN, F.HDO_H2_IN, F.RCF_H2_IN))
+h2_feed_mixer = bst.Mixer('H2_FEED_MIX', ins=(h2_rcf, h2_hdo, h2_etj))
 shared_h2_storage = HydrogenStorageTank('H2_TK', ins=h2_feed_mixer.outs[0])
 
 
@@ -106,6 +115,8 @@ rcf_pure_mon_hdo_etoh_etj_system.simulate()
 F.ETJ_H2_IN.price = price_data['hydrogen']   # 8.46 USD/kg
 F.ETJ_RN_OUT.price = price_data['renewable_naphtha']   # 0.71 USD/kg
 F.ETJ_RD_OUT.price = price_data['renewable_diesel']    # 1.888 USD/kg
+
+
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_hdo_etoh_etj_system)
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
