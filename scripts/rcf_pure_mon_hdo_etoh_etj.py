@@ -90,6 +90,10 @@ BT.ins[1] = gas_mixer.outs[0]   # Connecting biogas from WW treatment and PSA wa
 
 combined_saf = bst.units.Mixer(ins = (F.ETJ_SAF_OUT, F.HDO_CYCLOALKANES_OUT), outs = 'TOTAL_SAF', rigorous = True)
 
+# Shared H2 storage — sized from combined ETJ + HDO fresh H2 demand
+#h2_feed_mixer = bst.Mixer('H2_FEED_MIX', ins=(F.Hydrogen_In, F.HDO_H2_IN, F.RCF_H2_IN))
+#shared_h2_storage = HydrogenStorageTank('T102', ins=h2_feed_mixer.outs[0])
+
 
 rcf_pure_mon_hdo_etoh_etj_system = bst.System(
     'RCF+HDO+Cellulosic_ETJ',
