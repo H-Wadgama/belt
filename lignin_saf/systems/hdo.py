@@ -1,5 +1,5 @@
 import biosteam as bst
-from lignin_saf.ligsaf_units import HydrodeoxygenationReactor, PSA
+from lignin_saf.ligsaf_units import HydrodeoxygenationReactor, PSA, HydrocarbonProductTank
 from lignin_saf.ligsaf_settings import hdo_params, h2_pressure, prices, operating_days
 
 def create_hdo_system(ins=None):
@@ -178,10 +178,17 @@ def create_hdo_system(ins=None):
     hdo_col_2 = bst.units.BinaryDistillation(
         ID='HDO_COL2',
         ins=hdo_col_1-0,
-        outs=('HDO_WW', 'HDO_CYCLOALKANES_OUT'),
+        outs=('HDO_WW', ''),
         LHK=('Water', 'Propylcyclohexane'),
         y_top=0.9, x_bot=0.001, P=101325, k=2,
-    )
+    )   
+
+    hdo_hx_4 = bst.units.HXutility(ins = hdo_col_2-0, T = 15+273.15, rigorous = True)
+
+    hdo_tk_1 = HydrocarbonProductTank('HDO_TK1', ins = hdo_hx_4-0, outs = 'HDO_CYCLOALKANES_OUT')
+
+
+
 
     # ── Assemble system ───────────────────────────────────────────────────────
     return bst.System(
@@ -191,7 +198,7 @@ def create_hdo_system(ins=None):
             hdo_comp_1, hdo_hx_1, hdo_rxr_1,
             hdo_hx_2, hdo_v_1, hdo_flsh_1,
             hdo_flsh_2, hdo_hx_3, hdo_psa_1, hdo_h2_comp,
-            hdo_col_1, hdo_dodecane_cooler, hdo_col_2,
+            hdo_col_1, hdo_dodecane_cooler, hdo_col_2, hdo_hx_4, hdo_tk_1
         ),
         recycle=(hdo_h2_recycle, hdo_dodecane_recycle),
     )

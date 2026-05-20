@@ -1270,7 +1270,7 @@ class HydrogenStorageTank(bst.Unit):
     Method assumes compressd H2 gas storage at 20 MPa
     Installed cost of tank calculated was ($600/lb)*(500 lb tank) = $300,000 per tank [1]
     Installed cost of tank is then subsequently scaled up using an exponent of 0.75 from [1]
-    Costs are in 1995 dollars (CEPCI : 381.1) in Amos et al., and are updated to biosteams default CEPCI (CEPCI: 567.5)
+    Costs are in 1995 dollars (CEPCI : 381.1) in Amos et al., and are updated to biosteams system-level CEPCI using bst.CE
     
     _N_ins = 1 (hydrogen feed)
     _N_outs = 1
@@ -1322,7 +1322,6 @@ class HydrogenStorageTank(bst.Unit):
         D = self.design_results
         purchase_costs = self.baseline_purchase_costs
         CEPCI_1995 = 381.1
-        CEPCI_2017 = 567.5
 
         cost_update = 600 * (bst.CE/CEPCI_1995)  # Updating tank cost from 1995 (original report by Amos et al) to 2017 (biosteam default)
                 
@@ -1336,7 +1335,7 @@ class HydrocarbonProductTank(bst.Unit):
     Study assumed same storage vessels for gasoline and diesel. In the study, costing is based off Aspen Capital Cost Estimator tool
     Gasoline similar to renewable naphtha and diesel similar to SAF, so we assume 1 type of storage 
     for hydrocarbon products.
-    Cost is given as installed equipment cost in 2013 dollars, for a 500,000 gal storage tank at 15 psi, and 250 F
+    Cost is given as installed equipment cost in 2013 dollars (CEPCI: 567.3), for a 500,000 gal storage tank at 15 psi, and 250 F
     Material of construction is carbon steel. 
     Scaling exponent is 0.7. Study also accounts for one spare tank
     
@@ -1375,7 +1374,8 @@ class HydrocarbonProductTank(bst.Unit):
     def _cost(self):
         D = self.design_results
         purchase_costs = self.baseline_purchase_costs
-        total_cost = 1553400*(bst.CE/567.3)*(D['Total Capacity']/500000)**self.tank_exp
+        CEPCI_2013 = 567.3
+        total_cost = 1553400*(bst.CE/CEPCI_2013)*(D['Total Capacity']/500000)**self.tank_exp
 
         purchase_costs['Total Cost'] = total_cost
         
