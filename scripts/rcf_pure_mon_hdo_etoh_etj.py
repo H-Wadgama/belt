@@ -88,6 +88,7 @@ gas_mixer= bst.Mixer('MIX_BT_gas', ins=(WWT.outs[0], F.RCF_PSAWASTE_OUTS, F.HDO_
 BT.ins[0] = solids_to_BT.outs[0]  # Connecting sludge to BT solids feed
 BT.ins[1] = gas_mixer.outs[0]   # Connecting biogas from WW treatment and PSA waste gases from RCF
 
+
 combined_saf = bst.units.Mixer(ins = (F.ETJ_SAF_OUT, F.HDO_CYCLOALKANES_OUT), outs = 'TOTAL_SAF', rigorous = True)
 
 h2_rcf = bst.Stream()
@@ -115,6 +116,8 @@ rcf_pure_mon_hdo_etoh_etj_system.simulate()
 F.ETJ_H2_IN.price = price_data['hydrogen']   # 8.46 USD/kg
 F.ETJ_RN_OUT.price = price_data['renewable_naphtha']   # 0.71 USD/kg
 F.ETJ_RD_OUT.price = price_data['renewable_diesel']    # 1.888 USD/kg
+
+
 
 
 

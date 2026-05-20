@@ -508,7 +508,7 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
     free_frac_default: float = 0.20
 
     # Hard upper bound on individual vessel volume [m³]; N_reactors is scaled up to satisfy this
-    V_max_limit_default: float = 100
+    V_max_limit_default: float = 200
 
     # Minimum allowable L/D ratio; u is increased analytically if L/D drops below this
     LD_min_default: float = 3.0
