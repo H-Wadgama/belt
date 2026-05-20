@@ -153,7 +153,7 @@ def create_etj_system_no_facilities(ins=None):
 
     etj_mix_4 = bst.Mixer('ETJ_MIX4', ins = (etj_mix_1.outs[0], etj_split_2.outs[1], h2_recycle), rigorous = True)
 
-    etj_hx_4 = bst.HXutility('ETJ_HX_4', etj_mix_4.outs[0], T = 350 +273.15, rigorous = True)
+    etj_hx_4 = bst.HXutility('ETJ_HX4', etj_mix_4.outs[0], T = 350 +273.15, rigorous = True)
 
     etj_rxr_3 = AdiabaticReactor('ETJ_RXR3', ins = etj_hx_4.outs[0],
                             conversion = hydgn_data['conv'],
@@ -221,7 +221,7 @@ def create_etj_system_no_facilities(ins=None):
     # Area 600: Wastewater collection (no WWT facility — routed to central utilities in combined system)
     WW_mixer = bst.Mixer('ETJ_WW_MIX', ins = (etj_flsh_1-1, etj_col_1-1, etj_col_2-1), outs = 'ETJ_WW_OUTS', rigorous = True)
 
-    catalyst_replacement_unit = CatalystMixer(ins = (syndol_replacement, ni_si_al_replacement, co_mo_replacement))
+    catalyst_replacement_unit = CatalystMixer('ETJ_CAT_MIX', ins = (syndol_replacement, ni_si_al_replacement, co_mo_replacement))
 
 
 

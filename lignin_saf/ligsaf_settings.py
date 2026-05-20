@@ -15,9 +15,9 @@ feed_parameters = {
 # RCF
 rcf_conditions =  {
     'T'       : 225 + 273.15,      # [K]
-    'P'       : 60e5,              # [bar]
+    'P'       : 63e5,              # [bar]
     'tau_s'   : 3,                 # [hr] Time on stream per solvolysis batch (3 hr total RCF, 1 hr cleaning → 4 hr cycle, 6 batches/reactor/day)
-    'tau_s_res': 18/60,              # [hr] Hydraulic residence time of solvent in solvolysis bed (20 min)
+    'tau_s_res': 18/60,             # [hr] Hydraulic residence time of solvent in solvolysis bed (20 min)
     'tau_h'   : 1/3,               # [hr] Hydrogenolysis reaction residence time
     'cat_loading' : 0.1,           # [kg/kg]  1:10 catalyst: dry biomass feed by wt
     'cat_lifetime' : 12,              # [months] Catalyst lifetime from Bartling et al,
@@ -54,7 +54,7 @@ solvolysis_parameters = {
      'Arabinan_retention' : 0.4,    # [%] Bartling et al
      'Galactan_retention' : 0.5,    # [%] Bartling et al
      'Mannan_retention' : 0.5,      # [%] Bartling et al
-     'Delignification' : 0.564,        # [%] 92.8% biomass delignified
+     'Delignification' : 0.563,     # [%] 
      'MeOH_CO' : 0.364/100,   # [wt%] methanol lost as CH4. From https://pubs.rsc.org/en/content/articlelanding/2015/cc/c5cc04025f Table 1 where 0.13 mol% of methanol lost as CH4 for Ru/C catalyst
                                     # reactor was batch and hydrogen was fed at 3 MPa within the reactor, also biomass was birchwood, so this might be different in my case
     'MeOH_CH4' :    0.128/100     # [wt%] methanol lost as CH4. From https://pubs.rsc.org/en/content/articlelanding/2015/cc/c5cc04025f Table 1 where 0.08 mol% of methanol lost as CH4 for Ru/C catalyst
@@ -140,7 +140,7 @@ ethyl_acetate_price = 2.5 * usd_per_pound * (226.6/218.9)   # [USD/kg] Price of 
 natural_gas_price = 0.264
 dodecane_price = 1                                          # [USD/kg] Highly assumed - couldn't get a price for it. 
 hdo_cat_price = 158.4                                             # [USD/kg] Same price as Nickel on SIlica Alumina for ETJ oligomerization
-h2_price = 4.45
+h2_price = 3.7                                              # ATR with CCS with compression and truck transport
 
 
 prices = {
