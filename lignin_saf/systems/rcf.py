@@ -5,7 +5,7 @@ from lignin_saf.ligsaf_settings import (
     rcf_oil_yield, prices, feed_parameters, rcf_conditions,
     solvolysis_parameters, meoh_h2o, h2_biomass_ratio,
     poplar_density, free_frac,
-    V_max_limit, condensation_extent, h2_pressure, operating_days
+    V_max_limit, condensation_extent, h2_pressure, operating_days, h2_consumption, h2_rcf_excess
 )
 
 
@@ -71,9 +71,13 @@ def create_rcf_system(ins=None):
         units='kg/day', phase='s', price=prices['NiC_catalyst']
     )
 
+    # H2 required depends on amount of lignin oil, which depends on the extent of delignifciation
+    # 0.15 is for 15% loss in PSA and h2_rcf_excess is 1.2 x the minimum H2 required to ensure there is always sufficient H2 flowing 
+    h2_required = ((ins.imass['Lignin']*solvolysis_parameters['Delignification']*h2_consumption)/(1-0.15))*h2_rcf_excess # Miscalculating
+
     rcf_h2_in = bst.Stream('RCF_H2_IN',
-                             Hydrogen=h2_biomass_ratio * 2e6,
-                             units='kg/day',
+                             Hydrogen=h2_required,
+                             units='kg/hr',
                              T=80 + 273.15,   # 80°C PEM electrolyzer outlet
                              P=rcf_conditions['P'],           # 30 bar PEM electrolyzer outlet
                              phase='g',
@@ -155,7 +159,7 @@ def create_rcf_system(ins=None):
     def h2_flow():
         fresh_h2 = rcf_mix_2.ins[0]
         recycle_h2 = rcf_mix_2.ins[1]
-        fresh_h2.imass['Hydrogen'] = (h2_biomass_ratio * (2e6 / 24)) - recycle_h2.imass['Hydrogen']
+        fresh_h2.imass['Hydrogen'] = (h2_required) - recycle_h2.imass['Hydrogen']
         rcf_mix_2.outs[0].phase = 'g'
 
     rcf_hx_2 = bst.units.HXutility('RCF_HX2', ins=rcf_mix_2-0, T=rcf_conditions['T'], rigorous=True)

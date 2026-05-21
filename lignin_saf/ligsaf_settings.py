@@ -44,7 +44,7 @@ V_max_limit = 600                  # [m³]
 
 h2_consumption = 0.0266             # h2 consumption per kg RCF oil generated. From Webber et al. SI https://www.nature.com/articles/s41563-024-02024-6
 h2_pressure = 3e6                   # [Pa] 30 bar hydrogen outlet pressure from PEM electrolysis
-
+h2_rcf_excess = 1.2                 # Excess H2 flowing through the system - completely
 
 solvolysis_parameters = {
     'Cellulose_retention' : 0.9,    # [%] 90% cellulose retained in biomass pulp after RCF
@@ -65,8 +65,10 @@ solvolysis_parameters = {
 
 
      
-h2_biomass_ratio = 0.053958086     # Ratio of mass flow of h2 by the mass flow of dry biomass feed from Bartling et al, SI stream tables (Table S2)
-                                   # Main text mentioned 10 L/min/dry kg biomass (STP) but i don't know what the dry kg biomass is normalized to (/day, /hr ?)
+h2_biomass_ratio = 0.006029923    # Ratio of mass flow of h2 by the mass flow of dry biomass feed from Bartling et al, SI stream tables (Table S2)
+
+
+
 
 catalyst_loading = 0.1             # 1:10 catalyst: dry biomass feed by wt 
 
