@@ -69,6 +69,11 @@ rcf_etoh_system = bst.System(
 rcf_etoh_system.simulate()
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_etoh_system)
+F.RCF_CRUDE_OUT.price = 1.5
 
-print(f'The MSP for RCF crude oil is  {round(integrated_tea.solve_price(F.RCF_CRUDE_OUT), 3)} USD/kg')
+
+msp = round(((integrated_tea.solve_price(F.ethanol)*F.ethanol.rho)/264.172),2)
+print(f'The MSP for ethanol is  {msp} USD/gal')
+
+#print(f'The MSP for RCF crude oil is  {round(integrated_tea.solve_price(F.RCF_CRUDE_OUT), 3)} USD/kg')
 

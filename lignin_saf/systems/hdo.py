@@ -183,7 +183,7 @@ def create_hdo_system(ins=None):
         y_top=0.9, x_bot=0.001, P=101325, k=2,
     )   
 
-    hdo_hx_4 = bst.units.HXutility('HDO_HX4', ins = hdo_col_2-0, T = 15+273.15, rigorous = True)
+    hdo_hx_4 = bst.units.HXutility('HDO_HX4', ins = hdo_col_2-1, T = 15+273.15, rigorous = True)
 
     hdo_tk_1 = HydrocarbonProductTank('HDO_TK1', ins = hdo_hx_4-0, outs = 'HDO_CYCLOALKANES_OUT')
 
