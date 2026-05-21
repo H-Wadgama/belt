@@ -119,6 +119,7 @@ moisture = 0.2
 feedstock_price = 80 # USD/dry metric ton from Bartling et al
 feedstock_price = feedstock_price/kg_per_ton/(1+moisture)
 usd_per_pound = 1.35
+mj_per_btu = 0.00105506
 
 
 # Chemicals from cellulosic ethanol model
@@ -126,30 +127,42 @@ usd_per_pound = 1.35
 # Prices are from September since end of fiscal year
 # Using Federal Reserve Economic Data (FRED) St. Louis Fed data (accessed 9/17/2025)
 
-sulfuric_acid_price = 0.08972 *  (128.9/174.8)              # [USD/kg] Sulfuric acid price update from https://fred.stlouisfed.org/series/WPU0613020T1
-ammonia_price = 0.4486 * (229.7/227.5)                      # [USD/kg] Ammonia price update from https://fred.stlouisfed.org/series/WPU061
-cellulase_price = 0.212 * (233.6/180.1)                     # [USD/kg] Cellulase price update from https://fred.stlouisfed.org/series/WPU0679
-CSL_price = 0.05682 * (221.3/226.7)                         # [USD/kg] Corn steep liquor price update from https://fred.stlouisfed.org/series/WPU065201. CSL is a nitrogen containing compound
-DAP_price = 0.98692 * (221.3/226.7)                         # [USD/kg] DAP price update from https://fred.stlouisfed.org/series/WPU065201. DAP is a nitrogen containing compound
-caustic_price = 0.07476 * (135.3/116.6)                     # [USD/kg] Casutic price update from https://fred.stlouisfed.org/series/WPU06130302
-denaturant_price = 0.756 * (152.0/225.6)                    # [USD/kg] Denaturant update from https://fred.stlouisfed.org/series/WPU0571. Denaturant is gasoline
-cooling_tower_chemicals_price = 3.0 * (155.6/165.0)         # [USD/kg] Cooling tower chemcials update from https://fred.stlouisfed.org/series/PCU325998325998A. cooling tower chemicals are used for water treatment
-FOD_lime_price = 0.19938 * (237.5/164.6)                    # [USD/kg] FGD lime update from https://fred.stlouisfed.org/series/WPU06130213
-boiler_chemicals_price = 4.99586 * (248.8/189.5)            # [USD/kg] Boiler chemicals update from https://fred.stlouisfed.org/series/WPU0613. Boiler chemicals are ash which is inorganic
-hexane_price = (712/1000) * usd_per_pound * (226.6/285.6)   # [USD/kg] Price of 712 pounds per tonne for 2018 from https://doi.org/10.1126%2Fscience.aau1567. Price updated to 2016 USD using https://fred.stlouisfed.org/series/WPU0614
-ethyl_acetate_price = 2.5 * usd_per_pound * (226.6/218.9)   # [USD/kg] Price of 2.5 pounds per kg for 2020 from https://doi.org/10.1039%2Fd3ee00965c. Price updated to 2016 USD using https://fred.stlouisfed.org/series/WPU0614
+sep_2016 = 186.9
+jan_2026 = 263.53
+
+
+sulfuric_acid_price = 0.08972 *  (128.9/174.8) * (jan_2026/sep_2016)              # [USD/kg] Sulfuric acid price update from https://fred.stlouisfed.org/series/WPU0613020T1
+ammonia_price = 0.4486 * (229.7/227.5) * (jan_2026/sep_2016)                      # [USD/kg] Ammonia price update from https://fred.stlouisfed.org/series/WPU061
+cellulase_price = 0.212 * (233.6/180.1) * (jan_2026/sep_2016)                     # [USD/kg] Cellulase price update from https://fred.stlouisfed.org/series/WPU0679
+CSL_price = 0.05682 * (221.3/226.7) * (jan_2026/sep_2016)                         # [USD/kg] Corn steep liquor price update from https://fred.stlouisfed.org/series/WPU065201. CSL is a nitrogen containing compound
+DAP_price = 0.98692 * (221.3/226.7)  * (jan_2026/sep_2016)                        # [USD/kg] DAP price update from https://fred.stlouisfed.org/series/WPU065201. DAP is a nitrogen containing compound
+caustic_price = 0.07476 * (135.3/116.6) * (jan_2026/sep_2016)                     # [USD/kg] Casutic price update from https://fred.stlouisfed.org/series/WPU06130302
+denaturant_price = 0.756 * (152.0/225.6) * (jan_2026/sep_2016)                    # [USD/kg] Denaturant update from https://fred.stlouisfed.org/series/WPU0571. Denaturant is gasoline
+cooling_tower_chemicals_price = 3.0 * (155.6/165.0) * (jan_2026/sep_2016)         # [USD/kg] Cooling tower chemcials update from https://fred.stlouisfed.org/series/PCU325998325998A. cooling tower chemicals are used for water treatment
+FOD_lime_price = 0.19938 * (237.5/164.6) * (jan_2026/sep_2016)                    # [USD/kg] FGD lime update from https://fred.stlouisfed.org/series/WPU06130213
+boiler_chemicals_price = 4.99586 * (248.8/189.5)   * (jan_2026/sep_2016)          # [USD/kg] Boiler chemicals update from https://fred.stlouisfed.org/series/WPU0613. Boiler chemicals are ash which is inorganic
+hexane_price = (1178/1000)                                  # [USD/kg] 1178 USD/MT price for January 2026 from https://www.procurementresource.com/resource-center/hexane-price-trends
+ethyl_acetate_price = 777/1000                              # [USD/kg] Price of $777/MT was reported for Sep 2025. so this is used https://www.intratec.us/solutions/primary-commodity-prices/commodity/ethyl-acetate-prices
 # ethanol_price = 2.15 *   # TODO: complete CEPCI ratio before adding to prices dict
-natural_gas_price = 0.264
-dodecane_price = 1                                          # [USD/kg] Highly assumed - couldn't get a price for it. 
-hdo_cat_price = 158.4                                             # [USD/kg] Same price as Nickel on SIlica Alumina for ETJ oligomerization
+dodecane_price = 502.33/1000                                # [USD/kg] LAO price from https://www.chemanalyst.com/Pricing-data/linear-alpha-olefin-1103. for quarter ending March 2026. Should be higher than normal 
+hdo_cat_price = 158.4                                       # [USD/kg] Same price as Nickel on SIlica Alumina for ETJ oligomerization
 h2_price = 3.7                                              # ATR with CCS with compression and truck transport
+methanol_price = 331/1000                                   # [USD/kg] 331 USD/tonne was 4th quarter of 2025 price from https://www.methanex.com/news/release/methanex-reports-fourth-quarter-2025-results/
+
+
+# Natural gas price conversion
+natural_gas_price = 3.52       # [$/MMBTU] January 2025 price from https://www.eia.gov/dnav/ng/hist/rngwhhdA.htm
+natural_gas_price = natural_gas_price/1e6/mj_per_btu   
+natural_gas_HHV = 55        # [MJ/kg] https://group.met.com/en/media/energy-insight/calorific-value-of-natural-gas/
+nautral_gas_price = natural_gas_price*natural_gas_HHV
+
 
 
 prices = {
     'Feedstock' : feedstock_price,
-    'Methanol' :  0.27455,               # [USD/kg] from Bartling et al
+    'Methanol' :  methanol_price,           # [USD/kg] from Bartling et al
     'Hydrogen' : h2_price,                  # [USD/kg] same as ATJ model
-    'NiC_catalyst' : 37.5,              # [USD/kg] from Bartling et al
+    'NiC_catalyst' : 37.5,                  # [USD/kg] from Bartling et al
     'H2SO4' : sulfuric_acid_price,
     'NH3' : ammonia_price,
     'Cellulase' : cellulase_price,
@@ -162,7 +175,7 @@ prices = {
     'Boiler_chemicals' : boiler_chemicals_price,
     'Hexane' : hexane_price,
     'EthylAcetate': ethyl_acetate_price,
-    'CH4' :  natural_gas_price,
+    'CH4' :  nautral_gas_price,
     'Dodecane' : dodecane_price,
     'HDO_Cat' : hdo_cat_price
 
@@ -226,14 +239,17 @@ hexane_partition_IDs = (
 )
 hexane_partition_K = (0.01, 2.0, 2.0)
 
+
+biodiesel_price = (3.74 * 773.94) /264.172       # [USD/kg]
+
 price_data = {
     'NG' : natural_gas_price,           # [USD/kg]
-    'hydrogen' : h2_price,                  # [USD/kg] for PEM electrolysis. Includes complete value chain costs (production. compression, delivery. Storage accounted for separately through storage tank costs)
-    'renewable_naphtha' : 0.71,         # [USD/kg] 
-    'renewable_diesel' : 1.888,         # [USD/kg] [2]
+    'hydrogen' : h2_price,               # [USD/kg] Includes complete value chain costs (production. compression, delivery. Storage accounted for separately through storage tank costs)
+    'renewable_naphtha' : 0.57,         # [USD/kg] price for 2025 https://report.basf.com/2025/en/combined-managements-report/basf-groups-business-year/economic-environment/key-commodities.html
+    'renewable_diesel' : biodiesel_price,         # [USD/kg] [2]
     'wastewater_treatment' : 1.85e-3,   # [USD/kg] of standard WW from [1]
     'dehydration_catalyst' : 36.81,     # [USD/kg] 
     'oligomerization_catalyst' : 158.4, # [USD/kg]
     'hydrogenation_catalyst' : 59.12,   # [USD/kg]
-    'electricity' : 0.0782              # [USD/kWh]
+    'electricity' : 0.0826              # [USD/kWh]
  }
