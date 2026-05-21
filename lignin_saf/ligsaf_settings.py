@@ -17,7 +17,7 @@ rcf_conditions =  {
     'T'       : 225 + 273.15,      # [K]
     'P'       : 63e5,              # [bar]
     'tau_s'   : 3,                 # [hr] Time on stream per solvolysis batch (3 hr total RCF, 1 hr cleaning → 4 hr cycle, 6 batches/reactor/day)
-    'tau_s_res': 18/60,             # [hr] Hydraulic residence time of solvent in solvolysis bed (20 min)
+    'tau_s_res': 20/60,             # [hr] Hydraulic residence time of solvent in solvolysis bed (20 min)
     'tau_h'   : 1/3,               # [hr] Hydrogenolysis reaction residence time
     'cat_loading' : 0.1,           # [kg/kg]  1:10 catalyst: dry biomass feed by wt
     'cat_lifetime' : 12,              # [months] Catalyst lifetime from Bartling et al,
@@ -25,7 +25,7 @@ rcf_conditions =  {
 }
 
 
-
+solvent_losses = 0.005
 
 poplar_density = 485               # [kg/m³] Bulk density of poplar chips
 free_frac      = 0.10              # [-] Fraction of reactor volume kept free (headspace / gas disengagement)
@@ -80,7 +80,7 @@ rcf_oil_yield = {
     'Oligomers' : 0.25
 }
 
-condensation_extent = 0.136
+condensation_extent = 0.05
 
 # Conditions for the Hydrodeoxygenation reaction to produce cycloalkanes from the monomers by ring hydrogenation + aryl bond cleavaage
 hdo_params = {
@@ -95,7 +95,7 @@ hdo_params = {
     'solvent_req' : 0.04,    # [m3/kg] From [1]
     'catalyst_req' : 0.8,
     'h2_excess' : 1.5,    # 1.5 x stoichiometric amount of H2 required is fed - Assumed
-    'cat_lifetime' : 6    # [months] Catalyst lifetime 
+    'cat_lifetime' : 12    # [months] Catalyst lifetime 
 }
 
 

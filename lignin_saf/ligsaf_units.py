@@ -11,7 +11,7 @@ from biosteam.units.design_tools import (
     PressureVessel, 
 )
  
-from lignin_saf.ligsaf_settings import solvolysis_parameters
+from lignin_saf.ligsaf_settings import solvolysis_parameters, solvent_losses
 
 class SolvolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
 
@@ -298,7 +298,7 @@ class SolvolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         used_solvent.T = self.T                                             # Since isothermal operation
         
         for chem_id in ('Methanol', 'Water'):
-            used_biomass.imass[chem_id] = used_solvent.imass[chem_id] * 0.005
+            used_biomass.imass[chem_id] = used_solvent.imass[chem_id] * solvent_losses
 
 
         self.reaction_1(used_biomass) 
