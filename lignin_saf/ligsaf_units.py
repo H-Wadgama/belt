@@ -1123,7 +1123,7 @@ class HydrodeoxygenationReactor(bst.Unit, bst.units.design_tools.PressureVessel)
     V_max_default: float = 600                     # Assumed, as was maximum volume in [4]
 
     # Aspect ratio (L/D of the reactor)
-    aspect_ratio: float = 5.0                      # Assumed
+    aspect_ratio_deafult: float = 5.0                      # Assumed
 
 
 
@@ -1151,7 +1151,7 @@ class HydrodeoxygenationReactor(bst.Unit, bst.units.design_tools.PressureVessel)
         self.tau_0 = self.tau_0_default if tau_0 is None else tau_0
         self.free_frac      = self.free_frac_default      if free_frac      is None else free_frac
         self.V_max = self.V_max_default if V_max is None else V_max
-        self.aspect_ratio          = self.aspect_ratio         if aspect_ratio          is None else aspect_ratio
+        self.aspect_ratio          = self.aspect_ratio_default         if aspect_ratio          is None else aspect_ratio
         self.reaction = reaction_1
         # heat_exchanger_1 = self.auxiliary('heat_exchanger_1', bst.HXutility, pump_1.outs[0])
 

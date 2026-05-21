@@ -22,7 +22,7 @@ from lignin_saf.ligsaf_units import HydrogenStorageTank
 
 chems = create_chemicals()
 bst.settings.set_thermo(chems)
-bst.settings.CEPCI = 541.7   # 2016 USD basis
+bst.settings.CEPCI = 840   # 2026 basis. CEPCI 
 
 # Poplar group must be defined before creating any stream that references it
 chems.define_group(
