@@ -42,7 +42,7 @@ methanol_to_biomass = 9            # [L/kg] from https://doi.org/10.1016/j.copbi
 V_max_limit = 600                  # [m³]
 
 
-h2_consumption = 0.01241           # h2 consumption per kg dry biomass feed. Roughly 0.02958 kg H2 consumed per kg RCF oil, I just back calculated it in terms of dry biomass feed so I can use it as an input parameter
+h2_consumption = 0.0266             # h2 consumption per kg RCF oil generated. From Webber et al. SI https://www.nature.com/articles/s41563-024-02024-6
 h2_pressure = 3e6                   # [Pa] 30 bar hydrogen outlet pressure from PEM electrolysis
 
 

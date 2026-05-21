@@ -607,17 +607,17 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         solvent, hydrogen, cat_in = self.ins
         effluent, cat_out = self.outs
 
-        
-
         effluent.copy_like(solvent)
-        self.reaction(effluent)
 
+        h2 = hydrogen.imass['Hydrogen'] 
+        rcf_oil_generated = effluent.imass['SolubleLignin']
+        effluent.imass['g', 'Hydrogen'] = h2 -  (rcf_oil_generated * self.h2_consumption)
+
+
+        self.reaction(effluent)
         cat_out.copy_like(cat_in)
 
 
-        h2 = hydrogen.imass['Hydrogen'] 
-
-        effluent.imass['g', 'Hydrogen'] = h2 - ((self.h2_consumption)*(2e6/24)) # 5 % h2 consumption
 
         effluent.T = self.T # Assuming isothermal operation
         effluent.P = self.P # Assuming no P drop
@@ -1291,7 +1291,7 @@ class HydrogenStorageTank(bst.Unit):
         'Total Capacity': 'kg'}
 
     # default storage period
-    storage_default: float = 7.0                       # [days] 7 days of storage - assumed, as no good heuristic yet for hydrogen storage
+    storage_default: float = 1.0                       # [days] 7 days of storage - assumed, as no good heuristic yet for hydrogen storage
 
     #: Default operating pressure [Pa]
     max_capacity_default:  float = 1300                # [kg] [5 MPa from [1][2][5]]
