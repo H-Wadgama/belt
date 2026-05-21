@@ -1,5 +1,7 @@
 # Lignin valorization to SAF through RCF
 
+![Flow diagram](<flow diagram.png>)
+
 This is a BioSTEAM model for lignin valorization to SAF currently under development
 
 The baseline model assumes a poplar feedstock (2000 dry metric ton per day) and methanol water as a solvent for RCF. The choice of biomass and solvent primarily due to the availability of literature data

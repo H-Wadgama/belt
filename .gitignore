@@ -9,6 +9,9 @@
 !belt-logo-5_19_2026.png
 !docs/belt-logo-5_19_2026.png
 
+# Allow flow diagram
+!lignin_saf/flow diagram.png
+
 # Python
 __pycache__/
 *.py[cod]
