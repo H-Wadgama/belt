@@ -67,6 +67,6 @@ rcf_pure_oil_system.simulate()
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_oil_system)
 
-print(f'The MSP for RCF crude oil is  {round(integrated_tea.solve_price(F.PURE_OIL_OUT), 3)} USD/kg')
+print(f'The MSP for RCF oil without the carbohydrate derivatives is  {round(integrated_tea.solve_price(F.PURE_OIL_OUT), 3)} USD/kg')
 
 

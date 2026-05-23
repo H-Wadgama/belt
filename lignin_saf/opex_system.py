@@ -6,7 +6,7 @@ import numpy as np
 
 
 from lignin_saf.ligsaf_chemicals import create_chemicals
-from lignin_saf.ligsaf_settings import feed_parameters, prices
+from lignin_saf.ligsaf_settings import feed_parameters, prices, price_data
 from lignin_saf.systems.rcf import create_rcf_system
 from lignin_saf.systems.rcf_oil_purification import create_rcf_oil_purification_system
 from lignin_saf.systems.monomer_purification import create_monomer_purification_system
@@ -14,16 +14,16 @@ from lignin_saf.systems.hdo import create_hdo_system
 from lignin_saf.systems.cellulosic_ethanol_no_preatreatment import create_cellulosic_ethanol_system
 from atj_saf.atj_bst.etj_ligfirst import create_etj_system_no_facilities
 from lignin_saf.cellulosic_tea import create_cellulosic_ethanol_tea
-from atj_saf.atj_bst.etj_settings import price_data
 
-
+from lignin_saf.ligsaf_units import HydrogenStorageTank
 
 
 
 
 chems = create_chemicals()
 bst.settings.set_thermo(chems)
-bst.settings.CEPCI = 541.7   # 2016 USD basis
+bst.settings.CEPCI = 840   # 2026 basis. CEPCI 
+bst.settings.electricity_price = price_data['electricity']
 
 # Poplar group must be defined before creating any stream that references it
 chems.define_group(
@@ -89,20 +89,45 @@ gas_mixer= bst.Mixer('MIX_BT_gas', ins=(WWT.outs[0], F.RCF_PSAWASTE_OUTS, F.HDO_
 BT.ins[0] = solids_to_BT.outs[0]  # Connecting sludge to BT solids feed
 BT.ins[1] = gas_mixer.outs[0]   # Connecting biogas from WW treatment and PSA waste gases from RCF
 
+
 combined_saf = bst.units.Mixer(ins = (F.ETJ_SAF_OUT, F.HDO_CYCLOALKANES_OUT), outs = 'TOTAL_SAF', rigorous = True)
+
+h2_rcf = bst.Stream()
+h2_rcf.copy_like(F.RCF_H2_IN)
+
+h2_hdo = bst.Stream()
+h2_hdo.copy_like(F.HDO_H2_IN)
+
+h2_etj = bst.Stream()
+h2_etj.copy_like(F.ETJ_H2_IN)
+
+# Shared H2 storage — sized from combined ETJ + HDO fresh H2 demand
+h2_feed_mixer = bst.Mixer('H2_FEED_MIX', ins=(h2_rcf, h2_hdo, h2_etj))
+shared_h2_storage = HydrogenStorageTank('H2_TK', ins=h2_feed_mixer.outs[0])
 
 
 rcf_pure_mon_hdo_etoh_etj_system = bst.System(
     'RCF+HDO+Cellulosic_ETJ',
     path=(rcf_system, rcf_oil_purification_sys, monomer_purification_sys, hdo_system, etoh_system, etj_system, combined_saf, WWT),
-    facilities=[solids_to_BT, gas_mixer, BT],
+    facilities=[solids_to_BT, gas_mixer, h2_feed_mixer, shared_h2_storage, BT],
 )
 
 rcf_pure_mon_hdo_etoh_etj_system.simulate()
 
-F.Hydrogen_In.price = price_data['hydrogen']   # 8.46 USD/kg
-F.RN.price = price_data['renewable_naphtha']   # 0.71 USD/kg
-F.RD.price = price_data['renewable_diesel']    # 1.888 USD/kg
+F.ETJ_H2_IN.price = price_data['hydrogen']   # 8.46 USD/kg
+F.ETJ_RN_OUT.price = price_data['renewable_naphtha']   # 0.71 USD/kg
+F.ETJ_RD_OUT.price = price_data['renewable_diesel']    # 1.888 USD/kg
+#F.sulfuric_acid.price = prices['H2SO4']
+#F.ammonia.price = prices['NH3']
+F.cellulase.price = prices['Cellulase'] 
+F.CSL.price = prices ['CSL'] 
+F.DAP.price = prices['DAP'] 
+F.caustic.price = prices['Caustic']
+F.denaturant.price =  prices['Denaturant'] 
+F.cooling_tower_chemicals.price = prices['CT_chemicals'] 
+#F.FGD_lime.price = prices['FOD_lime']
+#F.boiler_chemicals.price = prices['Boiler_chemicals'] 
+
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_hdo_etoh_etj_system)
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
@@ -110,7 +135,7 @@ mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172)
 
 # Operating costs plot
 methanol_price = F.RCF_MEOH_IN.F_mass * prices['Methanol'] * integrated_tea.operating_hours
-hydrogen_price = (F.RCF_H2_IN.F_mass + F.HDO_H2_IN.F_mass + F.Hydrogen_In.F_mass) * prices['Hydrogen'] * integrated_tea.operating_hours
+hydrogen_price = (F.RCF_H2_IN.F_mass + F.HDO_H2_IN.F_mass + F.ETJ_H2_IN.F_mass) * prices['Hydrogen'] * integrated_tea.operating_hours
 poplar_price = F.Poplar_In.F_mass * prices['Feedstock'] * integrated_tea.operating_hours
 ethyl_acetate_price = F.EthylAcetate_in.F_mass * prices['EthylAcetate'] * integrated_tea.operating_hours
 hexane_price = F.Hexane_In.F_mass * prices['Hexane'] * integrated_tea.operating_hours
@@ -125,8 +150,23 @@ catalyst = (
     + F.Olig_cat_replacement.F_mass * price_data['oligomerization_catalyst']
     + F.Hydgn_cat_replacement.F_mass * price_data['hydrogenation_catalyst']
 ) * integrated_tea.operating_hours
+
+# ── Cellulosic ethanol process chemicals ──────────────────────────────────────
+cellulase_cost = F.cellulase.F_mass * prices['Cellulase'] * integrated_tea.operating_hours
+
+# NOTE: F.denaturant has zero flow (add_denaturant=False), so it contributes $0.
+# Included here for completeness — it is priced and appears in the TEA material_cost.
+fermentation_chems_cost = (
+    F.CSL.F_mass * prices['CSL']
+    + F.DAP.F_mass * prices['DAP']
+    + F.caustic.F_mass * prices['Caustic']
+    + F.denaturant.F_mass * prices['Denaturant']
+    + F.cooling_tower_chemicals.F_mass * prices['CT_chemicals']
+) * integrated_tea.operating_hours
+
 material_arrz = np.array([methanol_price, hydrogen_price, poplar_price,
-                            ethyl_acetate_price, hexane_price, dodecane_price, catalyst])
+                            ethyl_acetate_price, hexane_price, dodecane_price, catalyst,
+                            cellulase_cost, fermentation_chems_cost])
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -159,6 +199,8 @@ oi_colors = [
     "#476066",  # dark teal
     "#562C29",  # dark brown
     "#009E73",  # bluish green
+    "#AAAAAA",  # medium gray  — Cellulase
+    "#44AA99",  # muted teal   — Fermentation Chemicals
 ]
 
 categories = [
@@ -171,6 +213,8 @@ categories = [
     "Catalyst",
     "Utilities",
     "Fixed Operating Cost",
+    "Cellulase",
+    "Fermentation Chemicals",  # CSL + DAP + Caustic + CT chemicals
 ]
 
 
@@ -185,6 +229,8 @@ values = [
     catalyst,
     integrated_tea.utility_cost,
     integrated_tea.FOC,
+    cellulase_cost,
+    fermentation_chems_cost,
 ]
 
 # ── Figure ────────────────────────────────────────────────────────────────────

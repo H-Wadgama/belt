@@ -117,13 +117,21 @@ rcf_pure_mon_hdo_etoh_etj_system.simulate()
 F.ETJ_H2_IN.price = price_data['hydrogen']   # 8.46 USD/kg
 F.ETJ_RN_OUT.price = price_data['renewable_naphtha']   # 0.71 USD/kg
 F.ETJ_RD_OUT.price = price_data['renewable_diesel']    # 1.888 USD/kg
-
-
-
+#F.sulfuric_acid.price = prices['H2SO4']
+#F.ammonia.price = prices['NH3']
+F.cellulase.price = prices['Cellulase'] 
+F.CSL.price = prices ['CSL'] 
+F.DAP.price = prices['DAP'] 
+F.caustic.price = prices['Caustic']
+F.denaturant.price =  prices['Denaturant'] 
+F.cooling_tower_chemicals.price = prices['CT_chemicals'] 
+#F.FGD_lime.price = prices['FOD_lime']
+#F.boiler_chemicals.price = prices['Boiler_chemicals'] 
 
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_hdo_etoh_etj_system)
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
 
 print(f'The MSP for SAF blend is  {mjsp} USD/gal')
+
 

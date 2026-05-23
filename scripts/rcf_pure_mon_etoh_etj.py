@@ -93,5 +93,5 @@ F.MON_MONOMERS_OUT.price = 3.63    # USD/kg price taken from Bartling et al http
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_etoh_etj_system)
 
-print(f'The MSP for SAF is  {round(((integrated_tea.solve_price(F.ETJ_SAF_OUT)*F.ETJ_SAF_OUT.rho)/264.172),2)} USD/gal')
+print(f'The MSP for n-alkanes for SAF is  {round(((integrated_tea.solve_price(F.ETJ_SAF_OUT)*F.ETJ_SAF_OUT.rho)/264.172),2)} USD/gal')
 

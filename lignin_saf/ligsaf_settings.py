@@ -80,7 +80,7 @@ rcf_oil_yield = {
     'Oligomers' : 0.25
 }
 
-condensation_extent = 0.05
+condensation_extent = 0.136
 
 # Conditions for the Hydrodeoxygenation reaction to produce cycloalkanes from the monomers by ring hydrogenation + aryl bond cleavaage
 hdo_params = {
@@ -116,7 +116,7 @@ hdo_params = {
 kg_per_ton = 907.1846 # kg per metric ton
 moisture = 0.2
 
-feedstock_price = 80 # USD/dry metric ton from Bartling et al
+feedstock_price = 70 # USD/dry metric ton from Bartling et al
 feedstock_price = feedstock_price/kg_per_ton/(1+moisture)
 usd_per_pound = 1.35
 mj_per_btu = 0.00105506
@@ -146,7 +146,7 @@ ethyl_acetate_price = 777/1000                              # [USD/kg] Price of 
 # ethanol_price = 2.15 *   # TODO: complete CEPCI ratio before adding to prices dict
 dodecane_price = 502.33/1000                                # [USD/kg] LAO price from https://www.chemanalyst.com/Pricing-data/linear-alpha-olefin-1103. for quarter ending March 2026. Should be higher than normal 
 hdo_cat_price = 158.4                                       # [USD/kg] Same price as Nickel on SIlica Alumina for ETJ oligomerization
-h2_price = 3.7                                              # ATR with CCS with compression and truck transport
+h2_price = 2.3 + 1.1 + 0.3                                             # ATR with CCS with compression and truck transport
 methanol_price = 331/1000                                   # [USD/kg] 331 USD/tonne was 4th quarter of 2025 price from https://www.methanex.com/news/release/methanex-reports-fourth-quarter-2025-results/
 
 

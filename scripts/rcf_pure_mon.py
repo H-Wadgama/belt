@@ -71,6 +71,6 @@ rcf_monomers_system.simulate()
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_monomers_system)
 
-print(f'The MSP for RCF crude oil is  {round(integrated_tea.solve_price(F.MON_MONOMERS_OUT), 3)} USD/kg')
+print(f'The MSP for RCF purified monomers is  {round(integrated_tea.solve_price(F.MON_MONOMERS_OUT), 3)} USD/kg')
 
 
