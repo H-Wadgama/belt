@@ -1,4 +1,4 @@
-# ATJ-SAF Module — Alcohol-to-Jet Sustainable Aviation Fuel
+# Alcohol-to-Jet SAF biorefinery
 
 ![ATJ Biorefinery](atj%20biorefinery.png)
 
@@ -6,18 +6,13 @@
 
 This module models the catalytic upgrading of ethanol to sustainable aviation fuel (SAF) via the **Alcohol-to-Jet (ATJ)** pathway. Corn-stover-derived ethanol undergoes three sequential heterogeneous catalytic reactions to yield a slate of renewable hydrocarbon fuels.
 
-**Plant capacity:** 9 MM gal/yr SAF
+**Baseline Plant capacity:** 9 MM gal/yr SAF (similar to LanzaJet's Soperton, GA facility)
 
 ---
 
 ## Process Description
 
 The ATJ pathway converts ethanol to jet-range hydrocarbons in three steps:
-
-```
-Ethanol  →  Ethylene  →  Olefins (C4–C18)  →  Alkanes (naphtha / jet / diesel)
-         dehydration    oligomerization         hydrogenation
-```
 
 ### Step 1 — Dehydration
 Ethanol is vaporised and passed over a solid-acid catalyst to produce ethylene via intramolecular dehydration.
@@ -48,7 +43,7 @@ Ethylene undergoes chain-growth oligomerization over a nickel-based catalyst, pr
 | Renewable diesel | C18 | 3 % |
 
 ### Step 3 — Hydrogenation
-Olefins are fully hydrogenated over a supported metal catalyst to produce the final alkane products. Unreacted hydrogen is recovered via **Pressure Swing Adsorption (PSA)** and recycled.
+Olefins are fully hydrogenated over a supported metal catalyst to produce the final alkane products. Unreacted hydrogen is recovered and recycled.
 
 | Parameter | Value |
 |-----------|-------|
@@ -68,7 +63,7 @@ Olefins are fully hydrogenated over a supported metal catalyst to produce the fi
 | Renewable naphtha (co-product) | $0.71 / kg |
 | Renewable diesel (co-product) | $1.89 / kg |
 
-**Key output:** Minimum Jet Selling Price (MJSP) in $/gal, solved at NPV = 0.
+**Key output:** Minimum Jet Selling Price (MJSP) in $/gal, solved at NPV = 0. Convenient economic metric to compare against petroluem jet fuel.
 
 ---
 
@@ -76,7 +71,7 @@ Olefins are fully hydrogenated over a supported metal catalyst to produce the fi
 
 ```
 atj_saf/
-├── atj_qsd/          # QSDsan-based baseline model (primary)
+├── atj_qsd/          # QSDsan-based baseline model (no longer supported)
 │   ├── systems.py                  # create_atj_system(), perform_tea()
 │   ├── atj_chemicals.py            # Chemical property definitions
 │   ├── tea_saf.py / tea_abstract.py
@@ -95,36 +90,22 @@ atj_saf/
 └── requirements.txt
 ```
 
-Two independent implementations are provided:
-
-| Sub-package | Framework | Purpose |
-|-------------|-----------|---------|
-| `atj_qsd/` | QSDsan + BioSTEAM | Baseline TEA, MJSP calculation |
-| `atj_bst/` | Pure BioSTEAM + `biorefineries` | Uncertainty, sensitivity, contour plots |
-
 ---
 
 ## Quick Start
 
-**Run the baseline simulation:**
-```bash
-python -m atj_saf.main
-```
-Prints MJSP in $/gal.
-
-**Interactive analysis** (uncertainty & sensitivity):
+Complete system file in .ipynb format
 ```
 atj_saf/atj_bst/etj_system.ipynb
 ```
 
----
+However, a .py file also available for the baseline process system (no TEA, uncertianty analysis, sensitivity analysis)
+```
+atj_saf/atj_bst/etj_system.py
 
-## Dependencies
-
-Install from the repo root with the `pyfuel` conda environment:
-```bash
-conda activate pyfuel
-pip install -r atj_saf/requirements.txt
 ```
 
-Key packages: `biosteam==2.47.0`, `qsdsan==1.4.1`, `thermosteam`, `numpy==1.26.4`, `scipy==1.11.4`.
+---
+
+Tested working on these versions: `biosteam=='2.51.19'`, `thermosteam==0.51.17'`, `biorefineries==2.34.10'`
+
