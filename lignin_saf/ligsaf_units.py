@@ -1291,7 +1291,7 @@ class HydrogenStorageTank(bst.Unit):
         'Total Capacity': 'kg'}
 
     # default storage period
-    storage_default: float = 1.0                       # [days] 7 days of storage - assumed, as no good heuristic yet for hydrogen storage
+    storage_default: float = 0.25                       # [days] 7 days of storage - assumed, as no good heuristic yet for hydrogen storage
 
     #: Default operating pressure [Pa]
     max_capacity_default:  float = 1300                # [kg] [5 MPa from [1][2][5]]

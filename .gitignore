@@ -12,6 +12,9 @@
 # Allow flow diagram
 !lignin_saf/flow diagram.png
 
+# Allow ATJ biorefinery diagram
+!atj_saf/atj biorefinery.png
+
 # Python
 __pycache__/
 *.py[cod]
