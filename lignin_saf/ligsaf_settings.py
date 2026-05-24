@@ -26,7 +26,7 @@ rcf_conditions =  {
 }
 
 
-solvent_losses = 0.01
+solvent_losses = 0.005
 
 poplar_density = 485               # [kg/m³] Bulk density of poplar chips
 free_frac      = 0.10              # [-] Fraction of reactor volume kept free (headspace / gas disengagement)
@@ -241,7 +241,7 @@ hexane_partition_IDs = (
 hexane_partition_K = (0.01, 2.0, 2.0)
 
 
-biodiesel_price = (3.74 * 773.94) /264.172       # [USD/kg]
+biodiesel_price = (3.74 * 773.94) /    264.172   # [USD/kg]
 
 price_data = {
     'NG' : natural_gas_price,           # [USD/kg]
@@ -252,5 +252,5 @@ price_data = {
     'dehydration_catalyst' : 36.81,     # [USD/kg] 
     'oligomerization_catalyst' : 158.4, # [USD/kg]
     'hydrogenation_catalyst' : 59.12,   # [USD/kg]
-    'electricity' : 0.0826              # [USD/kWh]
+    'electricity' : 0.0826 # [USD/kWh] US industrial average (March 2025)
  }
