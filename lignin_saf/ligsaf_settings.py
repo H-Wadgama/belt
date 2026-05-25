@@ -205,12 +205,12 @@ prices = {
 # ─────────────────────────────────────────────────────────────────────────────
 # RCF Oil Purification — Ethyl Acetate Liquid–Liquid Extraction
 # References:
-#   Qin et al. 2022, React. Chem. Eng. (10.1039/D2RE00275B)
-#   Luo et al. 2024, ACS Sust. Chem. Eng., 12, 12919–12926
+# [1] Jang, Jun Hee, et al. "Multi-pass flow-through reductive catalytic fractionation." Joule 6.8 (2022): 1859-1875.
 # ─────────────────────────────────────────────────────────────────────────────
 
 etoac_purification = {
-    'solvent_to_crude_ratio': 1.1,      # [L/kg]  EtOAc volume per kg crude RCF oil (10 mL/g basis from D2RE00275B)
+    'solvent_to_crude_ratio': 9.1,      # [L/kg]  EtOAc volume per kg crude RCF oil from [1] where 1.1 g crude RCF oil (5g poplar x 0.24 lignin x 0.85 delignification) was extracted with 10 mL of DI
+                                        # water and 10 mL of ethyla acetate
     'etoac_h2o_ratio':        1.0,      # [v/v]   EtOAc : water volume ratio (D2RE00275B)
     'N_stages':               3,        # [-]     number of extraction stages (ACS SCE 2024)
     'EtOAc_recycle_split':    0.95,     # [-]     fraction of EtOAc recovered in centrifuge and recycled
