@@ -20,9 +20,10 @@ operating_days = 330    # [days/yr] scheduled operating days (0.9 operating fact
 # For ETJ, 2 operators for the reactors, not treating them separately, as ETJ operations are rather conventional, (dehydration, hydrogenation atleast have been around for a while to my knowledge), 1 for 
 # the distillation column. Total operators: 3
 # 2 operators for the storage  - hydrogen storage will definitely need one I believe and 1 would be required for the rest. Total operators: 2
-# Total operators per shift: 8 + 4 + 6 + 8 + 3 + 2 = 31
+# 2 operators for WWT (I think complexity of feed streams), and 1 for BT. Total operator: 3
+# Total operators per shift: 8 + 4 + 6 + 8 + 3 + 2 = 34
 
-num_operators_per_shift = 31
+num_operators_per_shift = 34
 num_shifts              = 5       # number of operator shifts (4 working + 1 relief)
 pay_rate                = 40      # [USD/hr] operator base pay rate
 

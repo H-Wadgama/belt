@@ -17,12 +17,12 @@ solvolysis_params = {
     'T'                     : 225 + 273.15,  # [K]
     'P'                     : 63e5,          # [Pa] 63 bar (Vapor pressure exerted by methanol at the reaction temperature)
     'tau_s'                 : 3,             # [hr] Time on stream per solvolysis batch
-    'tau_s_res'             : 20/60,         # [hr] Hydraulic residence time of solvent in bed (20 min)
-    'tau_0'                 : 3,             # [hr] Cycle time (tau_s + cleaning window)
+    'tau_s_res'             : 18/60,         # [hr] Hydraulic residence time of solvent in bed (20 min)
+    'tau_0'                 : 1,             # [hr] Turnaround/cleaning time per batch (cycle time = tau_s + tau_0 = 4 hr)
     'tau_h'                 : 1/3,           # [hr] Hydrogenolysis hydraulic residence time (20 min)
     'cat_loading'           : 0.1,           # [kg/kg] 1:10 catalyst : dry biomass by weight
     'cat_lifetime'          : 12,            # [months] from Bartling et al
-    'Cellulose_retention'   : 0.9,           # [fraction] 90% cellulose retained in pulp after RCF
+    'Cellulose_retention'   : 0.5,           # [fraction] 90% cellulose retained in pulp after RCF
     'Xylose_retention'      : 0.93,          # [fraction] 93% xylose retained in pulp after RCF
     'Extractives_retention' : 0,             # [fraction] from 10.1039/d1gc01591e Table S1
     'Acetate_retention'     : 0,             # [fraction] from 10.1039/d1gc01591e Table S1
@@ -71,7 +71,7 @@ hdo_params = {
     'solvent_req'    : 0.04,    # [m³/kg monomer feed] from [1]
     'catalyst_req'   : 0.8,     # [kg/kg monomer feed]
     'h2_excess'      : 1.5,     # [-] 1.5× stoichiometric H₂ fed (assumed)
-    'cat_lifetime'   : 12,      # [months] catalyst lifetime
+    'cat_lifetime'   : 6,      # [months] catalyst lifetime
 }
 
 
