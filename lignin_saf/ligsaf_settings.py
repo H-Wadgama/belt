@@ -216,7 +216,7 @@ etoac_partition_K = (0.01, 200.0, 200.0, 500.0, 109.0, 200.0, 200.0)
 # ─────────────────────────────────────────────────────────────────────────────
 
 hexane_purification = {
-    'solvent_to_oil_ratio': 5,       # [kg/kg] hexane mass per kg purified RCF oil
+    'solvent_to_oil_ratio': 3.5,       # [kg/kg] hexane mass per kg purified RCF oil
     'water_hexane_ratio':   1,       # [v/v]   water : hexane volume ratio in solvent feed
     'N_stages':             3,       # [-]     number of extraction stages
     'hexane_recycle_split': 0.95,    # [-]     fraction of hexane recovered in centrifuge and recycled
