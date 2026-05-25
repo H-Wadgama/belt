@@ -100,7 +100,26 @@ hdo_params = {
 }
 
 
-
+# ### LABOR COST 
+# # [1] W. Seider et al., Product and Process Design Principles. 2016. John Wiley & Sons.
+# Table 17.3 from [1]
+# For RCF - 6 operators for the reactors (solids-fluids processing, and > 100 ton/day so 3 x 2 =6 ), and 2 for the distillation columns downstream for solvent recovery. Total operators: 8
+# For oil purification and monomer recovery 2 operators each (and 2 secttions so 4 total operators. Total operator: 4
+# For HDO: 4 operators (batch, fluids processing would be 2, and then since > 100 ton/day so 2 x 2 = 4), and 2 for the distillation columns downstream for solvent recovery. Total operators: 6
+# For ethanol production, 6 operators for reactors as solids-fluids processing and large volumes so 3 x 2 = 6, and then 2 for the beer column downstream for ethanol purification. Total operators: 8
+# For ETJ, 2 operators for the reactors, not treating them separately, as ETJ operations are rather conventional, (dehydration, hydrogenation atleast have been around for a while to my knowledge), 1 for 
+# the distillation column. Total operators: 3
+# 2 operators for the storage  - hydrogen storage will definitely need one I believe and 1 would be required for the rest. Total operators: 2
+# Total operators per shift: 8 + 4 + 6 + 8 + 3 + 2 = 31
+num_operators_per_shift = 31
+num_shifts = 5
+pay_rate = 40
+DWandB = num_operators_per_shift * num_shifts * 2080 * pay_rate
+Dsalaries_benefits = 0.15 * DWandB
+O_supplies = 0.06 * DWandB
+technical_assistance = 5 * 75000
+control_lab = 5 * 80000
+labor = DWandB + Dsalaries_benefits + O_supplies + technical_assistance + control_lab
 
 
 

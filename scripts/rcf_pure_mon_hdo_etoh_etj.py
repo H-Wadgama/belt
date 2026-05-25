@@ -6,7 +6,7 @@ import numpy as np
 
 
 from lignin_saf.ligsaf_chemicals import create_chemicals
-from lignin_saf.ligsaf_settings import feed_parameters, prices, price_data
+from lignin_saf.ligsaf_settings import feed_parameters, prices, price_data, labor
 from lignin_saf.systems.rcf import create_rcf_system
 from lignin_saf.systems.rcf_oil_purification import create_rcf_oil_purification_system
 from lignin_saf.systems.monomer_purification import create_monomer_purification_system
@@ -130,8 +130,10 @@ F.cooling_tower_chemicals.price = prices['CT_chemicals']
 
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_hdo_etoh_etj_system)
+
+
+integrated_tea.labor_cost = labor
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
 
 print(f'The MSP for SAF blend is  {mjsp} USD/gal')
-
 
