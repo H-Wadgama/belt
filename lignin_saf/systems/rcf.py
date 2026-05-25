@@ -1,13 +1,11 @@
 import biosteam as bst
 from lignin_saf.ligsaf_units import SolvolysisReactor, HydrogenolysisReactor, PSA, CatalystMixer
 from lignin_saf.ligsaf_chemicals import create_chemicals
-from lignin_saf.ligsaf_settings import (
-    rcf_oil_yield, prices, feed_parameters, rcf_conditions,
-    solvolysis_parameters, meoh_h2o, h2_biomass_ratio,
-    poplar_density, free_frac,
-    V_max_limit, condensation_extent, h2_pressure, operating_days, h2_consumption, h2_rcf_excess
+from lignin_saf.settings.process_params import (
+    rcf_oil_yield, feed_parameters, solvolysis_params, hydrogenolysis_params, meoh_h2o, h2_biomass_ratio, hydrogenolysis_params, h2_rcf_excess
 )
-
+from lignin_saf.settings.prices import prices
+from lignin_saf.settings.tea_params import operating_days
 
 def create_rcf_system(ins=None):
     """
@@ -53,7 +51,7 @@ def create_rcf_system(ins=None):
 
     # ── Recycle streams ───────────────────────────────────────────────────────
     rcf_meoh_recycle = bst.MultiStream('Meoh_recycle', phases=('s', 'l', 'g'))
-    rcf_h2_recycle = bst.Stream('hydrogen_recycle', P=rcf_conditions['P'], phase='g')
+    rcf_h2_recycle = bst.Stream('hydrogen_recycle', P=solvolysis_params['P'], phase='g')
 
 
     
@@ -67,19 +65,19 @@ def create_rcf_system(ins=None):
     # Catalyst
     rcf_cat_in = bst.Stream(
         ID='RCF_CAT_IN',
-        NiC=(rcf_conditions['cat_loading'] * (feed_parameters['flow'] * 1e3 / 24) * rcf_conditions['tau_h']) / (rcf_conditions['cat_lifetime'] * 30),
+        NiC=(solvolysis_params['cat_loading'] * (feed_parameters['flow'] * 1e3 / 24) * solvolysis_params['tau_h']) / (solvolysis_params['cat_lifetime'] * 30),
         units='kg/day', phase='s', price=prices['NiC_catalyst']
     )
 
     # H2 required depends on amount of lignin oil, which depends on the extent of delignifciation
     # 0.15 is for 15% loss in PSA and h2_rcf_excess is 1.2 x the minimum H2 required to ensure there is always sufficient H2 flowing 
-    h2_required = ((ins.imass['Lignin']*solvolysis_parameters['Delignification']*h2_consumption)/(1-0.15))*h2_rcf_excess # Miscalculating
+    h2_required = ((ins.imass['Lignin']*solvolysis_params['Delignification']*hydrogenolysis_params['h2_consumption'])/(1-0.15))*h2_rcf_excess # Miscalculating
 
     rcf_h2_in = bst.Stream('RCF_H2_IN',
                              Hydrogen=h2_required,
                              units='kg/hr',
                              T=80 + 273.15,   # 80°C PEM electrolyzer outlet
-                             P=rcf_conditions['P'],           # 30 bar PEM electrolyzer outlet
+                             P=solvolysis_params['P'],           # 30 bar PEM electrolyzer outlet
                              phase='g',
                              price = prices['Hydrogen'])
 
@@ -97,21 +95,21 @@ def create_rcf_system(ins=None):
         total_vol_hr = rcf_rxr_1.compute_Q_total()  # m³/hr — derived from bed geometry
         meoh_flow_mol = (
             total_vol_hr * meoh_h2o / (meoh_h2o + 1)
-            * chems['Methanol'].rho(phase='l', T=rcf_conditions['T'], P=rcf_conditions['P'])
+            * chems['Methanol'].rho(phase='l', T=solvolysis_params['T'], P=solvolysis_params['P'])
             * (1 / chems['Methanol'].MW)
         )
         water_flow_mol = (
             total_vol_hr / (meoh_h2o + 1)
-            * chems['Water'].rho(phase='l', T=rcf_conditions['T'], P=rcf_conditions['P'])
+            * chems['Water'].rho(phase='l', T=solvolysis_params['T'], P=solvolysis_params['P'])
             * (1 / chems['Water'].MW)
         )
         meoh_fresh.imol['Methanol']  = meoh_flow_mol  - recycle_solvent.imol['Methanol']
         water_fresh.imol['Water']    = water_flow_mol - recycle_solvent.imol['Water']
         rcf_mix_1.outs[0].phases = ('s', 'l', 'g')  # needed by downstream reactors
 
-    rcf_pump_1 = bst.units.Pump('RCF_PUMP1', ins=rcf_mix_1-0, P=rcf_conditions['P'])
+    rcf_pump_1 = bst.units.Pump('RCF_PUMP1', ins=rcf_mix_1-0, P=solvolysis_params['P'])
 
-    rcf_hx_1 = bst.units.HXutility('RCF_HX1', ins=rcf_pump_1-0, T=rcf_conditions['T'], rigorous=True)
+    rcf_hx_1 = bst.units.HXutility('RCF_HX1', ins=rcf_pump_1-0, T=solvolysis_params['T'], rigorous=True)
 
     @rcf_hx_1.add_specification(run=True)
     def set_meoh_heater_phases():
@@ -120,14 +118,14 @@ def create_rcf_system(ins=None):
     # Solvolysis reactions
     solvolysis_rxn = bst.Reaction(
         'Lignin -> SolubleLignin', reactant='Lignin',
-        X=solvolysis_parameters['Delignification'],
+        X=solvolysis_params['Delignification'],
         basis='wt', correct_atomic_balance=False
     )
     methanol_decomposition_rxn = bst.ParallelReaction([
         bst.Reaction('Methanol,l -> Methane,g', reactant='Methanol', phases='lg',
-                     X=solvolysis_parameters['MeOH_CH4'], basis='wt', correct_atomic_balance=False),
+                     X=solvolysis_params['MeOH_CH4'], basis='wt', correct_atomic_balance=False),
         bst.Reaction('Methanol,l -> CO,g', reactant='Methanol', phases='lg',
-                     X=solvolysis_parameters['MeOH_CO'], basis='wt', correct_atomic_balance=False),
+                     X=solvolysis_params['MeOH_CO'], basis='wt', correct_atomic_balance=False),
     ])
 
     # Deacetylation
@@ -137,16 +135,16 @@ def create_rcf_system(ins=None):
         'RCF_RXR1',
         ins=(ins, rcf_hx_1-0),
         outs=('Wet_Pulp', 'Solvolysis_Liquor'),
-        T=rcf_conditions['T'],
-        P=rcf_conditions['P'],
-        tau=rcf_conditions['tau_s'],               # 3 hr time on stream per batch
-        tau_0=rcf_conditions['tau_0'],                                   # 1 hr cleaning/turnaround
-        tau_residence=rcf_conditions['tau_s_res'], # 20 min hydraulic residence time
+        T=solvolysis_params['T'],
+        P=solvolysis_params['P'],
+        tau=solvolysis_params['tau_s'],               # 3 hr time on stream per batch
+        tau_0=solvolysis_params['tau_0'],                                   # 1 hr cleaning/turnaround
+        tau_residence=solvolysis_params['tau_s_res'], # 20 min hydraulic residence time
         void_frac=0.5,
         superficial_velocity=0.01,
-        poplar_density=poplar_density,             # 485 kg/m³ bulk density
-        free_frac=free_frac,                       # 10% free headspace
-        V_max_limit=V_max_limit,                   # hard upper bound on vessel volume
+        poplar_density=feed_parameters['poplar_density'],             # 485 kg/m³ bulk density
+        free_frac=solvolysis_params['free_frac'],                       # 10% free headspace
+        V_max_limit=solvolysis_params['V_max'],                   # hard upper bound on vessel volume
         reaction_1=solvolysis_rxn,
         reaction_2=methanol_decomposition_rxn,
         reaction_3 = deacetylation
@@ -162,7 +160,7 @@ def create_rcf_system(ins=None):
         fresh_h2.imass['Hydrogen'] = (h2_required) - recycle_h2.imass['Hydrogen']
         rcf_mix_2.outs[0].phase = 'g'
 
-    rcf_hx_2 = bst.units.HXutility('RCF_HX2', ins=rcf_mix_2-0, T=rcf_conditions['T'], rigorous=True)
+    rcf_hx_2 = bst.units.HXutility('RCF_HX2', ins=rcf_mix_2-0, T=solvolysis_params['T'], rigorous=True)
 
     @rcf_hx_2.add_specification(run=True)
     def set_h2_preheat_phase():
@@ -178,25 +176,25 @@ def create_rcf_system(ins=None):
     _X_scale = 1.0 - 1e-6
     hydrogenolysis = bst.ParallelReaction([
         bst.Reaction('SolubleLignin,l -> Propylguaiacol,l', reactant='SolubleLignin', phases='lg',
-                     X=_X_scale * rcf_oil_yield['Monomers'] * 0.5*(1-condensation_extent), basis='wt', correct_atomic_balance=False),
+                     X=_X_scale * rcf_oil_yield['Monomers'] * 0.5*(1-hydrogenolysis_params['condensation_extent']), basis='wt', correct_atomic_balance=False),
         bst.Reaction('SolubleLignin,l -> Propylsyringol,l', reactant='SolubleLignin', phases='lg',
-                     X=_X_scale * rcf_oil_yield['Monomers'] * 0.5*(1-condensation_extent), basis='wt', correct_atomic_balance=False),
+                     X=_X_scale * rcf_oil_yield['Monomers'] * 0.5*(1-hydrogenolysis_params['condensation_extent']), basis='wt', correct_atomic_balance=False),
         bst.Reaction('SolubleLignin,l -> Syringaresinol,l', reactant='SolubleLignin', phases='lg',
                      X=_X_scale * rcf_oil_yield['Dimers'] * 0.5, basis='wt', correct_atomic_balance=False),
         bst.Reaction('SolubleLignin,l -> G_Dimer,l', reactant='SolubleLignin', phases='lg',
                      X=_X_scale * rcf_oil_yield['Dimers'] * 0.5, basis='wt', correct_atomic_balance=False),
         bst.Reaction('SolubleLignin,l -> S_Oligomer,l', reactant='SolubleLignin', phases='lg',
-                     X=_X_scale * (rcf_oil_yield['Oligomers'] * 0.5 + rcf_oil_yield['Monomers'] * 0.5 * condensation_extent), basis='wt', correct_atomic_balance=False),
+                     X=_X_scale * (rcf_oil_yield['Oligomers'] * 0.5 + rcf_oil_yield['Monomers'] * 0.5 * hydrogenolysis_params['condensation_extent']), basis='wt', correct_atomic_balance=False),
         bst.Reaction('SolubleLignin,l -> G_Oligomer,l', reactant='SolubleLignin', phases='lg',
-                     X=_X_scale * (rcf_oil_yield['Oligomers'] * 0.5 + rcf_oil_yield['Monomers'] * 0.5 * condensation_extent), basis='wt', correct_atomic_balance=False),
+                     X=_X_scale * (rcf_oil_yield['Oligomers'] * 0.5 + rcf_oil_yield['Monomers'] * 0.5 * hydrogenolysis_params['condensation_extent']), basis='wt', correct_atomic_balance=False),
     ])
 
     rcf_rxr_2 = HydrogenolysisReactor(
         'RCF_RXR2',
         ins=(rcf_rxr_1.outs[1], rcf_hx_2-0, rcf_cat_in),
-        P=rcf_conditions['P'],
-        T=rcf_conditions['T'],
-        tau_residence = rcf_conditions['tau_h'],
+        P=solvolysis_params['P'],
+        T=solvolysis_params['T'],
+        tau_residence = solvolysis_params['tau_h'],
         superficial_velocity=0.003,
         reaction=hydrogenolysis,
     )
@@ -215,7 +213,7 @@ def create_rcf_system(ins=None):
     rcf_psa_1 = PSA('RCF_PSA1', ins=rcf_hx_3.outs[0], outs=('', 'RCF_PSAWASTE_OUTS'))
 
     rcf_pump_2 = bst.units.IsentropicCompressor('RCF_PUMP2', ins=rcf_psa_1-0, outs=rcf_h2_recycle,
-                                              P=rcf_conditions['P'], vle=True)
+                                              P=solvolysis_params['P'], vle=True)
 
     @rcf_pump_2.add_specification(run=True)
     def set_h2_pump_phase():

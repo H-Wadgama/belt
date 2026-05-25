@@ -11,7 +11,7 @@ from biosteam.units.design_tools import (
     PressureVessel, 
 )
  
-from lignin_saf.ligsaf_settings import solvolysis_parameters, solvent_losses
+from lignin_saf.settings.process_params import solvolysis_params
 
 class SolvolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
 
@@ -298,7 +298,7 @@ class SolvolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         used_solvent.T = self.T                                             # Since isothermal operation
         
         for chem_id in ('Methanol', 'Water'):
-            used_biomass.imass[chem_id] = used_solvent.imass[chem_id] * solvent_losses
+            used_biomass.imass[chem_id] = used_solvent.imass[chem_id] * solvolysis_params['solvent_losses']
 
 
         self.reaction_1(used_biomass) 
@@ -313,37 +313,37 @@ class SolvolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
 
         extractives = used_biomass.imass['Extract']                         # From Table S1 https://www.rsc.org/suppdata/d1/gc/d1gc01591e/d1gc01591e1.pdf,
                                                                             # it follows that the extractives component of poplar is 'extracted' in the solvent stream
-        used_solvent.imass['l','Extract'] = (1-solvolysis_parameters['Extractives_retention'])*extractives
-        used_biomass.imass['Extract'] = (solvolysis_parameters['Extractives_retention'])*extractives
+        used_solvent.imass['l','Extract'] = (1-solvolysis_params['Extractives_retention'])*extractives
+        used_biomass.imass['Extract'] = (solvolysis_params['Extractives_retention'])*extractives
 
         acetate = used_biomass.imass['Acetate']
-        used_solvent.imass['l', 'Acetate'] =  acetate *(1-solvolysis_parameters['Acetate_retention']) # Assuming acetate dissolves as acetic acid with methanol,
+        used_solvent.imass['l', 'Acetate'] =  acetate *(1-solvolysis_params['Acetate_retention']) # Assuming acetate dissolves as acetic acid with methanol,
                                                                              # BioSTEAM Chemicals assumes same properties for acetic acid and acetate, otherwise is acetate was a pseudocomponent, it might have still stayed in solid phase
-        used_biomass.imass['Acetate'] = acetate*solvolysis_parameters['Acetate_retention']
+        used_biomass.imass['Acetate'] = acetate*solvolysis_params['Acetate_retention']
         self.reaction_3(used_solvent)
 
 
         cellulose_mass = used_biomass.imass['Glucan']
-        used_solvent.imass['l', 'Glucan'] = cellulose_mass*(1-solvolysis_parameters['Cellulose_retention']) # Dissolved cellulose assumed to be in liquid phase as solution with solvent
-        used_biomass.imass['Glucan'] =  cellulose_mass*solvolysis_parameters['Cellulose_retention']
+        used_solvent.imass['l', 'Glucan'] = cellulose_mass*(1-solvolysis_params['Cellulose_retention']) # Dissolved cellulose assumed to be in liquid phase as solution with solvent
+        used_biomass.imass['Glucan'] =  cellulose_mass*solvolysis_params['Cellulose_retention']
                                                                
 
         xylose_mass = used_biomass.imass['Xylan']
-        used_solvent.imass['l', 'Xylan'] = xylose_mass * (1-solvolysis_parameters['Xylose_retention']) # Dissolved xylose assumed to be  liquid phase as solution with solvent
-        used_biomass.imass['Xylan'] = xylose_mass * solvolysis_parameters['Xylose_retention']
+        used_solvent.imass['l', 'Xylan'] = xylose_mass * (1-solvolysis_params['Xylose_retention']) # Dissolved xylose assumed to be  liquid phase as solution with solvent
+        used_biomass.imass['Xylan'] = xylose_mass * solvolysis_params['Xylose_retention']
 
         arabinan_mass = used_biomass.imass['Arabinan']
-        used_solvent.imass['l', 'Arabinan'] = arabinan_mass * (1-solvolysis_parameters['Arabinan_retention'])
+        used_solvent.imass['l', 'Arabinan'] = arabinan_mass * (1-solvolysis_params['Arabinan_retention'])
 
-        used_biomass.imass['Arabinan'] = arabinan_mass * solvolysis_parameters['Arabinan_retention']
+        used_biomass.imass['Arabinan'] = arabinan_mass * solvolysis_params['Arabinan_retention']
         
         mannan_mass = used_biomass.imass['Mannan']
-        used_solvent.imass['l', 'Mannan'] = mannan_mass * (1-solvolysis_parameters['Mannan_retention']) 
-        used_biomass.imass['Mannan'] = mannan_mass * solvolysis_parameters['Mannan_retention']
+        used_solvent.imass['l', 'Mannan'] = mannan_mass * (1-solvolysis_params['Mannan_retention']) 
+        used_biomass.imass['Mannan'] = mannan_mass * solvolysis_params['Mannan_retention']
 
         galactan_mass = used_biomass.imass['Galactan']
-        used_solvent.imass['l', 'Galactan'] = galactan_mass * (1-solvolysis_parameters['Galactan_retention']) 
-        used_biomass.imass['Galactan'] = galactan_mass * solvolysis_parameters['Galactan_retention']
+        used_solvent.imass['l', 'Galactan'] = galactan_mass * (1-solvolysis_params['Galactan_retention']) 
+        used_biomass.imass['Galactan'] = galactan_mass * solvolysis_params['Galactan_retention']
         
 
         # The temperature and pressure of the carbohydrate pulp is not changed here, I'm assuming I obtain the pulp at ambient conditons 
@@ -466,7 +466,8 @@ class SolvolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
 
 
 
-from lignin_saf.ligsaf_settings import rcf_oil_yield, h2_consumption, feed_parameters, prices, rcf_conditions
+from lignin_saf.settings.process_params import rcf_oil_yield, feed_parameters, solvolysis_params, hydrogenolysis_params
+from lignin_saf.settings.prices import prices
 
 class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
 
@@ -516,7 +517,7 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
     # Maximum allowable L/D ratio; u is reduced analytically if L/D exceeds this
     LD_max_default: float = 10.0
 
-    h2_consumption_default: float = h2_consumption   # kg H₂ per dry kg biomass feed
+    h2_consumption_default: float = hydrogenolysis_params['h2_consumption']   # kg H₂ per dry kg biomass feed
 
     def _init(
             self,
@@ -663,7 +664,7 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
             )
         )
 
-        duty = (rcf_oil_yield['Monomers'])**0.5 * self.ins[0].imol['SolubleLignin'] * 1000 * 60.5 * 4.184
+        duty = (rcf_oil_yield['Monomers'])**0.5 * self.ins[0].imol['SolubleLignin'] * 1000 * hydrogenolysis_params['duty'] * 4.184
         # B-O-4 linkages in lignin [mol fraction] × SolubleLignin [kmol/hr] × 1000 [mol/kmol] × 60.5 kcal/mol × 4.184 kJ/kcal
 
         self.add_heat_utility(duty / N_reactors, self.T)
@@ -686,7 +687,7 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         weight = design['Weight']
         N_reactors = design['Number of reactors']
 
-        catalyst_cost = prices['NiC_catalyst'] * rcf_conditions['cat_loading'] * ((feed_parameters['flow'] * 1e3)/24) * self.tau_residence
+        catalyst_cost = prices['NiC_catalyst'] * solvolysis_params['cat_loading'] * ((feed_parameters['flow'] * 1e3)/24) * self.tau_residence
         design['Catalyst loading cost'] = catalyst_cost
 
         baseline_purchase_costs.update(
@@ -1291,7 +1292,7 @@ class HydrogenStorageTank(bst.Unit):
         'Total Capacity': 'kg'}
 
     # default storage period
-    storage_default: float = 1                       # [days] 7 days of storage - assumed, as no good heuristic yet for hydrogen storage
+    storage_default: float = 0.5                       # [days] 7 days of storage - assumed, as no good heuristic yet for hydrogen storage
 
     #: Default operating pressure [Pa]
     max_capacity_default:  float = 1300                # [kg] [5 MPa from [1][2][5]]

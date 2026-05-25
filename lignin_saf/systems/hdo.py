@@ -1,6 +1,6 @@
 import biosteam as bst
 from lignin_saf.ligsaf_units import HydrodeoxygenationReactor, PSA, HydrocarbonProductTank
-from lignin_saf.ligsaf_settings import hdo_params, h2_pressure, prices, operating_days
+from lignin_saf.ligsaf_settings import hdo_params, prices, operating_days
 
 def create_hdo_system(ins=None):
     """
@@ -56,7 +56,7 @@ def create_hdo_system(ins=None):
     # ── Fresh feeds ───────────────────────────────────────────────────────────
     hdo_h2_in = bst.Stream(
         ID='HDO_H2_IN', Hydrogen=0, units='kmol/hr',
-        P=h2_pressure, phase='g', price=prices['Hydrogen'],
+        P=hdo_params['P'], phase='g', price=prices['Hydrogen'],
     )
     hdo_dodecane_in = bst.Stream(
         ID='HDO_DODECANE_IN', Dodecane=0, units='kg/hr',

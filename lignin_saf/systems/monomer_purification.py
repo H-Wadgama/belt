@@ -2,13 +2,13 @@ import biosteam as bst
 import numpy as np
 from biosteam import main_flowsheet as F
 
-from lignin_saf.ligsaf_settings import (
+
+from lignin_saf.settings import (
     hexane_purification,
     hexane_partition_IDs,
     hexane_partition_K,
-    prices,
 )
-
+from lignin_saf.settings import prices
 
 def create_monomer_purification_system(ins=None):
     """

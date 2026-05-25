@@ -6,7 +6,9 @@ import numpy as np
 
 
 from lignin_saf.ligsaf_chemicals import create_chemicals
-from lignin_saf.ligsaf_settings import feed_parameters, prices, price_data, labor
+from lignin_saf.settings.process_params import feed_parameters
+from lignin_saf.settings.prices import prices
+from lignin_saf.settings.tea_params import operating_days, labor
 from lignin_saf.systems.rcf import create_rcf_system
 from lignin_saf.systems.rcf_oil_purification import create_rcf_oil_purification_system
 from lignin_saf.systems.monomer_purification import create_monomer_purification_system
@@ -23,7 +25,7 @@ from lignin_saf.ligsaf_units import HydrogenStorageTank
 chems = create_chemicals()
 bst.settings.set_thermo(chems)
 bst.settings.CEPCI = 840   # 2026 basis. CEPCI 
-bst.settings.electricity_price = price_data['electricity']
+bst.settings.electricity_price = prices['electricity']
 
 # Poplar group must be defined before creating any stream that references it
 chems.define_group(
@@ -114,9 +116,9 @@ rcf_pure_mon_hdo_etoh_etj_system = bst.System(
 
 rcf_pure_mon_hdo_etoh_etj_system.simulate()
 
-F.ETJ_H2_IN.price = price_data['hydrogen']   # 8.46 USD/kg
-F.ETJ_RN_OUT.price = price_data['renewable_naphtha']   # 0.71 USD/kg
-F.ETJ_RD_OUT.price = price_data['renewable_diesel']    # 1.888 USD/kg
+F.ETJ_H2_IN.price = prices['hydrogen']   # 8.46 USD/kg
+F.ETJ_RN_OUT.price = prices['renewable_naphtha']   # 0.71 USD/kg
+F.ETJ_RD_OUT.price = prices['renewable_diesel']    # 1.888 USD/kg
 #F.sulfuric_acid.price = prices['H2SO4']
 #F.ammonia.price = prices['NH3']
 F.cellulase.price = prices['Cellulase'] 
@@ -132,8 +134,8 @@ F.cooling_tower_chemicals.price = prices['CT_chemicals']
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_hdo_etoh_etj_system)
 
 
+
 integrated_tea.labor_cost = labor
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
 
 print(f'The MSP for SAF blend is  {mjsp} USD/gal')
-
