@@ -242,7 +242,7 @@ class SolvolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
             V_excess_solvent  = V_void*(self.free_frac)                # [m3] Excess solvent to satisfy mass transfer considerations
             V_solvent         = V_void + V_excess_solvent              # solvent occupies the interparticle void and some excess
             
-            V_max_candidate   = (V_solid + V_solvent)  # = V_biomass / (1 - free_frac)
+            V_max_candidate   = V_biomass * (1+self.free_frac) # = V_biomass / (1 - free_frac)
             # Q is derived from residence time and void volume; not an input
             Q_per_reactor     = V_solvent / self.tau_residence        # [m3/hr]
             Q_total           = N_working * Q_per_reactor
