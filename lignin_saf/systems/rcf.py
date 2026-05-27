@@ -65,7 +65,7 @@ def create_rcf_system(ins=None):
     # Catalyst
     rcf_cat_in = bst.Stream(
         ID='RCF_CAT_IN',
-        NiC=(solvolysis_params['cat_loading'] * (feed_parameters['flow'] * 1e3 / 24) * solvolysis_params['tau_h']) / (solvolysis_params['cat_lifetime'] * 30),
+        NiC=(solvolysis_params['cat_loading'] * (feed_parameters['flow'] * 1e3 / 24) * solvolysis_params['tau_h']) / (solvolysis_params['cat_lifetime'] * 30 * 24),
         units='kg/day', phase='s', price=prices['NiC_catalyst']
     )
 
