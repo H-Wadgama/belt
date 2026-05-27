@@ -928,6 +928,38 @@ combined_system.simulate()
 - `gas_mixer` receives `F.Purge_Light_Gases` (RCF PSA); no ETJ or HDO purge gases
 - WWT is constructed inline rather than via `create_rcf_utilities_system()`, because that function expects `WW_10`, `WastePulp`, `WW_11`, `WW_12` (streams from oil/monomer purification that don't exist here)
 
+## Morris Global Sensitivity Analysis (`lignin_saf/uncertainty.py`)
+
+Morris screening is implemented in `lignin_saf/uncertainty.py` on the full integrated system (`rcf_pure_mon_hdo_etoh_etj_system`). The metric is MJSP in USD/gal computed via `integrated_tea.solve_price(F.TOTAL_SAF)`.
+
+**Sampling:** BioSTEAM's `model.sample()` with `rule='MORRIS'` (not `'M'` — `'M'` maps to chaospy's Midpoint rule, not Morris). SALib's `morris_analyze.analyze()` is used for the µ\*, σ results; `samples` from `model.sample()` serves as the X matrix (same samples used for evaluation, so X and Y are consistent).
+
+```python
+problem = model.problem()
+samples = model.sample(N_samples, 'MORRIS', problem=problem, num_levels=6)
+model.load_samples(samples)
+model.evaluate()
+Y = model.table["TEA"]["Minimum Jet Selling Price [USD/gal]"].to_numpy()
+Si = morris_analyze.analyze(problem, samples, Y, conf_level=0.95)
+```
+
+**Parameter `kind` rules:**
+- `kind='isolated'` — TEA-only effects (prices, labor, operating days, co-product credits). System is NOT re-simulated; only `solve_price()` is called. Fast.
+- `kind='coupled'` — Parameters that change the mass/energy balance (solvolysis P, τ, τ_res). Triggers full system re-simulation. Slow.
+
+**Two special cases for `kind='isolated'` parameters that affect CAPEX or stream-based OPEX:**
+
+1. **H₂ storage period** — `storage_period` determines tank volume and CAPEX. Changing it without re-simulation leaves the installed cost stale. Fix: call `F.H2_TK.simulate()` inside the setter to re-run `_design()`/`_cost()` on just that unit.
+
+2. **RCF catalyst lifetime** — `RCF_CAT_IN` stream flow is fixed at stream creation in `rcf.py`. Changing `solvolysis_params['cat_lifetime']` in the dict has no effect on the TEA. Fix: recompute and set `F.RCF_CAT_IN.imass['NiC']` directly in the setter using the same formula as `rcf.py`:
+   ```python
+   F.RCF_CAT_IN.imass['NiC'] = (
+       solvolysis_params['cat_loading'] * (feed_parameters['flow'] * 1e3 / 24) * solvolysis_params['tau_h']
+   ) / (i * 30 * 24)   # [kg/hr]
+   ```
+
+**`@metric` element must match table access key:** The metric is registered with `element='TEA'`, so the table column is `model.table["TEA"]["Minimum Jet Selling Price [USD/gal]"]`. Column name is case-sensitive and must match the `name=` string exactly.
+
 ## Key Source Files
 
 | File | Contents |
@@ -948,6 +980,7 @@ combined_system.simulate()
 | `scripts/etoh.py` | Entry-point script: RCF + cellulosic ethanol **without** pretreatment. `Carbohydrate_Pulp` feeds directly to fermentation. WWT and BT assembled inline. Glucan→Glucose yield (~91.2%) matches the pretreatment pathway (~91.5%) within 0.3%. See "Cellulosic Ethanol Without Pretreatment" section. |
 | `scripts/rcf_etoh_etj.py` | Entry-point script for the fully integrated RCF + cellulosic ethanol + ETJ biorefinery. Poplar → RCF lignin monomers co-produced with SAF/RN/RD from ETJ upgrading of cellulosic ethanol. Uses `systems/cellulosic_ethanol.create_cellulosic_ethanol_system(add_denaturant=False)` so all ethanol routes to ETJ. Shared utilities (BT, WWT) serve all three areas. See "RCF + ETJ Integrated Biorefinery" section for integration details and open TEA items. |
 | `scripts/rcf_hdo.py` | Entry-point script: builds and simulates the RCF + HDO upgrading system. Poplar → RCF lignin monomers → propylcyclohexane (`SAF_CycloAlkane`). HDO purge gases routed to `gas_mixer` → BT; HDO wastewater routed to WWT via `M601.ins`. No cellulosic ethanol co-product in this script. |
+| `lignin_saf/uncertainty.py` | Morris global sensitivity analysis on the full integrated system. See "Morris Global Sensitivity Analysis" section above for setup rules and gotchas. |
 
 ## Repo Clean-up Status
 

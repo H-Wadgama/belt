@@ -139,7 +139,7 @@ integrated_tea.operating_days = 330
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
 
 from lignin_saf.settings.process_params import solvolysis_params
-from lignin_saf.settings.prices import prices, _feedstock_price_dry_ton, kg_per_ton
+from lignin_saf.settings.prices import prices, _feedstock_price_dry_ton, kg_per_ton, h2_price
 
 model = bst.Model(rcf_pure_mon_hdo_etoh_etj_system)
 
@@ -150,15 +150,15 @@ var_50 = 0.5 # 50% variation in parameters - set for a few
 var_20 = 0.2 # 20% variation in other parameters
 
 
-# Operating days
+# Operating days — kind='isolated': only affects TEA time scaling, not mass/energy balance
 dist = shape.Uniform(lower = 297 , upper = 363)
 @param(name = 'Operating days',
     element = 'Overall',
-    kind = 'coupled',
+    kind = 'isolated',
     units = 'days',
     baseline = integrated_tea.operating_days,
     distribution = dist)
-def set_opertaing_days(i): 
+def set_opertaing_days(i):
     integrated_tea.operating_days = i
 
 
@@ -199,6 +199,49 @@ dist = shape.Uniform(lower = 0.505 , upper = 0.77)
 def set_renewable_naptha_price(i): 
     F.ETJ_RN_OUT.price = i            
 
+
+# Biodiesel co-product revenue
+dist = shape.Uniform(lower = 0.63 , upper = 1.48)
+@param(name = 'RD co-product credit',
+       element = 'Overall',
+       kind = 'isolated',
+       units = 'USD/kg',
+       baseline =  F.ETJ_RD_OUT.price,
+       distribution = dist)
+def set_bio_diesel_price(i): 
+     F.ETJ_RD_OUT.price = i
+
+
+# Hydrogen price
+dist = shape.Uniform(lower = 2.74 , upper = 11.53)
+@param(name = 'Hydrogen price',
+       element = 'Overall',
+       kind = 'isolated',
+       units = 'USD/kg',
+       baseline =  h2_price,
+       distribution = dist)
+def set_hydrogen_price(i):
+    F.ETJ_H2_IN.price = i
+    F.RCF_H2_IN.price = i
+    F.HDO_H2_IN.price = i
+
+
+# Hydrogen storage time
+dist = shape.Uniform(lower = 0.25 , upper = 3)
+@param(name = 'Hydrogen storage period',
+       element = 'Overall',
+       kind = 'isolated',
+       units = 'days',
+       baseline =  F.H2_TK.storage_period,
+       distribution = dist)
+def set_h2_storage_period(i):
+    F.H2_TK.storage_period = i
+    F.H2_TK.simulate()   # re-runs _design()/_cost() so CAPEX updates for solve_price()
+
+
+
+
+
 metric = model.metric
 @metric(name='Minimum Jet Selling Price', element='TEA', units='USD/gal')
 def get_msp():
@@ -209,7 +252,7 @@ def get_msp():
 from SALib.analyze import morris as morris_analyze
 
 N_samples = 100
-rule = 'M'
+rule = 'MORRIS'
 np.random.seed(42)
 problem = model.problem()
 samples = model.sample(N_samples, rule, problem=problem, num_levels=6)
