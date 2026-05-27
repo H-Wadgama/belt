@@ -6,7 +6,9 @@ import numpy as np
 
 
 from lignin_saf.ligsaf_chemicals import create_chemicals
-from lignin_saf.ligsaf_settings import feed_parameters, prices, price_data
+from lignin_saf.settings.process_params import feed_parameters
+from lignin_saf.settings.prices import prices
+from lignin_saf.settings.tea_params import operating_days, labor
 from lignin_saf.systems.rcf import create_rcf_system
 from lignin_saf.systems.rcf_oil_purification import create_rcf_oil_purification_system
 from lignin_saf.systems.monomer_purification import create_monomer_purification_system
@@ -23,7 +25,7 @@ from lignin_saf.ligsaf_units import HydrogenStorageTank
 chems = create_chemicals()
 bst.settings.set_thermo(chems)
 bst.settings.CEPCI = 840   # 2026 basis. CEPCI 
-bst.settings.electricity_price = price_data['electricity']
+bst.settings.electricity_price = prices['electricity']
 
 # Poplar group must be defined before creating any stream that references it
 chems.define_group(
@@ -114,9 +116,9 @@ rcf_pure_mon_hdo_etoh_etj_system = bst.System(
 
 rcf_pure_mon_hdo_etoh_etj_system.simulate()
 
-F.ETJ_H2_IN.price = price_data['hydrogen']   # 8.46 USD/kg
-F.ETJ_RN_OUT.price = price_data['renewable_naphtha']   # 0.71 USD/kg
-F.ETJ_RD_OUT.price = price_data['renewable_diesel']    # 1.888 USD/kg
+F.ETJ_H2_IN.price = prices['hydrogen']   # 8.46 USD/kg
+F.ETJ_RN_OUT.price = prices['renewable_naphtha']   # 0.71 USD/kg
+F.ETJ_RD_OUT.price = prices['renewable_diesel']    # 1.888 USD/kg
 #F.sulfuric_acid.price = prices['H2SO4']
 #F.ammonia.price = prices['NH3']
 F.cellulase.price = prices['Cellulase'] 
@@ -130,46 +132,110 @@ F.cooling_tower_chemicals.price = prices['CT_chemicals']
 
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_hdo_etoh_etj_system)
+
+
+integrated_tea.labor_cost = labor
+integrated_tea.operating_days = 330
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
 
-print(f'The MSP for SAF blend is  {mjsp} USD/gal')
+from lignin_saf.settings.process_params import solvolysis_params
+from lignin_saf.settings.prices import prices, _feedstock_price_dry_ton, kg_per_ton
 
-
-from lignin_saf.ligsaf_settings import rcf_conditions, solvolysis_parameters
 model = bst.Model(rcf_pure_mon_hdo_etoh_etj_system)
+
 from chaospy import distributions as shape
 param = model.parameter
 
-# Solvolysis residence time
-dist = shape.Triangle(lower = 9/60, midpoint = rcf_conditions['tau_s_res'], upper = 36/60) 
-@param(name = 'Solvolysis residence time',
-#     element = 'ATJ-TEA', 
-       kind = 'coupled',
-       units = 'hr',
-       baseline = rcf_conditions['tau_s_res'], distribution = dist)
-def set_solvolysis_tau(i):
-    F.RCF_RXR1.tau_residence = i  
+var_50 = 0.5 # 50% variation in parameters - set for a few
+var_20 = 0.2 # 20% variation in other parameters
 
 
-    # Delignification
-dist = shape.Uniform(lower = 0.4 , upper = 0.9)
-@param(name = 'Delignfication',
-  #     element = 'ATJ-TEA',
-       kind = 'coupled',
-       units = '%',
-       baseline = solvolysis_parameters['Delignification'], distribution = dist)
-def set_delignfication(i): 
-    solvolysis_parameters['Delignification'] = i
+# Operating days
+dist = shape.Uniform(lower = 297 , upper = 363)
+@param(name = 'Operating days',
+    element = 'Overall',
+    kind = 'coupled',
+    units = 'days',
+    baseline = integrated_tea.operating_days,
+    distribution = dist)
+def set_opertaing_days(i): 
+    integrated_tea.operating_days = i
 
-    metric = model.metric
-@metric(name = 'Minimum Jet Selling Price', units = 'USD/gal')
+
+# Poplar feedstock
+dist = shape.Uniform(lower = 50 , upper = 100)
+@param(name = 'Poplar feedstock price',
+    element = 'Overall',
+    kind = 'isolated',
+    units = 'USD/DMT',
+    baseline = _feedstock_price_dry_ton,
+    distribution = dist)
+def set_poplar_feedstock_price(i):
+    # i is in USD/dry short ton; stream price must be USD/kg wet biomass
+    F.Poplar_In.price = i / kg_per_ton / (1 + feed_parameters['moisture'])
+
+
+
+# Labor cost
+dist = shape.Uniform(lower = integrated_tea.labor_cost * (1-var_50) , upper = integrated_tea.labor_cost * (1+var_50) )
+@param(name = 'Labor cost',
+    element = 'Overall',
+    kind = 'isolated',
+    units = 'USD/yr',
+    baseline = integrated_tea.labor_cost,
+    distribution = dist)
+def set_labor_cost(i): 
+    integrated_tea.labor_cost = i
+
+
+# Renewable napthha co-product revenue
+dist = shape.Uniform(lower = 0.505 , upper = 0.77)
+@param(name = 'RN co-product credit',
+    element = 'Overall',
+    kind = 'isolated',
+    units = 'USD/kg',
+    baseline =  F.ETJ_RN_OUT.price,
+    distribution = dist)
+def set_renewable_naptha_price(i): 
+    F.ETJ_RN_OUT.price = i            
+
+metric = model.metric
+@metric(name='Minimum Jet Selling Price', element='TEA', units='USD/gal')
 def get_msp():
-    msp = (integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172
+    msp = (integrated_tea.solve_price(F.TOTAL_SAF) * F.TOTAL_SAF.rho) / 264.172
     return msp
 
-import numpy as np
-np.random.seed(3045)
-samples = model.sample(N=3000, rule = 'L')  # Change this to 3000 later
-model.load_samples(samples)
 
+from SALib.analyze import morris as morris_analyze
+
+N_samples = 100
+rule = 'M'
+np.random.seed(42)
+problem = model.problem()
+samples = model.sample(N_samples, rule, problem=problem, num_levels=6)
+model.load_samples(samples)
 model.evaluate()
+
+
+Y = model.table["TEA"]["Minimum Jet Selling Price [USD/gal]"].to_numpy()
+
+
+Si = morris_analyze.analyze(
+    problem,
+    samples,
+    Y,
+    conf_level=0.95,
+    print_to_console=True,
+)
+
+
+print("\n Morris Results")
+results_df = pd.DataFrame({
+    "Feature":  Si["names"],
+    "µ*":       Si["mu_star"],
+    "µ* conf":  Si["mu_star_conf"],
+    "σ":        Si["sigma"],
+})
+
+
+
