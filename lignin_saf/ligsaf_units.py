@@ -687,11 +687,12 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         N_reactors = design['Number of reactors']
 
         catalyst_cost = prices['NiC_catalyst'] * solvolysis_params['cat_loading'] * ((feed_parameters['flow'] * 1e3)/24) * self.tau_residence
-        design['Catalyst loading cost'] = catalyst_cost
 
         baseline_purchase_costs.update(
             self._vessel_purchase_cost(weight, design['Diameter'], design['Length'])
         )
+        baseline_purchase_costs['Catalyst loading cost'] = catalyst_cost
+
 
         self.parallel['self'] = N_reactors
 
@@ -1248,7 +1249,6 @@ class HydrodeoxygenationReactor(bst.Unit, bst.units.design_tools.PressureVessel)
 
         monomer_flow = (self.ins[0].imass['Propylguaiacol'] + self.ins[0].imass['Propylsyringol'])
         catalyst_cost = prices['HDO_Cat'] * hdo_params['catalyst_req'] * monomer_flow * self.tau
-        design['Catalyst loading cost'] = catalyst_cost
 
         weight = design['Weight']  # weight parameter stores the value from the 'Weight' key in the design dictionnary
         
@@ -1257,6 +1257,9 @@ class HydrodeoxygenationReactor(bst.Unit, bst.units.design_tools.PressureVessel)
         baseline_purchase_costs.update( 
             self._vessel_purchase_cost(weight, design['Diameter'], design['Length'])
         )
+
+        baseline_purchase_costs['Catalyst loading cost'] = catalyst_cost
+
 
         self.parallel['self'] = N_reactors # Used to create multiple of the same beds
 

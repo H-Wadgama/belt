@@ -138,7 +138,7 @@ integrated_tea.labor_cost = labor
 integrated_tea.operating_days = 330
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
 
-from lignin_saf.settings.process_params import solvolysis_params
+from lignin_saf.settings.process_params import solvolysis_params, hdo_params
 from lignin_saf.settings.prices import prices, _feedstock_price_dry_ton, kg_per_ton, h2_price
 
 model = bst.Model(rcf_pure_mon_hdo_etoh_etj_system)
@@ -239,7 +239,52 @@ def set_h2_storage_period(i):
     F.H2_TK.simulate()   # re-runs _design()/_cost() so CAPEX updates for solve_price()
 
 
+# Cellulose retention in pulp after RCF — kind='coupled': changes Glucan split in
+# SolvolysisReactor._run(), which alters the carbohydrate pulp flow to the ethanol system.
+# Both this module and ligsaf_units.py hold a reference to the same solvolysis_params dict,
+# so mutating the dict here is immediately visible inside _run() without any changes to
+# ligsaf_units.py.
+dist = shape.Uniform(lower=0.5, upper=1.0)
+@param(name='Cellulose retention',
+       element='RCF',
+       kind='coupled',
+       units='-',
+       baseline=solvolysis_params['Cellulose_retention'],
+       distribution=dist)
+def set_cellulose_retention(i):
+    solvolysis_params['Cellulose_retention'] = i
 
+
+# HDO dodecane solvent loading — kind='coupled': read at runtime by the dodecane_flow spec
+# in systems/hdo.py (`dod_vol = ins.F_mass * hdo_params['solvent_req']`).
+# Mutating the shared hdo_params dict propagates immediately to that spec without any
+# changes to hdo.py. More solvent → larger reactor, higher distillation load → coupled.
+dist = shape.Uniform(lower=0.1, upper=0.4)
+@param(name='HDO solvent loading',
+       element='HDO',
+       kind='coupled',
+       units='m3/kg monomer',
+       baseline=hdo_params['solvent_req'],
+       distribution=dist)
+def set_hdo_solvent_req(i):
+    hdo_params['solvent_req'] = i
+
+
+# HDO catalyst loading — kind='coupled': catalyst_req is read in the dodecane_flow spec
+# in systems/hdo.py (line 94: hdo_cat_in.imass['Ni2PSiO2'] = catalyst_req × ...).
+# That spec sets the catalyst stream flow, which feeds into TEA material cost via stream.price.
+# kind='isolated' would leave the catalyst stream flow stale. Note: catalyst_req also appears
+# in HydrodeoxygenationReactor._cost() but only stores to design['Catalyst loading cost']
+# (not baseline_purchase_costs), so that path is reporting only.
+dist = shape.Uniform(lower=hdo_params['catalyst_req'] * 0.5, upper=hdo_params['catalyst_req'] * 1.5)
+@param(name='HDO catalyst loading',
+       element='HDO',
+       kind='coupled',
+       units='kg/kg monomer',
+       baseline=hdo_params['catalyst_req'],
+       distribution=dist)
+def set_hdo_catalyst_req(i):
+    hdo_params['catalyst_req'] = i
 
 
 metric = model.metric
