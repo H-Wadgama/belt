@@ -691,7 +691,7 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         baseline_purchase_costs.update(
             self._vessel_purchase_cost(weight, design['Diameter'], design['Length'])
         )
-        baseline_purchase_costs['Catalyst loading cost'] = catalyst_cost
+        baseline_purchase_costs['Catalyst loading cost'] = catalyst_cost/N_reactors
 
 
         self.parallel['self'] = N_reactors
@@ -1257,11 +1257,11 @@ class HydrodeoxygenationReactor(bst.Unit, bst.units.design_tools.PressureVessel)
         baseline_purchase_costs.update( 
             self._vessel_purchase_cost(weight, design['Diameter'], design['Length'])
         )
-
-        baseline_purchase_costs['Catalyst loading cost'] = catalyst_cost
-
-
         self.parallel['self'] = N_reactors # Used to create multiple of the same beds
+
+        baseline_purchase_costs['Catalyst loading cost'] = catalyst_cost/N_reactors
+
+
 
 
 
