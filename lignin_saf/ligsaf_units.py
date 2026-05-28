@@ -221,8 +221,8 @@ class SolvolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         # for a perfectly staggered schedule (one cleaning slot always occupied).
         # N_working_base = N_total_base × (tau / cycle_time) beds active at any instant.
         # Clamped so at least 1 bed is always online and at least 1 is always cleaning.
-        N_total_base   = np.ceil(self.tau_0 + self.tau)
-        N_working_base = np.ceil(N_total_base * (self.tau/np.ceil(cycle_time)))
+        N_total_base   = max(2, round(cycle_time / self.tau_0))
+        N_working_base = min(N_total_base - 1, max(1, round(N_total_base * self.tau / cycle_time)))
 
         # Scale up by integer multiples k = 1, 2, 3, … until each vessel fits within
         # V_max_limit. Scaling by k reduces biomass_per_batch (more, smaller batches),

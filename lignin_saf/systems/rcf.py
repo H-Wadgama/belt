@@ -157,7 +157,14 @@ def create_rcf_system(ins=None):
     def h2_flow():
         fresh_h2 = rcf_mix_2.ins[0]
         recycle_h2 = rcf_mix_2.ins[1]
-        fresh_h2.imass['Hydrogen'] = (h2_required) - recycle_h2.imass['Hydrogen']
+        # Re-compute H2 target from current delignification so the spec stays valid
+        # when delignification is perturbed below baseline. Without max(0) the recycle
+        # can exceed the target during convergence, setting a negative fresh feed.
+        h2_needed = (
+            ins.imass['Lignin'] * solvolysis_params['Delignification']
+            * hydrogenolysis_params['h2_consumption'] / (1 - 0.15)
+        ) * h2_rcf_excess
+        fresh_h2.imass['Hydrogen'] = max(0.0, h2_needed - recycle_h2.imass['Hydrogen'])
         rcf_mix_2.outs[0].phase = 'g'
 
     rcf_hx_2 = bst.units.HXutility('RCF_HX2', ins=rcf_mix_2-0, T=solvolysis_params['T'], rigorous=True)

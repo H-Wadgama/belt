@@ -108,7 +108,7 @@ shared_h2_storage = HydrogenStorageTank('H2_TK', ins=h2_feed_mixer.outs[0])
 
 rcf_pure_mon_hdo_etoh_etj_system = bst.System(
     'RCF+HDO+Cellulosic_ETJ',
-    path=(rcf_system, rcf_oil_purification_sys, monomer_purification_sys, hdo_system, etoh_system, etj_system, combined_saf, WWT),
+    path=(rcf_system, rcf_oil_purification_sys, monomer_purification_sys, hdo_system, etoh_system, nh3_splitter, etj_system, combined_saf, WWT),
     facilities=[solids_to_BT, gas_mixer, h2_feed_mixer, shared_h2_storage, BT],
 )
 
@@ -396,6 +396,9 @@ def set_condensation_extent(i):
 
 
 
+
+
+
 # HDO Reaction time 
 dist = shape.Uniform(lower = 2,  upper = 8)
 @param(name = 'HDO reaction time',
@@ -594,7 +597,15 @@ def get_msp():
     msp = (integrated_tea.solve_price(F.TOTAL_SAF) * F.TOTAL_SAF.rho) / 264.172
     return msp
 
+import numpy as np
+np.random.seed(3045)
+samples = model.sample(N=100, rule = 'L')  # Change this to 3000 later
+model.load_samples(samples)
 
+model.evaluate()
+
+df_rho, df_p = model.spearman_r()
+print(df_rho["TEA", "Minimum jet selling price [USD/gal]"])
 
 
 
