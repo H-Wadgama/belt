@@ -6,8 +6,8 @@ import numpy as np
 
 
 from lignin_saf.ligsaf_chemicals import create_chemicals
-from lignin_saf.settings.process_params import feed_parameters
-from lignin_saf.settings.prices import prices
+from lignin_saf.settings.process_params import feed_parameters, solvolysis_params, hydrogenolysis_params, hdo_params, etoac_purification, hexane_purification, rcf_oil_yield
+from lignin_saf.settings.prices import prices,  _feedstock_price_dry_ton, kg_per_ton, h2_price
 from lignin_saf.settings.tea_params import operating_days, labor
 from lignin_saf.systems.rcf import create_rcf_system
 from lignin_saf.systems.rcf_oil_purification import create_rcf_oil_purification_system
@@ -18,8 +18,6 @@ from atj_saf.atj_bst.etj_ligfirst import create_etj_system_no_facilities
 from lignin_saf.cellulosic_tea import create_cellulosic_ethanol_tea
 
 from lignin_saf.ligsaf_units import HydrogenStorageTank
-
-
 
 
 chems = create_chemicals()
@@ -133,13 +131,11 @@ F.cooling_tower_chemicals.price = prices['CT_chemicals']
 
 integrated_tea = create_cellulosic_ethanol_tea(rcf_pure_mon_hdo_etoh_etj_system)
 
-
 integrated_tea.labor_cost = labor
 integrated_tea.operating_days = 330
 mjsp = round(((integrated_tea.solve_price(F.TOTAL_SAF)*F.TOTAL_SAF.rho)/264.172),2)
 
-from lignin_saf.settings.process_params import solvolysis_params, hdo_params
-from lignin_saf.settings.prices import prices, _feedstock_price_dry_ton, kg_per_ton, h2_price
+# print(f'The MSP for SAF blend is  {mjsp} USD/gal')
 
 model = bst.Model(rcf_pure_mon_hdo_etoh_etj_system)
 
@@ -239,26 +235,178 @@ def set_h2_storage_period(i):
     F.H2_TK.simulate()   # re-runs _design()/_cost() so CAPEX updates for solve_price()
 
 
-# Cellulose retention in pulp after RCF — kind='coupled': changes Glucan split in
-# SolvolysisReactor._run(), which alters the carbohydrate pulp flow to the ethanol system.
-# Both this module and ligsaf_units.py hold a reference to the same solvolysis_params dict,
-# so mutating the dict here is immediately visible inside _run() without any changes to
-# ligsaf_units.py.
-dist = shape.Uniform(lower=0.5, upper=1.0)
-@param(name='Cellulose retention',
+# Solvolysis pressure
+dist = shape.Uniform(lower = solvolysis_params['P'],  upper = 83.3e5)
+@param(name = 'Solvolysis reactor pressure',
+    element = 'RCF', 
+    kind = 'coupled',
+    units = 'Pa',
+    baseline = solvolysis_params['P'], distribution = dist)
+def set_solvolysis_rxr_pressure(i):
+    F.RCF_RXR1.P = i  
+
+
+
+# Solvolysis reaction time
+dist = shape.Uniform(lower = 1, upper = 4)
+@param(name = 'Solvolysis reaction time',
+    element = 'RCF', 
+    kind = 'coupled',
+    units = 'hr',
+    baseline = solvolysis_params['tau_s'], distribution = dist)
+def set_solvolysis_reaction_time(i):
+    F.RCF_RXR1.tau = i      
+
+
+# Solvolysis residence time
+dist = shape.Triangle(lower = 9/60, midpoint = solvolysis_params['tau_s_res'], upper = 36/60) 
+@param(name = 'Solvolysis residence time',
+    element = 'RCF', 
+    kind = 'coupled',
+    units = 'hr',
+    baseline = solvolysis_params['tau_s_res'], distribution = dist)
+def set_solvolysis_residence_time(i):
+    F.RCF_RXR1.tau_residence = i  
+
+
+# Solvolysis cleaning time
+dist = shape.Uniform(lower = 0.5, upper = 4) 
+@param(name = 'Solvolysis cleaning time',
+    element = 'RCF', 
+    kind = 'coupled',
+    units = 'hr',
+    baseline = F.RCF_RXR1.tau_0, distribution = dist)
+def set_solvolysis_cleaning_time(i):
+    F.RCF_RXR1.tau_0 = i  
+
+
+# Methanol price
+dist = shape.Triangle(lower = 0.2648, midpoint = F.RCF_MEOH_IN.price, upper = 0.3972)
+@param(name = 'Methanol cost',
+    element = 'RCF', 
+    kind = 'isolated',
+    units = 'USD/kg',
+    baseline = F.RCF_MEOH_IN.price, distribution = dist)
+def set_methanol_price(i):
+    F.RCF_MEOH_IN.price = i  
+
+dist = shape.Uniform(lower=0.005, upper=0.1)
+@param(name='RCF solvent losses',
        element='RCF',
        kind='coupled',
        units='-',
+       baseline=solvolysis_params['solvent_losses'],
+       distribution=dist)
+def set_solvent_losses(i):
+    solvolysis_params['solvent_losses'] = i
+
+
+# RCF catalyst cost 
+dist = shape.Uniform(lower = F.RCF_CAT_IN.price * (1-var_50) , upper = F.RCF_CAT_IN.price * (1+var_50) ) 
+@param(name = 'RCF catalyst price',
+    element = 'RCF', 
+    kind = 'isolated',
+    units = 'USD/kg',
+    baseline = F.RCF_CAT_IN.price, distribution = dist)
+def set_rcf_catalyst_price(i):
+    F.RCF_CAT_IN.price = i      
+
+
+
+# RCF catalyst lifetime 
+dist = shape.Uniform(lower = solvolysis_params['cat_lifetime']*(1-var_50), upper = solvolysis_params['cat_lifetime']*(1+var_50) ) 
+@param(name = 'RCF catalyst lifetime',
+    element = 'RCF', 
+    kind = 'isolated',
+    units = 'months',
+    baseline = solvolysis_params['cat_lifetime'], distribution = dist)
+def set_rcf_catalyst_lifetime(i):
+    solvolysis_params['cat_lifetime'] = i
+    F.RCF_CAT_IN.imass['NiC'] = (
+        solvolysis_params['cat_loading'] * (feed_parameters['flow'] * 1e3 / 24) * solvolysis_params['tau_h']
+    ) / (i * 30 * 24)   # [kg/hr]
+
+
+# RCF catalyst loading 
+dist = shape.Uniform(lower = solvolysis_params['cat_loading'] * (1-var_50) , upper = solvolysis_params['cat_loading'] * (1+var_50) ) 
+@param(name = 'RCF catalyst loading',
+    element = 'RCF', 
+    kind = 'isolated',
+    units = 'kg/kg-biomass',
+    baseline = solvolysis_params['cat_loading'], distribution = dist)
+def set_rcf_catalyst_loading(i):
+    solvolysis_params['cat_loading'] = i 
+    F.RCF_CAT_IN.imass['NiC'] = (
+        i * (feed_parameters['flow'] * 1e3 / 24) * solvolysis_params['tau_h']
+    ) / (solvolysis_params['cat_lifetime'] * 30 * 24)   # [kg/hr]
+
+# Cellulose retention
+dist = shape.Uniform(lower=0.8, upper=1.0)
+@param(name='Cellulose retention',
+       element='RCF',
+       kind='coupled',
+       units='%',
        baseline=solvolysis_params['Cellulose_retention'],
        distribution=dist)
 def set_cellulose_retention(i):
     solvolysis_params['Cellulose_retention'] = i
 
 
-# HDO dodecane solvent loading — kind='coupled': read at runtime by the dodecane_flow spec
-# in systems/hdo.py (`dod_vol = ins.F_mass * hdo_params['solvent_req']`).
-# Mutating the shared hdo_params dict propagates immediately to that spec without any
-# changes to hdo.py. More solvent → larger reactor, higher distillation load → coupled.
+# Xylose retention
+dist = shape.Uniform(lower=0.2, upper=1.0)
+@param(name='Xylose retention',
+       element='RCF',
+       kind='coupled',
+       units='%',
+       baseline=solvolysis_params['Xylose_retention'],
+       distribution=dist)
+def set_xylose_retention(i):
+    solvolysis_params['Xylose_retention'] = i
+
+
+# Delignification
+dist = shape.Uniform(lower = 0.4 , upper = 0.9)
+@param(name = 'Delignfication',
+       element = 'RCF',
+       kind = 'coupled',
+       units = '%',
+       baseline = solvolysis_params['Delignification'], distribution = dist)
+def set_delignfication(i):
+    solvolysis_params['Delignification'] = i
+    F.RCF_RXR1.reaction_1.X = i   # reaction X is baked in at create_rcf_system() time; must update directly
+
+
+# Condensation extent
+dist = shape.Uniform(lower = 0.136 , upper = 0.709)
+@param(name = 'Condensation extent',
+       element = 'RCF',
+       kind = 'coupled',
+       units = '%',
+       baseline = hydrogenolysis_params['condensation_extent'], distribution = dist)
+def set_condensation_extent(i):
+    _X_scale = 1.0 - 1e-6
+    hydrogenolysis_params['condensation_extent'] = i
+    # X values are baked into the ParallelReaction at create_rcf_system() time; must update directly.
+    # Reactions 0 & 1: Propylguaiacol/Propylsyringol (monomers that escaped condensation).
+    # Reactions 4 & 5: S_Oligomer/G_Oligomer (baseline oligomers + condensed monomer fraction).
+    F.RCF_RXR2.reaction[0].X = _X_scale * rcf_oil_yield['Monomers'] * 0.5 * (1 - i)
+    F.RCF_RXR2.reaction[1].X = _X_scale * rcf_oil_yield['Monomers'] * 0.5 * (1 - i)
+    F.RCF_RXR2.reaction[4].X = _X_scale * (rcf_oil_yield['Oligomers'] * 0.5 + rcf_oil_yield['Monomers'] * 0.5 * i)
+    F.RCF_RXR2.reaction[5].X = _X_scale * (rcf_oil_yield['Oligomers'] * 0.5 + rcf_oil_yield['Monomers'] * 0.5 * i)
+
+
+
+# HDO Reaction time 
+dist = shape.Uniform(lower = 2,  upper = 8)
+@param(name = 'HDO reaction time',
+    element = 'HDO', 
+    kind = 'coupled',
+    units = 'hr',
+    baseline = hdo_params['tau'], distribution = dist)
+def set_hdo_reaction_time(i):
+    F.HDO_RXR1.tau = i  
+
+# Solvent loading
 dist = shape.Uniform(lower=0.1, upper=0.4)
 @param(name='HDO solvent loading',
        element='HDO',
@@ -267,16 +415,10 @@ dist = shape.Uniform(lower=0.1, upper=0.4)
        baseline=hdo_params['solvent_req'],
        distribution=dist)
 def set_hdo_solvent_req(i):
-    hdo_params['solvent_req'] = i
+    hdo_params['solvent_req'] = i    
 
-
-# HDO catalyst loading — kind='coupled': catalyst_req is read in the dodecane_flow spec
-# in systems/hdo.py (line 94: hdo_cat_in.imass['Ni2PSiO2'] = catalyst_req × ...).
-# That spec sets the catalyst stream flow, which feeds into TEA material cost via stream.price.
-# kind='isolated' would leave the catalyst stream flow stale. Note: catalyst_req also appears
-# in HydrodeoxygenationReactor._cost() but only stores to design['Catalyst loading cost']
-# (not baseline_purchase_costs), so that path is reporting only.
-dist = shape.Uniform(lower=hdo_params['catalyst_req'] * 0.5, upper=hdo_params['catalyst_req'] * 1.5)
+# Catalyst loading
+dist = shape.Uniform(lower=hdo_params['catalyst_req'] * (1-var_50), upper=hdo_params['catalyst_req'] * (1+var_50))
 @param(name='HDO catalyst loading',
        element='HDO',
        kind='coupled',
@@ -287,6 +429,165 @@ def set_hdo_catalyst_req(i):
     hdo_params['catalyst_req'] = i
 
 
+# Catalyst lifetime
+dist = shape.Uniform(lower = 1, upper = 12) 
+@param(name = 'HDO catalyst lifetime',
+    element = 'HDO', 
+    kind = 'isolated',
+    units = 'months',
+    baseline = hdo_params['cat_lifetime'], distribution = dist)
+def set_hdo_catalyst_lifetime(i):
+    hdo_params['cat_lifetime'] = i   # was 'catalyst_lifetime' — wrong key, never updated the real value
+    # kind='isolated': dodecane_flow spec never runs, so update the stream directly (same pattern as RCF catalyst lifetime)
+    F.HDO_CAT_IN.imass['Ni2PSiO2'] = (
+        hdo_params['catalyst_req'] * F.MON_MONOMERS_OUT.F_mass * hdo_params['tau']
+    ) / (i * 30 * 24)
+
+
+# Dodecane price
+dist = shape.Uniform(lower = 0.1 ,upper = 0.9)
+@param(name = 'Dodecane cost',
+    element = 'HDO', 
+    kind = 'isolated',
+    units = 'USD/kg',
+    baseline = F.HDO_DODECANE_IN.price, distribution = dist)
+def set_dodecane_in(i):
+    F.HDO_DODECANE_IN.price = i  
+
+# Glucose to ethanol conversion
+dist = shape.Uniform(lower = 0.8,  upper = 0.95)
+@param(name = 'Glucose to ethanol conv.',
+    element = 'EHF', 
+    kind = 'coupled',
+    units = '-',
+    baseline = F.R303.cofermentation[0].X, distribution = dist)
+def set_glucose_to_ethanol_conv(i):
+    F.R303.cofermentation[0].X = i  
+
+# Glucan to glucose conversion 
+dist = shape.Uniform(lower = 0.8,  upper = 0.9)
+@param(name = 'Glucan to glucose conv.',
+    element = 'EHF', 
+    kind = 'coupled',
+    units = '-',
+    baseline = F.R303.saccharification[2].X, distribution = dist)
+def set_glucan_to_glucose_conv(i):
+    F.R303.saccharification[2].X = i  
+
+
+# Saccharification residence time
+dist = shape.Uniform(lower = 60 * (1-var_20),  upper = 60 * (1+var_20))
+@param(name = 'Saccharification residence time',
+    element = 'EHF', 
+    kind = 'coupled',
+    units = 'hr',
+    baseline = F.R303.tau_saccharification, distribution = dist)
+def set_saccharification_tau(i):
+    F.R303.tau_saccharification = i  
+
+# Cofermentation residence time
+dist = shape.Uniform(lower = 36 * (1-var_20),  upper = 36 * (1+var_20))
+@param(name = 'Cofermentation residence time',
+    element = 'EHF', 
+    kind = 'coupled',
+    units = 'hr',
+    baseline = F.R303.tau_cofermentation, distribution = dist)
+def set_cofermentation_tau(i):
+    F.R303.tau_cofermentation = i  
+
+
+# Xylose to ethanol conversion
+dist = shape.Uniform(lower = 0.8, upper = 0.9)
+@param(name = 'Xylose to ethanol conv.',
+    element = 'EHF', 
+    kind = 'coupled',
+    units = '-',
+    baseline = F.R303.cofermentation[4].X, distribution = dist)
+def set_xylose_to_ethanol_conv(i):
+    F.R303.cofermentation[4].X = i      
+
+# Xylan to xylose conversion
+dist = shape.Uniform(lower=0.8, upper=0.9)
+@param(name='Xylan to xylose conversion',
+       element='Cellulosic ethanol',
+       kind='coupled',
+       units='-',
+       baseline=F.unit.R301.reactions[0].X,
+       distribution=dist)
+def set_xylan_to_xylose_conversion(i):
+    F.unit.R301.reactions[0].X = i
+
+
+
+# Cellulase enzyme loading
+dist = shape.Uniform(lower = 0.01, upper = 0.05)
+@param(name = 'Cellulase enzyme loading',
+    element = 'EHF', 
+    kind = 'coupled',
+    units = 'wt%',
+    baseline = F.M301.enzyme_loading, distribution = dist)
+def set_enzyme_loading(i):
+    F.M301.enzyme_loading = i  
+
+
+# Cellulase price
+dist = shape.Uniform(lower = F.M301.ins[1].price * (1-var_50), upper = F.M301.ins[1].price * (1+var_50))
+@param(name = 'Cellulase price',
+    element = 'EHF',
+    kind = 'isolated',
+    units = 'USD/kg',
+    baseline = F.M301.ins[1].price, distribution = dist)
+def set_cellulase_price(i):
+    F.M301.ins[1].price = i
+
+
+    
+# Etyl acetate solvent to crude RCF oil ratio
+dist = shape.Uniform(lower=etoac_purification['solvent_to_crude_ratio'] * (1 - var_20),
+                     upper=etoac_purification['solvent_to_crude_ratio'] * (1 + var_20))
+@param(name='EtOAc solvent to crude ratio',
+       element='OP',
+       kind='coupled',
+       units='L/kg',
+       baseline=etoac_purification['solvent_to_crude_ratio'],
+       distribution=dist)
+def set_etoac_solvent_to_crude_ratio(i):
+    etoac_purification['solvent_to_crude_ratio'] = i
+
+
+# Ethyl acetate price
+dist = shape.Uniform(lower = F.EthylAcetate_in.price * (1-var_50), upper = F.EthylAcetate_in.price * (1+var_50))
+@param(name = 'Ethyl acetate price',
+    element = 'OP', 
+    kind = 'isolated',
+    units = 'USD/kg',
+    baseline = F.EthylAcetate_in.price, distribution = dist)
+def set_ethyl_acetate_price(i):
+    F.EthylAcetate_in.price = i  
+
+
+# Hexane solvent to pure RCF oil ratio
+dist = shape.Uniform(lower=1, upper = 5)
+@param(name='Hexane solvent to pure oil ratio',
+       element='MP',
+       kind='coupled',
+       units='kg/kg',
+       baseline=hexane_purification['solvent_to_oil_ratio'],
+       distribution=dist)
+def set_hexane_to_pure_rcf_oil_ratio(i):
+    hexane_purification['solvent_to_oil_ratio'] = i
+
+# Hexane price
+dist = shape.Uniform(lower = F.Hexane_In.price * (1-var_50), upper = F.Hexane_In.price * (1+var_50))
+@param(name = 'Hexane price',
+    element = 'MP', 
+    kind = 'isolated',
+    units = 'USD/kg',
+    baseline = F.Hexane_In.price, distribution = dist)
+def set_hexane_price(i):
+    F.Hexane_In.price = i  
+
+
 metric = model.metric
 @metric(name='Minimum Jet Selling Price', element='TEA', units='USD/gal')
 def get_msp():
@@ -294,36 +595,6 @@ def get_msp():
     return msp
 
 
-from SALib.analyze import morris as morris_analyze
-
-N_samples = 100
-rule = 'MORRIS'
-np.random.seed(42)
-problem = model.problem()
-samples = model.sample(N_samples, rule, problem=problem, num_levels=6)
-model.load_samples(samples)
-model.evaluate()
-
-
-Y = model.table["TEA"]["Minimum Jet Selling Price [USD/gal]"].to_numpy()
-
-
-Si = morris_analyze.analyze(
-    problem,
-    samples,
-    Y,
-    conf_level=0.95,
-    print_to_console=True,
-)
-
-
-print("\n Morris Results")
-results_df = pd.DataFrame({
-    "Feature":  Si["names"],
-    "µ*":       Si["mu_star"],
-    "µ* conf":  Si["mu_star_conf"],
-    "σ":        Si["sigma"],
-})
 
 
 
