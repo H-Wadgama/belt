@@ -76,12 +76,12 @@ Recycle specs: fresh feed in each mixer is adjusted so that `fresh + recycle = r
 
 **Hydrogenolysis reactions — `_X_scale = 1 − 1e−6` numerical guard (`systems/rcf.py`):** The six parallel reactions are set up so that ΣXi = Monomers + Dimers + Oligomers = 1.0 exactly (algebraic identity, holds for any `condensation_extent`). BioSTEAM's `ParallelReaction` captures each reactant's initial mass and subtracts Xi × SL0 in sequence; the residual `SL0 × (1 − ΣXi)` should be zero but floating-point arithmetic can produce a tiny negative value. At high delignification (large SL0), this absolute error can exceed BioSTEAM's −1e−12 threshold, raising `InfeasibleRegion`. All X values are therefore multiplied by `(1 − 1e−6)` so ~1 ppm of SolubleLignin passes through unconverted — negligible for the mass balance and TEA. If `condensation_extent` or `rcf_oil_yield` fractions are changed, the guard remains valid as long as the new fractions still sum to 1.0.
 
-**`SolvolysisReactor._run()` solvent retention — hardcoded to `('Methanol', 'Water')`:** The loop that deposits a small fraction of solvent into the biomass stream is:
+**`SolvolysisReactor._run()` solvent retention — reads `solvolysis_params['solvent_losses']`:** The loop that deposits a fraction of solvent into the biomass stream is:
 ```python
 for chem_id in ('Methanol', 'Water'):
-    used_biomass.imass[chem_id] = used_solvent.imass[chem_id] * 0.005
+    used_biomass.imass[chem_id] = used_solvent.imass[chem_id] * solvolysis_params['solvent_losses']
 ```
-This was restricted from a generic `for chem in solvent.chemicals` loop (which caused trace gases — CH4, CO, H2 — to accumulate in the pulp via the MeOH recycle) to explicitly name only the solvent components. If the solvent system is changed in the future (e.g. to ethanol/water, THF/water), this tuple must be updated to match the new solvent identity.
+The loop was restricted to explicitly naming `('Methanol', 'Water')` (rather than iterating over all solvent chemicals) because the generic loop caused trace gases — CH4, CO, H2 — to accumulate in the pulp via the MeOH recycle. If the solvent system changes (e.g. to ethanol/water), update this tuple. `solvent_losses` defaults to 0.01 in `process_params.py` and is an uncertainty parameter in `uncertainty.py`.
 
 ## Process Conditions (from ligsaf_settings.py)
 
@@ -947,25 +947,34 @@ Si = morris_analyze.analyze(problem, samples, Y, conf_level=0.95)
 - `kind='isolated'` — TEA-only effects (prices, labor, operating days, co-product credits). System is NOT re-simulated; only `solve_price()` is called. Fast.
 - `kind='coupled'` — Parameters consumed inside a spec or `_run()` that alter stream flows or mass balance. Triggers full system re-simulation. Slow.
 
-**How to write a setter — two patterns:**
+**How to write a setter — patterns and pitfalls:**
 
-| What you're changing | Python type | Setter pattern | Why |
-|---|---|---|---|
-| Stream price (H₂, feedstock, co-products) | primitive `float` | `F.STREAM.price = i` | `from module import x` copies the float; reassigning `x = i` only rebinds the local name and has no effect on BioSTEAM. Must update the stream object directly. |
-| Process parameter in a dict (`solvolysis_params`, `hdo_params`) | mutable `dict` | `params_dict['key'] = i` | Both this module and the consuming module hold a reference to the **same dict object**. In-place mutation is immediately visible when the spec or `_run()` reads the key at call time. |
+| What you're changing | Setter pattern | Pitfall |
+|---|---|---|
+| Stream price | `F.STREAM.price = i` | Never `from module import price; price = i` — that rebinds a local name, not the stream object. |
+| Dict parameter read at `_run()` or spec call time | `params_dict['key'] = i` | Only works if the spec/`_run()` reads from the dict every call. **If the factory copied the dict value into a local variable**, the local is a closure-captured float — dict mutation has no effect. Must fix the spec to read from the dict directly. |
+| Reaction `X` baked in at factory time | Must update `F.UNIT.reaction.X = i` (or `F.UNIT.reaction[n].X = i` for `ParallelReaction`) | `bst.Reaction(X=params['key'])` evaluates `X` once when `create_*_system()` is called. Dict mutation after that has zero effect on the stored float. |
+| Stream flow for `kind='isolated'` (system not re-simulated) | Directly set `F.STREAM.imass['Component'] = f(i)` in the setter | The spec or `_run()` that normally sets this flow never runs for isolated parameters. |
 
-**`kind='isolated'` special cases — parameters that affect CAPEX/OPEX but not mass balance:**
+**Known instances of each pitfall (all fixed in `uncertainty.py`):**
 
-- **H₂ storage period** — `storage_period` sets tank volume in `_design()`/`_cost()`. Without re-simulation that cost is stale. Fix: call `F.H2_TK.simulate()` in the setter.
-- **RCF catalyst lifetime** — the `RCF_CAT_IN` stream flow is set once at system creation in `rcf.py`, not in a spec. Mutating `solvolysis_params['cat_lifetime']` therefore has no effect. Fix: recompute and directly set `F.RCF_CAT_IN.imass['NiC']` in the setter.
+- **Reaction X baked in** — `Delignification` (setter must also do `F.RCF_RXR1.reaction_1.X = i`) and `Condensation extent` (setter must update `F.RCF_RXR2.reaction[0,1,4,5].X` directly using the arithmetic from `rcf.py`).
+- **Local variable closure** — `EtOAc solvent-to-crude ratio` and `Hexane solvent-to-oil ratio`: `rcf_oil_purification.py` and `monomer_purification.py` previously captured the ratio into a local variable at factory time. Fixed: specs now read `etoac_purification['solvent_to_crude_ratio']` and `hexane_purification['solvent_to_oil_ratio']` directly.
+- **Isolated stream flow** — `HDO catalyst lifetime`: the `dodecane_flow` spec sets `hdo_cat_in.imass` during simulation, but isolated parameters skip simulation. Setter must directly update `F.HDO_CAT_IN.imass['Ni2PSiO2']`. Also had a wrong dict key (`'catalyst_lifetime'` instead of `'cat_lifetime'`).
 
-**`kind='coupled'` — parameters consumed inside a spec or `_run()`:**
+**`kind='isolated'` — parameters where `simulate()` is skipped:**
 
-- **`solvolysis_params['Cellulose_retention']`** — read in `SolvolysisReactor._run()`; changes Glucan split into carbohydrate pulp → affects cellulosic ethanol yield.
-- **`hdo_params['solvent_req']`** — read in `dodecane_flow` spec in `hdo.py`; changes dodecane feed flow → affects reactor size and distillation loads.
-- **`hdo_params['catalyst_req']`** — read in `dodecane_flow` spec in `hdo.py` (sets `hdo_cat_in.imass['Ni2PSiO2']`); changes catalyst stream flow → affects OPEX via `stream.price`. Also appears in `HydrodeoxygenationReactor._cost()` but only stores to `design['Catalyst loading cost']` (reporting only, not `baseline_purchase_costs`), so MJSP sensitivity comes entirely through the stream OPEX path.
+- **H₂ storage period** — `storage_period` drives `_design()`/`_cost()`. Call `F.H2_TK.simulate()` in the setter to refresh CAPEX.
+- **RCF and HDO catalyst lifetime / loading** — stream flows set once at creation or inside a coupled spec; must directly update `F.RCF_CAT_IN.imass['NiC']` and `F.HDO_CAT_IN.imass['Ni2PSiO2']`.
 
-**`@metric` element must match table access key:** The metric is registered with `element='TEA'`, so the table column is `model.table["TEA"]["Minimum Jet Selling Price [USD/gal]"]`. Column name is case-sensitive and must match the `name=` string exactly.
+**`kind='coupled'` — parameters read at runtime by a spec or `_run()`:**
+
+- `solvolysis_params['Cellulose_retention']`, `['Xylose_retention']`, `['Delignification']`, `['solvent_losses']` — all read in `SolvolysisReactor._run()`.
+- `hydrogenolysis_params['condensation_extent']` — dict mutation alone insufficient (reaction X baked in); setter also updates `F.RCF_RXR2.reaction[0,1,4,5].X`.
+- `hdo_params['solvent_req']`, `['catalyst_req']` — read in `dodecane_flow` spec in `hdo.py`.
+- `etoac_purification['solvent_to_crude_ratio']`, `hexane_purification['solvent_to_oil_ratio']` — specs in `rcf_oil_purification.py` and `monomer_purification.py` now read from dict directly.
+
+**`@metric` element must match table access key:** registered with `element='TEA'`, so the column is `model.table["TEA"]["Minimum Jet Selling Price [USD/gal]"]` — case-sensitive, must match `name=` exactly.
 
 ## Key Source Files
 

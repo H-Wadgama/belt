@@ -93,10 +93,10 @@ def create_monomer_purification_system(ins=None):
         water_fresh  = hexane_mixer.ins[1]
         recycle      = hexane_mixer.ins[2]
         hexane_fresh.imass['Hexane'] = (
-            solvent_to_oil * purified_rcf.F_mass - recycle.imass['Hexane']
+            hexane_purification['solvent_to_oil_ratio'] * purified_rcf.F_mass - recycle.imass['Hexane']
         )
         water_fresh.imass['Water'] = (
-            solvent_to_oil * purified_rcf.F_mass * (water_rho / hexane_rho) * water_hexane_ratio
+            hexane_purification['solvent_to_oil_ratio'] * purified_rcf.F_mass * (water_rho / hexane_rho) * water_hexane_ratio
             - recycle.imass['Water']
         )
 

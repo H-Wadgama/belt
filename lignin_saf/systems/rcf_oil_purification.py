@@ -82,8 +82,8 @@ def create_rcf_oil_purification_system(ins=None):
         etoac_fresh = solvent_mixer.ins[0]
         water_fresh = solvent_mixer.ins[1]
         recycle     = solvent_mixer.ins[2]
-        etoac_fresh.imass['EthylAcetate'] = (solvent_to_crude * crude_rcf.F_mass) - recycle.imass['EthylAcetate']
-        water_fresh.imass['Water']        = (solvent_to_crude * crude_rcf.F_mass * etoac_h2o_ratio) - recycle.imass['Water']
+        etoac_fresh.imass['EthylAcetate'] = (etoac_purification['solvent_to_crude_ratio'] * crude_rcf.F_mass) - recycle.imass['EthylAcetate']
+        water_fresh.imass['Water']        = (etoac_purification['solvent_to_crude_ratio'] * crude_rcf.F_mass * etoac_h2o_ratio) - recycle.imass['Water']
 
     # LLE: crude oil contacts EtOAc/water countercurrently; lignin products partition into EtOAc extract
     lle_column = bst.MultiStageMixerSettlers(
