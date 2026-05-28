@@ -945,18 +945,25 @@ Si = morris_analyze.analyze(problem, samples, Y, conf_level=0.95)
 
 **Parameter `kind` rules:**
 - `kind='isolated'` — TEA-only effects (prices, labor, operating days, co-product credits). System is NOT re-simulated; only `solve_price()` is called. Fast.
-- `kind='coupled'` — Parameters that change the mass/energy balance (solvolysis P, τ, τ_res). Triggers full system re-simulation. Slow.
+- `kind='coupled'` — Parameters consumed inside a spec or `_run()` that alter stream flows or mass balance. Triggers full system re-simulation. Slow.
 
-**Two special cases for `kind='isolated'` parameters that affect CAPEX or stream-based OPEX:**
+**How to write a setter — two patterns:**
 
-1. **H₂ storage period** — `storage_period` determines tank volume and CAPEX. Changing it without re-simulation leaves the installed cost stale. Fix: call `F.H2_TK.simulate()` inside the setter to re-run `_design()`/`_cost()` on just that unit.
+| What you're changing | Python type | Setter pattern | Why |
+|---|---|---|---|
+| Stream price (H₂, feedstock, co-products) | primitive `float` | `F.STREAM.price = i` | `from module import x` copies the float; reassigning `x = i` only rebinds the local name and has no effect on BioSTEAM. Must update the stream object directly. |
+| Process parameter in a dict (`solvolysis_params`, `hdo_params`) | mutable `dict` | `params_dict['key'] = i` | Both this module and the consuming module hold a reference to the **same dict object**. In-place mutation is immediately visible when the spec or `_run()` reads the key at call time. |
 
-2. **RCF catalyst lifetime** — `RCF_CAT_IN` stream flow is fixed at stream creation in `rcf.py`. Changing `solvolysis_params['cat_lifetime']` in the dict has no effect on the TEA. Fix: recompute and set `F.RCF_CAT_IN.imass['NiC']` directly in the setter using the same formula as `rcf.py`:
-   ```python
-   F.RCF_CAT_IN.imass['NiC'] = (
-       solvolysis_params['cat_loading'] * (feed_parameters['flow'] * 1e3 / 24) * solvolysis_params['tau_h']
-   ) / (i * 30 * 24)   # [kg/hr]
-   ```
+**`kind='isolated'` special cases — parameters that affect CAPEX/OPEX but not mass balance:**
+
+- **H₂ storage period** — `storage_period` sets tank volume in `_design()`/`_cost()`. Without re-simulation that cost is stale. Fix: call `F.H2_TK.simulate()` in the setter.
+- **RCF catalyst lifetime** — the `RCF_CAT_IN` stream flow is set once at system creation in `rcf.py`, not in a spec. Mutating `solvolysis_params['cat_lifetime']` therefore has no effect. Fix: recompute and directly set `F.RCF_CAT_IN.imass['NiC']` in the setter.
+
+**`kind='coupled'` — parameters consumed inside a spec or `_run()`:**
+
+- **`solvolysis_params['Cellulose_retention']`** — read in `SolvolysisReactor._run()`; changes Glucan split into carbohydrate pulp → affects cellulosic ethanol yield.
+- **`hdo_params['solvent_req']`** — read in `dodecane_flow` spec in `hdo.py`; changes dodecane feed flow → affects reactor size and distillation loads.
+- **`hdo_params['catalyst_req']`** — read in `dodecane_flow` spec in `hdo.py` (sets `hdo_cat_in.imass['Ni2PSiO2']`); changes catalyst stream flow → affects OPEX via `stream.price`. Also appears in `HydrodeoxygenationReactor._cost()` but only stores to `design['Catalyst loading cost']` (reporting only, not `baseline_purchase_costs`), so MJSP sensitivity comes entirely through the stream OPEX path.
 
 **`@metric` element must match table access key:** The metric is registered with `element='TEA'`, so the table column is `model.table["TEA"]["Minimum Jet Selling Price [USD/gal]"]`. Column name is case-sensitive and must match the `name=` string exactly.
 
