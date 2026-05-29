@@ -152,6 +152,8 @@ Note: N_total, V_void, V_max, D/L/u are determined by bed geometry and do not ch
 
 **`compute_Q_total()` method:** Returns Q_total [m³/hr] from geometry without side effects. Called by the `meoh_water_flow` spec in `systems/rcf.py` on every recycle iteration to set the methanol feed flow.
 
+**Critical: `_size_bed()` and `compute_Q_total()` must use identical stagger formulas.** Both use `N_total_base = max(2, round(cycle_time / self.tau_0))` and `N_working_base = min(N_total_base − 1, max(1, round(N_total_base × tau / cycle_time)))`. If they diverge (e.g., `_size_bed()` uses `ceil(cycle_time)` instead of `round(cycle_time / tau_0)`), the methanol flow set by the spec will not match the reactor's actual Q requirement whenever `tau_0 ≠ 1 hr` — causing the MeOH recycle to fail to converge and all GSA samples to return NaN. These two methods were made consistent as part of the sensitivity-analysis fixes.
+
 ## HydrogenolysisReactor Sizing Model
 
 `_size_bed()` in `ligsaf_units.py` uses a **continuous flow** approach. The catalyst is on-stream indefinitely; reactor volume is derived from the hydraulic residence time and total feed volumetric flow.
@@ -676,7 +678,9 @@ rcf_combined_system = bst.System(
 )
 ```
 
-**Critical ordering:** `nh3_splitter` and `etj_system` must precede `WWT`. The ETJ WW (`F.H602.outs[0]`) is added to `M601.ins`, and the combined system has no outer recycle declared between the ETJ and WWT subsystems. If WWT runs before ETJ, it processes zero ETJ WW on that pass. Placing ETJ before WWT ensures H602 is populated when WWT executes.
+**Critical ordering:** `nh3_splitter` and `etj_system` must precede `WWT`.
+
+**`nh3_splitter` must be in the path** (not just simulated once at setup). `nh3_splitter` connects `T703.outs[0]` (ethanol product) to the ETJ feed. If it is omitted from the path, `nh3_splitter.outs[1]` is never re-simulated during `model.evaluate()`, so coupled parameters that change ethanol production (glucose conversion, saccharification time, etc.) have no effect on the ETJ feed — making those parameters dead for the ETJ subsystem. With `nh3_splitter` in the path it re-runs on every iteration, correctly propagating ethanol flow changes to ETJ. The ETJ WW (`F.H602.outs[0]`) is added to `M601.ins`, and the combined system has no outer recycle declared between the ETJ and WWT subsystems. If WWT runs before ETJ, it processes zero ETJ WW on that pass. Placing ETJ before WWT ensures H602 is populated when WWT executes.
 
 **Solids to BT:** The ETJ system produces no combustible solids. Only WWT sludge and ethanol filter cake feed `solids_to_BT`:
 ```python
@@ -961,6 +965,8 @@ Si = morris_analyze.analyze(problem, samples, Y, conf_level=0.95)
 - **Reaction X baked in** — `Delignification` (setter must also do `F.RCF_RXR1.reaction_1.X = i`) and `Condensation extent` (setter must update `F.RCF_RXR2.reaction[0,1,4,5].X` directly using the arithmetic from `rcf.py`).
 - **Local variable closure** — `EtOAc solvent-to-crude ratio` and `Hexane solvent-to-oil ratio`: `rcf_oil_purification.py` and `monomer_purification.py` previously captured the ratio into a local variable at factory time. Fixed: specs now read `etoac_purification['solvent_to_crude_ratio']` and `hexane_purification['solvent_to_oil_ratio']` directly.
 - **Isolated stream flow** — `HDO catalyst lifetime`: the `dodecane_flow` spec sets `hdo_cat_in.imass` during simulation, but isolated parameters skip simulation. Setter must directly update `F.HDO_CAT_IN.imass['Ni2PSiO2']`. Also had a wrong dict key (`'catalyst_lifetime'` instead of `'cat_lifetime'`).
+- **`h2_flow` spec baked-in constant, no `max(0)` guard** — `rcf.py`'s `h2_flow` spec originally captured `h2_required` as a closure constant computed at factory time from the *baseline* delignification. When the `Delignification` parameter is perturbed below baseline (all sampled values 0.4–0.9 are below baseline 0.928), less H₂ is consumed per pass, the recycle builds up, and `fresh_h₂ = h2_required − recycle` goes *negative* — crashing the simulation for every sample. **Fixed:** spec now re-computes `h2_needed` on every call from `solvolysis_params['Delignification']` (updated by the setter) and clamps with `max(0.0, h2_needed − recycle_h2.imass['Hydrogen'])`. The HDO specs already used `max(0.0, ...)` — RCF was the gap.
+- **Duplicate `@param` registrations** — registering the same `name=` + `element=` combination twice (e.g., calling `@param(name='Delignfication', element='RCF', ...)` a second time with a different setter function) silently creates 39 parameters instead of 37. The samples matrix becomes 100×39 with two independent LHS columns for the duplicated parameter, producing duplicate column labels in `model.table`. `model.spearman_r()` returns NaN for **every** parameter when the table has duplicate index labels. Ensure each `name=`/`element=` pair is registered exactly once.
 
 **`kind='isolated'` — parameters where `simulate()` is skipped:**
 
@@ -969,7 +975,8 @@ Si = morris_analyze.analyze(problem, samples, Y, conf_level=0.95)
 
 **`kind='coupled'` — parameters read at runtime by a spec or `_run()`:**
 
-- `solvolysis_params['Cellulose_retention']`, `['Xylose_retention']`, `['Delignification']`, `['solvent_losses']` — all read in `SolvolysisReactor._run()`.
+- `solvolysis_params['Cellulose_retention']`, `['Xylose_retention']`, `['solvent_losses']` — read in `SolvolysisReactor._run()` on every iteration.
+- `solvolysis_params['Delignification']` — **not** read in `_run()` (delignification is handled by `reaction_1.X`); it is read in the `h2_flow` spec in `systems/rcf.py`, which re-computes the H₂ target dynamically. Setter must update both `F.RCF_RXR1.reaction_1.X = i` AND `solvolysis_params['Delignification'] = i`.
 - `hydrogenolysis_params['condensation_extent']` — dict mutation alone insufficient (reaction X baked in); setter also updates `F.RCF_RXR2.reaction[0,1,4,5].X`.
 - `hdo_params['solvent_req']`, `['catalyst_req']` — read in `dodecane_flow` spec in `hdo.py`.
 - `etoac_purification['solvent_to_crude_ratio']`, `hexane_purification['solvent_to_oil_ratio']` — specs in `rcf_oil_purification.py` and `monomer_purification.py` now read from dict directly.
