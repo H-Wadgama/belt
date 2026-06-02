@@ -44,7 +44,7 @@ sns.boxplot(
 
 
 
-# Add gray diamond marker at 8.6
+# Add gray diamond marker at 22.08
 ax = plt.gca()
 ax.scatter(
     x=0, y=22.08,  # x=0 for single-category violin/box plot
