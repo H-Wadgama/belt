@@ -1,0 +1,40 @@
+﻿Feature,µ*,σ
+Operating days,1.833049793,0.433334536
+Poplar feedstock price,1.431539796,0.235723278
+Labor cost,1.297582386,0.209195322
+Electricity cost,0.105907614,0.134377422
+RN co-product credit,0.264358966,0.061467967
+RD co-product credit,0.068794917,0.077866375
+Hydrogen price,2.941415366,0.484318135
+Hydrogen storage period,1.15467508,0.1999691
+Solvolysis reactor pressure,0.126516441,0.152439734
+Solvolysis reaction time,8.10851986,5.534214733
+Solvolysis residence time,13.52919673,9.684018728
+Solvolysis cleaning time,3.546930883,3.691203869
+Methanol cost,1.745147891,1.18789754
+RCF solvent losses,1.706492826,1.432946677
+RCF catalyst price,0.012476509,0.026208819
+RCF catalyst lifetime,0.020766887,0.062260291
+RCF catalyst loading,0.027365054,0.071960172
+Cellulose retention,4.033875017,1.633046309
+Xylose retention,5.260556904,1.670902343
+Delignfication,1.645286512,2.476949522
+Condensation extent,5.005401667,3.64779139
+Water cost (control),0.033793327,0.13506166
+HDO reaction time,0.961433969,0.452027533
+HDO solvent loading,4.454545487,2.063140423
+HDO catalyst loading,0.410944738,0.478204718
+HDO catalyst lifetime,0.843018182,0.987217983
+Dodecane cost,1.89497739,1.245004069
+Glucose to ethanol conv.,2.572833131,0.969989631
+Glucan to glucose conv.,2.066179775,0.804291269
+Saccharification residence time,0.056013031,0.060256817
+Cofermentation residence time,0.032751347,0.040575394
+Xylose to ethanol conv.,0.268373767,0.184773244
+Xylan to xylose conversion,0.284125084,0.196616285
+Cellulase enzyme loading,4.029757625,1.550493264
+Cellulase price,3.093476895,1.446095671
+Et oac solvent to crude ratio,1.358921737,0.604367213
+Ethyl acetate price,3.067664354,1.00431044
+Hexane solvent to pure oil ratio,1.273502898,0.522529723
+Hexane price,0.894901846,0.449017142
