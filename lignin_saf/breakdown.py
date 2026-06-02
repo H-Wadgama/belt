@@ -359,12 +359,12 @@ for i, (cost_row, label) in enumerate(zip(costs, legend_categories)):
     neg = np.where(cost_row < 0, cost_row, 0)
 
     ax.barh(bar_categories, pos, left=bottom_pos,
-            color=custom_colors[i], edgecolor='black', linewidth=0.5, height=0.6,
+            color=custom_colors[i], edgecolor='none', height=0.6,
             label=label)
     bottom_pos += pos
 
     ax.barh(bar_categories, neg, left=bottom_neg,
-            color=custom_colors[i], edgecolor='black', linewidth=0.5, height=0.6)
+            color=custom_colors[i], edgecolor='none', height=0.6)
     bottom_neg += neg
 
 font_size = 9
@@ -385,7 +385,7 @@ step = 1.0
 ax.set_xlim(min_tick - 0.5, max_tick + 0.5)
 xticks = np.arange(min_tick, max_tick + step, step)
 ax.set_xticks(xticks)
-ax.set_xticklabels([f'{x:.1f}' for x in xticks], fontsize=font_size)
+ax.set_xticklabels([f'{int(x)}' for x in xticks], fontsize=font_size)
 
 # Net-total labels at end of each bar
 net_totals = costs.sum(axis=0)
@@ -419,7 +419,7 @@ plt.show()
 import matplotlib.patches as mpatches
 
 patches = [
-    mpatches.Patch(facecolor=color, label=label, edgecolor='black', linewidth=1.0)
+    mpatches.Patch(facecolor=color, label=label, edgecolor='none')
     for color, label in zip(custom_colors, legend_categories)
 ]
 
