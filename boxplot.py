@@ -82,7 +82,7 @@ plt.ylabel("MJSP (USD/gal)", fontsize=12, color = 'black')
 #plt.savefig("msp_violin_plot.png", dpi=300, bbox_inches="tight")  # PNG format (high quality)
 # Show the plot
 
-plt.savefig("box plot-5000.png", bbox_inches="tight")
+plt.savefig("box plot-5000.png", dpi = 600, bbox_inches="tight")
 
 plt.savefig("box plot-5000.svg", bbox_inches="tight")
 plt.show()
