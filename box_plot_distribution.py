@@ -9,7 +9,7 @@ plt.rc('font', family='Arial')
 import os
 _dir = os.path.dirname(os.path.abspath(__file__))
 df = pd.read_excel(
-    os.path.join(_dir, 'lignin_saf', 'uncertainty-gsa', 'spearman_gsa_3000_runs_triangular_updated_new_final.xlsx'),
+    os.path.join(_dir, 'lignin_saf', 'uncertainty-gsa', 'spearman_gsa_3000_runs_triangular_4_6_2026.xlsx'),
     header=[0, 1], index_col=0, skiprows=[2]
 )
 
@@ -62,6 +62,6 @@ ax_box.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
 for spine in ax_box.spines.values():
     spine.set_visible(False)
 
-plt.savefig('box_plot_distribution_triangular_6_3_2026_UPDATED_NEW.png', dpi=300, bbox_inches='tight')
-plt.savefig('box_plot_distribution_triangular_6_3_2026_UPDATED_NEWfinal.svg', bbox_inches='tight')
+plt.savefig('box_plot_distribution_triangular_6_4_2026.png', dpi=300, bbox_inches='tight')
+plt.savefig('box_plot_distribution_triangular_6_4_2026.svg', bbox_inches='tight')
 plt.show()
