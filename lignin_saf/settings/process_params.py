@@ -29,7 +29,7 @@ solvolysis_params = {
     'Arabinan_retention'    : 0.4,           # [fraction] Bartling et al.
     'Galactan_retention'    : 0.5,           # [fraction] Bartling et al.
     'Mannan_retention'      : 0.5,           # [fraction] Bartling et al.
-    'Delignification'       : 0.563,         # [fraction]
+    'Delignification'       : 0.7,         # [fraction]
     'MeOH_CO'               : 0.364/100,     # [wt frac] MeOH lost as CO  — from https://pubs.rsc.org/en/content/articlelanding/2015/cc/c5cc04025f Table 1
     'MeOH_CH4'              : 0.128/100,     # [wt frac] MeOH lost as CH₄ — same source; Ru/C catalyst, birchwood biomass
     'solvent_losses'        : 0.01,          # Solvent loss in pulp fraction after RCF - assumed
@@ -46,7 +46,7 @@ h2_rcf_excess  = 1.2                # excess H₂ flowing through the system
 hydrogenolysis_params = {
     'h2_consumption'        : 0.0266,       # [kg H₂/kg RCF oil] from Webber et al. SI  https://www.nature.com/articles/s41563-024-02024-6
     'duty'                  : 60.5,         # 49–72 kcal mol–1 energy required for B-0-4 bond cleavage. https://www.nature.com/articles/s41563-024-02024-6
-    'condensation_extent'   : 0.136         # fraction of monomer fraction that re-polymerises during hydrogenolysis
+    'condensation_extent'   : 0         # fraction of monomer fraction that re-polymerises during hydrogenolysis
 }
 
 # ─── RCF oil composition ─────────────────────────────────────────────────────
