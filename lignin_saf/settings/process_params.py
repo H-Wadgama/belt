@@ -29,7 +29,7 @@ solvolysis_params = {
     'Arabinan_retention'    : 0.4,           # [fraction] Bartling et al.
     'Galactan_retention'    : 0.5,           # [fraction] Bartling et al.
     'Mannan_retention'      : 0.5,           # [fraction] Bartling et al.
-    'Delignification'       : 0.7,         # [fraction]
+    'Delignification'       : 0.563,         # [fraction]
     'MeOH_CO'               : 0.364/100,     # [wt frac] MeOH lost as CO  — from https://pubs.rsc.org/en/content/articlelanding/2015/cc/c5cc04025f Table 1
     'MeOH_CH4'              : 0.128/100,     # [wt frac] MeOH lost as CH₄ — same source; Ru/C catalyst, birchwood biomass
     'solvent_losses'        : 0.01,          # Solvent loss in pulp fraction after RCF - assumed
@@ -37,6 +37,19 @@ solvolysis_params = {
     'V_max'                 : 600            # [m³]  From Bartling et al 
         
 }
+
+additional_rcf = {
+    'rcf_col_1_light_dist_recovery' : 0.9995,
+    'rcf_col_1_heavy_bottom_recovery' : 0.967,
+    'rcf_col_1_pressure' : 101325,
+    'rcf_col_1_k' : 2,
+    'rcf_col_2_mol_frac_light_top' : 0.9,
+    'rcf_col_2_mol_frac_light_bottom' : 0.01,
+    'rcf_col_2_pressure' : 101325,
+    'rcf_col_2_k' : 2
+}
+
+
 
 meoh_h2o             = 90          # [v/v ratio] solvent : water (50 vol% MeOH / 50 vol% H₂O → ratio of 90 w/w?)
 h2_biomass_ratio  = 0.006029923     # [kg H₂/kg dry biomass] from Bartling et al. SI Table S2
@@ -46,7 +59,7 @@ h2_rcf_excess  = 1.2                # excess H₂ flowing through the system
 hydrogenolysis_params = {
     'h2_consumption'        : 0.0266,       # [kg H₂/kg RCF oil] from Webber et al. SI  https://www.nature.com/articles/s41563-024-02024-6
     'duty'                  : 60.5,         # 49–72 kcal mol–1 energy required for B-0-4 bond cleavage. https://www.nature.com/articles/s41563-024-02024-6
-    'condensation_extent'   : 0         # fraction of monomer fraction that re-polymerises during hydrogenolysis
+    'condensation_extent'   : 0.136         # fraction of monomer fraction that re-polymerises during hydrogenolysis
 }
 
 # ─── RCF oil composition ─────────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import biosteam as bst
 from lignin_saf.ligsaf_units import SolvolysisReactor, HydrogenolysisReactor, PSA, CatalystMixer
 from lignin_saf.ligsaf_chemicals import create_chemicals
 from lignin_saf.settings.process_params import (
-    rcf_oil_yield, feed_parameters, solvolysis_params, hydrogenolysis_params, meoh_h2o, h2_biomass_ratio, hydrogenolysis_params, h2_rcf_excess
+    rcf_oil_yield, feed_parameters, solvolysis_params, hydrogenolysis_params, meoh_h2o, h2_biomass_ratio, hydrogenolysis_params, h2_rcf_excess, additional_rcf
 )
 from lignin_saf.settings.prices import prices
 from lignin_saf.settings.tea_params import operating_days
@@ -229,16 +229,17 @@ def create_rcf_system(ins=None):
     rcf_col_1 = bst.units.BinaryDistillation(
         'RCF_COL1', ins=rcf_flsh_1-1,
         LHK=('Methanol', 'Water'),
-        Lr=0.9995, Hr=1 - 0.967, P=101325,
+        Lr=additional_rcf['rcf_col_1_light_dist_recovery'], Hr=1 - additional_rcf['rcf_col_1_heavy_bottom_recovery'], P=additional_rcf['rcf_col_1_pressure'],
         vessel_material='Stainless steel 316',
-        k=2, partial_condenser=True,
+        k=additional_rcf['rcf_col_1_k'], partial_condenser=True,
     )
 
     rcf_col_2 = bst.units.BinaryDistillation(
         'RCF_COL2', ins=rcf_col_1-0,
         outs=('', 'To_WW_Treatment'),
         LHK=('Methanol', 'Water'),
-        y_top=0.9, x_bot=0.001, P=101325, k=2,
+        y_top=additional_rcf['rcf_col_2_mol_frac_light_top'], x_bot=additional_rcf['rcf_col_2_mol_frac_light_bottom'], 
+        P=additional_rcf['rcf_col_2_pressure'], k=additional_rcf['rcf_col_2_k'],
     )
 
     rcf_mix_3 = bst.units.Mixer('RCF_MIX3', ins=(rcf_col_2-0, rcf_flsh_2-1), rigorous=True)
