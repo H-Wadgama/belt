@@ -229,7 +229,7 @@ def create_rcf_system(ins=None):
     rcf_col_1 = bst.units.BinaryDistillation(
         'RCF_COL1', ins=rcf_flsh_1-1,
         LHK=('Methanol', 'Water'),
-        Lr=additional_rcf['rcf_col_1_light_dist_recovery'], Hr=1 - additional_rcf['rcf_col_1_heavy_bottom_recovery'], P=additional_rcf['rcf_col_1_pressure'],
+        Lr=additional_rcf['rcf_col_1_light_dist_recovery'], Hr= additional_rcf['rcf_col_1_heavy_bottom_recovery'], P=additional_rcf['rcf_col_1_pressure'],
         vessel_material='Stainless steel 316',
         k=additional_rcf['rcf_col_1_k'], partial_condenser=True,
     )
