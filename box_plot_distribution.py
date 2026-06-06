@@ -9,7 +9,7 @@ plt.rc('font', family='Arial')
 import os
 _dir = os.path.dirname(os.path.abspath(__file__))
 df = pd.read_excel(
-    os.path.join(_dir, 'lignin_saf', 'uncertainty-gsa', 'spearman_gsa_3000_runs_triangular_4_6_2026.xlsx'),
+    os.path.join(_dir, 'lignin_saf', 'uncertainty-gsa', 'bartling_trial_5.xlsx'),
     header=[0, 1], index_col=0, skiprows=[2]
 )
 
@@ -28,13 +28,13 @@ kde_values = kde(x_range)
 ax_kde.plot(x_range, kde_values, color='black', linewidth=1.5)
 ax_kde.fill_between(x_range, kde_values, color='#bf9fb9', alpha=0.6)
 
-baseline_mjsp = 22.08
+baseline_mjsp = 1.38
 ax_kde.axvline(baseline_mjsp, color='black', linestyle='--', linewidth=1.2)
 ax_kde.text(baseline_mjsp, 1.02, 'Baseline MJSP',
             ha='center', va='bottom', fontsize=9, color='black',
             transform=ax_kde.get_xaxis_transform())
 
-ax_kde.set_xlabel('MJSP (USD/gal)', fontsize=12, color='black')
+ax_kde.set_xlabel('RCF Crude price (USD/kg)', fontsize=12, color='black')
 ax_kde.set_ylabel('Probability density', fontsize=12, color='black')
 ax_kde.tick_params(axis='both', which='major', labelsize=10, width=1.0, length=5)
 for spine in ax_kde.spines.values():
@@ -62,6 +62,6 @@ ax_box.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
 for spine in ax_box.spines.values():
     spine.set_visible(False)
 
-plt.savefig('box_plot_distribution_triangular_6_4_2026.png', dpi=300, bbox_inches='tight')
-plt.savefig('box_plot_distribution_triangular_6_4_2026.svg', bbox_inches='tight')
+plt.savefig('box_plot_distribution_bartling.png', dpi=300, bbox_inches='tight')
+plt.savefig('box_plot_distribution_bartling.svg', bbox_inches='tight')
 plt.show()
