@@ -39,14 +39,14 @@ solvolysis_params = {
 }
 
 additional_rcf = {
-    'rcf_col_1_light_dist_recovery' : 0.997833952,
-    'rcf_col_1_heavy_bottom_recovery' : 0.196185893,
+    'rcf_col_1_light_dist_recovery' : 0.998122286565671,
+    'rcf_col_1_heavy_bottom_recovery' : 0.065893339930062,
     'rcf_col_1_pressure' : 101325,
-    'rcf_col_1_k' : 2,
-    'rcf_col_2_mol_frac_light_top' : 0.965246953,
-    'rcf_col_2_mol_frac_light_bottom' : 0.112793473,
+    'rcf_col_1_k' : 0.625069872916337,
+    'rcf_col_2_mol_frac_light_top' : 0.96798196272608,
+    'rcf_col_2_mol_frac_light_bottom' : 0.186155563855695,
     'rcf_col_2_pressure' : 101325,
-    'rcf_col_2_k' : 2
+    'rcf_col_2_k' : 4.3720885093276
 }
 
 
