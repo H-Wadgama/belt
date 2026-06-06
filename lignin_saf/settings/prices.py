@@ -90,7 +90,7 @@ prices = {
     'Feedstock'        : feedstock_price,
     'Methanol'         : methanol_price,
     'Hydrogen'         : h2_price,
-    'NiC_catalyst'     : 37.5,                      # [USD/kg] from Bartling et al.
+    'NiC_catalyst'     : 37.5 * ((jan_2026/sep_2016)),                      # [USD/kg] from Bartling et al.
     'H2SO4'            : sulfuric_acid_price,
     'NH3'              : ammonia_price,
     'Cellulase'        : cellulase_price,
