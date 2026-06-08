@@ -9,7 +9,7 @@ plt.rc('font', family='Arial')
 import os
 _dir = os.path.dirname(os.path.abspath(__file__))
 df = pd.read_excel(
-    os.path.join(_dir, 'lignin_saf', 'uncertainty-gsa', 'bartling_trial_5.xlsx'),
+    os.path.join(_dir, 'lignin_saf', 'uncertainty-gsa', 'bartling_trial_6.xlsx'),
     header=[0, 1], index_col=0, skiprows=[2]
 )
 
@@ -28,7 +28,7 @@ kde_values = kde(x_range)
 ax_kde.plot(x_range, kde_values, color='black', linewidth=1.5)
 ax_kde.fill_between(x_range, kde_values, color='#bf9fb9', alpha=0.6)
 
-baseline_mjsp = 1.38
+baseline_mjsp = 1.26
 ax_kde.axvline(baseline_mjsp, color='#a87c9f', linestyle='--', linewidth=1.2)
 
 bartling_price = 1.13
@@ -74,6 +74,6 @@ ax_box.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
 for spine in ax_box.spines.values():
     spine.set_visible(False)
 
-plt.savefig('box_plot_distribution_bartling.png', dpi=300, bbox_inches='tight')
+plt.savefig('box_plot_distribution_bartling2.png', dpi=300, bbox_inches='tight')
 #plt.savefig('box_plot_distribution_bartling.svg', bbox_inches='tight')
 plt.show()

@@ -12,15 +12,18 @@ def load_mjsp(path):
     return df[TEA_COL].dropna().values
 
 
-bartling = load_mjsp(f'{BASE}/bartling_trial_5.xlsx')
-oil      = load_mjsp(f'{BASE}/oil_trial_1.xlsx')
+bartling = load_mjsp(f'{BASE}/bartling_trial_6.xlsx')
+oil      = load_mjsp(f'{BASE}/oil_trial_2.xlsx')
+monomer  = load_mjsp(f'{BASE}/monomer_trial_1.xlsx')
 
-datasets  = [bartling, oil]
-positions = [1, 2]
-COLORS    = ['#4E8098', '#C8963E']   # teal-blue, warm amber
-LABELS    = ['Monomer purification\n(hexane LLE)', 'Oil purification\n(ethyl acetate LLE)']
+datasets  = [bartling, oil, monomer]
+positions = [1, 2, 3]
+COLORS    = ['#4E8098', '#C8963E', '#7B9E5E']   # teal-blue, warm amber, sage green
+LABELS    = ['Monomer purification\n(hexane LLE)',
+             'Oil purification\n(ethyl acetate LLE)',
+             'Monomer purification\n(monomer_trial_1)']
 
-fig, ax = plt.subplots(figsize=(6, 6))
+fig, ax = plt.subplots(figsize=(8, 6))
 
 for pos, data, color in zip(positions, datasets, COLORS):
     # violin
@@ -69,7 +72,7 @@ ax.set_xticklabels(LABELS, fontsize=10)
 ax.set_ylabel('MJSP [USD/gal]', fontsize=11)
 ax.spines['top'].set_visible(False)
 ax.spines['right'].set_visible(False)
-ax.set_xlim(0.4, 2.6)
+ax.set_xlim(0.4, 3.6)
 ax.tick_params(axis='x', length=0)
 
 plt.tight_layout()
