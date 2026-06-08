@@ -92,8 +92,8 @@ additional_hdo = {
     'hdo_col_1_heavy_bottom_recovery' : 1 - 0.0001,
     'hdo_col_1_k' : 2,
     'hdo_col_1_pressure' : 101325,
-    'hdo_col_2_light_dist_recovery' : 0.9,
-    'hdo_col_2_heavy_bottom_recovery' : 0.9,
+    'hdo_col_2_mol_frac_light_top' : 0.9,
+    'hdo_col_2_mol_frac_light_bottom' : 0.001,
     'hdo_col_2_k' : 2,
     'hdo_col_2_pressure' : 101325
 }
@@ -103,7 +103,7 @@ additional_hdo = {
 # References:
 #   [1] J. H, Jang, et al.,  "Multi-pass flow-through reductive catalytic fractionation." Joule. (2022) 6(8), 1859-1875. https://doi.org/10.1016/j.joule.2022.06.016
 etoac_purification = {
-    'solvent_to_crude_ratio': 9.1,     # [L/kg] EtOAc per kg crude RCF oil,  from [1]
+    'solvent_to_crude_ratio': 1.1,     # [L/kg] EtOAc per kg crude RCF oil,  from [1]
     'etoac_h2o_ratio'       : 1.0,     # [v/v]  EtOAc : water in solvent feed,from [2]
     'N_stages'              : 3,       # [-]    extraction stages — doesn't matter though since separation is assumed to be perfect
     'EtOAc_recycle_split'   : 0.95,    # [-]    fraction of EtOAc recovered in centrifuge

@@ -162,7 +162,7 @@ def create_hdo_system(ins=None):
     hdo_col_1 = bst.units.BinaryDistillation(
         ID='HDO_COL1',
         ins=hdo_flsh_1-1,
-        LHK=('propylcyclohexane', 'Dodecane'),
+        LHK=('Propylcyclohexane', 'Dodecane'),
         Lr=additional_hdo['hdo_col_1_light_dist_recovery'], Hr= additional_hdo['hdo_col_1_heavy_bottom_recovery'], P=additional_hdo['hdo_col_1_pressure'],
         vessel_material='Stainless steel 316',
         k=additional_hdo['hdo_col_1_k'], partial_condenser=True,
@@ -180,7 +180,7 @@ def create_hdo_system(ins=None):
         ins=hdo_col_1-0,
         outs=('HDO_WW', ''),
         LHK=('Water', 'Propylcyclohexane'),
-        Lr=additional_hdo['hdo_col_2_light_dist_recovery'], Hr=additional_hdo['hdo_col_2_heavy_bottom_recovery'], P=additional_hdo['hdo_col_2_pressure'], 
+        y_top=additional_hdo['hdo_col_2_mol_frac_light_top'], x_bot=additional_hdo['hdo_col_2_mol_frac_light_bottom'], P=additional_hdo['hdo_col_2_pressure'], 
         k=additional_hdo['hdo_col_2_k'], partial_condenser = True,
     )   
 
