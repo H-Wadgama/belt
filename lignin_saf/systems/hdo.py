@@ -1,6 +1,6 @@
 import biosteam as bst
 from lignin_saf.ligsaf_units import HydrodeoxygenationReactor, PSA, HydrocarbonProductTank
-from lignin_saf.ligsaf_settings import hdo_params, prices, operating_days
+from lignin_saf.ligsaf_settings import hdo_params, prices, operating_days, additional_hdo
 
 def create_hdo_system(ins=None):
     """
@@ -163,9 +163,9 @@ def create_hdo_system(ins=None):
         ID='HDO_COL1',
         ins=hdo_flsh_1-1,
         LHK=('propylcyclohexane', 'Dodecane'),
-        Lr=0.99, Hr=1 - 0.0001, P=101325,
+        Lr=additional_hdo['hdo_col_1_light_dist_recovery'], Hr= additional_hdo['hdo_col_1_heavy_bottom_recovery'], P=additional_hdo['hdo_col_1_pressure'],
         vessel_material='Stainless steel 316',
-        k=2, partial_condenser=True,
+        k=additional_hdo['hdo_col_1_k'], partial_condenser=True,
     )
 
     # ── Cool recovered dodecane to feed temperature for recycle ───────────────
@@ -180,7 +180,8 @@ def create_hdo_system(ins=None):
         ins=hdo_col_1-0,
         outs=('HDO_WW', ''),
         LHK=('Water', 'Propylcyclohexane'),
-        y_top=0.9, x_bot=0.001, P=101325, k=2,
+        Lr=additional_hdo['hdo_col_2_light_dist_recovery'], Hr=additional_hdo['hdo_col_2_heavy_bottom_recovery'], P=additional_hdo['hdo_col_2_pressure'], 
+        k=additional_hdo['hdo_col_2_k'], partial_condenser = True,
     )   
 
     hdo_hx_4 = bst.units.HXutility('HDO_HX4', ins = hdo_col_2-1, T = 15+273.15, rigorous = True)

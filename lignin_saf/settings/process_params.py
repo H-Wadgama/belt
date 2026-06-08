@@ -87,6 +87,17 @@ hdo_params = {
     'cat_lifetime'   : 6,      # [months] catalyst lifetime
 }
 
+additional_hdo = {
+    'hdo_col_1_light_dist_recovery' : 0.99,
+    'hdo_col_1_heavy_bottom_recovery' : 1 - 0.0001,
+    'hdo_col_1_k' : 2,
+    'hdo_col_1_pressure' : 101325,
+    'hdo_col_2_light_dist_recovery' : 0.9,
+    'hdo_col_2_heavy_bottom_recovery' : 0.9,
+    'hdo_col_2_k' : 2,
+    'hdo_col_2_pressure' : 101325
+}
+
 
 # ─── RCF oil purification — EtOAc liquid–liquid extraction ───────────────────
 # References:
