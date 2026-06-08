@@ -29,10 +29,21 @@ ax_kde.plot(x_range, kde_values, color='black', linewidth=1.5)
 ax_kde.fill_between(x_range, kde_values, color='#bf9fb9', alpha=0.6)
 
 baseline_mjsp = 1.38
-ax_kde.axvline(baseline_mjsp, color='black', linestyle='--', linewidth=1.2)
-ax_kde.text(baseline_mjsp, 1.02, 'Baseline MJSP',
-            ha='center', va='bottom', fontsize=9, color='black',
-            transform=ax_kde.get_xaxis_transform())
+ax_kde.axvline(baseline_mjsp, color='#a87c9f', linestyle='--', linewidth=1.2)
+
+bartling_price = 1.13
+ax_kde.axvline(bartling_price, color='#d9534f', linestyle=':', linewidth=1.5)
+#ax_kde.text(baseline_mjsp, 1.02, 'Baseline MJSP',
+#            ha='center', va='bottom', fontsize=9, color='black',
+#            transform=ax_kde.get_xaxis_transform())
+
+from matplotlib.lines import Line2D
+legend_elements = [
+    Line2D([0], [0], color='#a87c9f', linestyle='--', linewidth=1.2, label='Baseline (this work)'),
+    Line2D([0], [0], color='#43706c', linestyle=':', linewidth=1.5, label='Bartling et al.'),
+]
+ax_kde.legend(handles=legend_elements, loc='upper right', fontsize=9,
+              frameon=True, framealpha=0.8, edgecolor='none')
 
 ax_kde.set_xlabel('RCF Crude price (USD/kg)', fontsize=12, color='black')
 ax_kde.set_ylabel('Probability density', fontsize=12, color='black')
@@ -55,7 +66,8 @@ ax_box.boxplot(
 )
 ax_box.scatter(baseline_mjsp, 1, marker='D', s=50,
                facecolor='lightgray', edgecolor='black', linewidth=1, zorder=10)
-ax_box.axvline(baseline_mjsp, color='black', linestyle='--', linewidth=1.2)
+ax_box.axvline(baseline_mjsp, color='#a87c9f', linestyle='--', linewidth=1.2)
+ax_box.axvline(bartling_price, color='#43706c', linestyle=':', linewidth=1.5)
 
 ax_box.set_yticks([])
 ax_box.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
@@ -63,5 +75,5 @@ for spine in ax_box.spines.values():
     spine.set_visible(False)
 
 plt.savefig('box_plot_distribution_bartling.png', dpi=300, bbox_inches='tight')
-plt.savefig('box_plot_distribution_bartling.svg', bbox_inches='tight')
+#plt.savefig('box_plot_distribution_bartling.svg', bbox_inches='tight')
 plt.show()
