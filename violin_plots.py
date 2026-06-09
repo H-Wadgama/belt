@@ -6,22 +6,23 @@ import numpy as np
 
 BASE = 'lignin_saf/uncertainty-gsa'
 TEA_COL = ('TEA', 'Minimum jet selling price [USD/gal]')
-
+plt.rc('font',family='Arial')
 def load_mjsp(path):
     df = pd.read_excel(path, sheet_name=0, header=[0, 1], index_col=0)
     return df[TEA_COL].dropna().values
 
 
-bartling = load_mjsp(f'{BASE}/bartling_trial_6.xlsx')
-oil      = load_mjsp(f'{BASE}/oil_trial_2.xlsx')
-monomer  = load_mjsp(f'{BASE}/monomer_trial_1.xlsx')
+bartling = load_mjsp(f'{BASE}/bartling_trial_7.xlsx')
+oil      = load_mjsp(f'{BASE}/oil_trial_3.xlsx')
+monomer  = load_mjsp(f'{BASE}/monomer_trial_2.xlsx')
 
 datasets  = [bartling, oil, monomer]
 positions = [1, 2, 3]
-COLORS    = ['#4E8098', '#C8963E', '#7B9E5E']   # teal-blue, warm amber, sage green
-LABELS    = ['Monomer purification\n(hexane LLE)',
-             'Oil purification\n(ethyl acetate LLE)',
-             'Monomer purification\n(monomer_trial_1)']
+COLORS    = ['#b894b0', '#e8a663', '#b8a193']   # teal-blue, warm amber, sage green
+LABELS    = ['Crude RCF Oil',
+             'RCF Oil w/o \ncarbohydrate derivatives',
+             'RCF Monomers']
+BASELINES = [1.26, 2.12, 5.46]
 
 fig, ax = plt.subplots(figsize=(8, 6))
 
@@ -59,24 +60,37 @@ for pos, data, color in zip(positions, datasets, COLORS):
     # median line in the box, colored to match violin
     ax.hlines(q50, pos - bw, pos + bw, color=color, lw=2.2, zorder=6)
 
+# baseline markers — rhombus (diamond) at the specified MJSP for each dataset
+#baseline_handle = None
+#for pos, baseline in zip(positions, BASELINES):
+#    baseline_handle = ax.scatter(pos, baseline, marker='D', s=70,
+#                                 facecolor='black', edgecolor='white',
+#                                 linewidth=1.0, zorder=7,
+#                                 label='Baseline (this work)')
+
+#ax.legend(handles=[baseline_handle], loc='upper left', frameon=False, fontsize=16)
+
 # sample count labels just below the x-axis tick labels
 # use a blended transform: x in data coords, y in axes-fraction coords
-for pos, data in zip(positions, datasets):
-    trans = transforms.blended_transform_factory(ax.transData, ax.transAxes)
-    ax.text(pos, -0.08, f'{len(data):,}', ha='center', va='top',
-            fontsize=9, color='#555555', transform=trans)
+#for pos, data in zip(positions, datasets):
+#    trans = transforms.blended_transform_factory(ax.transData, ax.transAxes)
+#    ax.text(pos, -0.08, f'{len(data):,}', ha='center', va='top',
+#            fontsize=9, color='#555555', transform=trans)
 
 # axes styling — clean, no top/right spine (matches demo)
 ax.set_xticks(positions)
-ax.set_xticklabels(LABELS, fontsize=10)
-ax.set_ylabel('MJSP [USD/gal]', fontsize=11)
-ax.spines['top'].set_visible(False)
-ax.spines['right'].set_visible(False)
+ax.set_xticklabels(LABELS, fontsize=16)
+ax.set_ylabel('Minimum Selling Price [USD/kg]', fontsize=16)
+ax.spines['top'].set_visible(True)
+ax.spines['right'].set_visible(True)
+for spine in ax.spines.values():
+    spine.set_linewidth(2)
 ax.set_xlim(0.4, 3.6)
 ax.tick_params(axis='x', length=0)
-
+ax.tick_params(axis='y', labelsize=16, width=2)
+plt.rcParams['svg.fonttype'] = 'none'
 plt.tight_layout()
-plt.savefig('violin_mjsp.svg', bbox_inches='tight')
-plt.savefig('violin_mjsp.png', dpi=150, bbox_inches='tight')
+plt.savefig('violin_mjsp_2.svg', bbox_inches='tight')
+plt.savefig('violin_mjsp_2.png', dpi=600, bbox_inches='tight')
 plt.show()
 print('Saved violin_mjsp.svg and violin_mjsp.png')

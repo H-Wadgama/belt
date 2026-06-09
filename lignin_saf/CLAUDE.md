@@ -830,6 +830,18 @@ fig, ax = plot_operating_cost_breakdown(
 
 Parameters are identical to `plot_installed_cost_breakdown`; `values` should be annual costs in USD/yr.
 
+## MJSP Waterfall Chart (`waterfall.py`)
+
+Standalone script (not using `ligsaf_plots.py`) that builds a stacked-column waterfall of MJSP reduction levers, grouped into five categories: Base Case ($17.13/gal) → RCF → HDO → Feedstock → EHF (enzymatic hydrolysis & fermentation). Each category's levers are stacked in one column at `x = 0,1,2,3` (EHF at `x = 4.0–5.5`), with combined per-category descriptions + deltas rendered as one text block below the x-axis (via `blended_transform_factory`) rather than individually annotated — keeps the chart readable regardless of lever count. Category names are plain bold colored text (no bracket/box group labels — removed per feedback that they looked like a "weird 3-sided box").
+
+**Non-monotonic EHF sequence:** the CSL price-reduction step *raises* MJSP ($8.67→$8.74), so EHF cannot be drawn as a touching stack. It is instead drawn as four independent floating bars spanning `[min(prev, new), max(prev, new)]`, with the anomalous increase flagged via `hatch="///"` + red edge `#B33A3A`. A magnified `ax.inset_axes()` + `mark_inset()` zooms into this cluster (deltas are only $0.07–0.79, illegible against the $0–19 main axis).
+
+**Inset placement gotcha:** `ax.inset_axes([...])` takes axes-fraction coordinates, not data coordinates — naive placement overlapped real bars/labels twice before landing on `[0.60, 0.55, 0.38, 0.40]` (the empty region at data x≈3.5–6.2, y≈10.5–18, above the EHF cluster and right of Feedstock) with `mark_inset(loc1=2, loc2=3, ...)`. When repositioning, convert the target empty data-region to axes-fraction using the actual `xlim`/`ylim` before guessing.
+
+**Matplotlib mathtext gotcha:** a label containing a literal `$` (e.g. `"Poplar price → $50/DMT"`) plus the `$`-prefixed delta annotation forms a `$...$` pair that matplotlib renders as LaTeX math (italicized, dollar signs swallowed). Fix: avoid literal `$` in lever description strings — write `"50 USD/DMT"` instead of `"$50/DMT"`.
+
+Output: `mjsp_waterfall2.svg` (`svg.fonttype='none'` for editable text in Inkscape/Illustrator, per repo convention).
+
 ### Shared color palette (`_OI_COLORS`)
 
 Both functions draw from the same 10-entry palette in order:
