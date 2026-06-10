@@ -40,7 +40,7 @@ YLIM = (0, 20.5)
 
 def fmt(d):
     s = "+" if d >= 0 else "−"
-    return f"US${s}{abs(d):.2f} gal⁻¹"
+    return f"US${s}{abs(d):.2f}/gal"
 
 def fbar(ax, x, lo, hi, col, hatch=None):
     ec = "#AA2222" if hatch else "white"
@@ -75,7 +75,7 @@ ax.set_facecolor("white")
 
 # ── Base ──────────────────────────────────────────────────────────────────────
 ax.bar(pos["base"], base_val, color="#AAAAAA", width=BW, zorder=3)
-lbl_above(ax, pos["base"], base_val, f"US${base_val:.2f} gal⁻¹", "#555555", fs=8.5)
+lbl_above(ax, pos["base"], base_val, f"US${base_val:.2f}/gal", "#555555", fs=8.5)
 
 # ── RCF ───────────────────────────────────────────────────────────────────────
 conn(ax, pos["base"], pos["rcf"], base_val)
@@ -122,7 +122,7 @@ lbl_above(ax, pos["chem"], feed_end, fmt(chem_end-feed_end), "#3A48C0", fs=8.0)
 # ── Target ────────────────────────────────────────────────────────────────────
 conn(ax, pos["chem"], pos["target"], chem_end)
 ax.bar(pos["target"], target_val, color="#606060", width=BW, zorder=3)
-lbl_above(ax, pos["target"], target_val, f"US${target_val:.2f} gal⁻¹", "#444444", fs=8.5)
+lbl_above(ax, pos["target"], target_val, f"US${target_val:.2f}/gal", "#444444", fs=8.5)
 
 # ─── SAF + Y-axis ─────────────────────────────────────────────────────────────
 # SAF at figure level, top-right corner
@@ -131,7 +131,7 @@ for yv in range(0, 21, 5):
     ax.plot([-0.62,-0.52], [yv,yv], color="#BBBBBB", lw=0.8, zorder=1)
     ax.text(-0.67, yv, str(yv), ha="right", va="center",
             fontsize=8, color="#888888")
-ax.text(-1.12, 10, "MJSP (USD gal⁻¹)", ha="center", va="center",
+ax.text(-1.12, 10, "MJSP (USD/gal)", ha="center", va="center",
         fontsize=9, color="#666666", rotation=90)
 
 # ─── Main axes styling ────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ blend = blended_transform_factory(ax.transData, ax.transAxes)
 cats = [
     (pos["base"],  "Base case",        None),
     (pos["rcf"],   "RCF\noptimization",
-     "A.  Reaction time → 1 hr\nB.  Residence time → 36 min\nC.  No external H₂"),
+     "A.  Reaction time → 1 hr\nB.  Residence time → 36 min\nC.  No external H2"),
     (pos["hdo"],   "HDO\noptimization",
      "A.  Batch time → 2 hr\nB.  Solvent loading → 10 L/kg\nC.  Dodecane −50%"),
     (pos["feed"],  "Feedstock\nprice", "A.  Poplar → 50 USD/DMT"),
@@ -238,5 +238,5 @@ ax.plot([zx1, ins_bl[0]], [zy0, ins_bl[1]],
 
 plt.rcParams["svg.fonttype"] = "none"
 
-plt.savefig("mjsp_waterfall3.png", dpi=300, bbox_inches="tight", facecolor="white")
+plt.savefig("mjsp_waterfall3.svg", dpi=300, bbox_inches="tight")
 plt.show()
