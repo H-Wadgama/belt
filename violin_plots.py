@@ -24,7 +24,7 @@ LABELS    = ['Crude RCF Oil',
              'RCF Monomers']
 BASELINES = [1.26, 2.12, 5.46]
 
-fig, ax = plt.subplots(figsize=(8, 6))
+fig, ax = plt.subplots(figsize=(8, 5))
 
 for pos, data, color in zip(positions, datasets, COLORS):
     # violin
@@ -90,7 +90,7 @@ ax.tick_params(axis='x', length=0)
 ax.tick_params(axis='y', labelsize=16, width=2)
 plt.rcParams['svg.fonttype'] = 'none'
 plt.tight_layout()
-plt.savefig('violin_mjsp_2.svg', bbox_inches='tight')
-plt.savefig('violin_mjsp_2.png', dpi=600, bbox_inches='tight')
+plt.savefig('violin_mjsp_3.svg', bbox_inches='tight')
+plt.savefig('violin_mjsp_3.png', dpi=600, bbox_inches='tight')
 plt.show()
 print('Saved violin_mjsp.svg and violin_mjsp.png')
