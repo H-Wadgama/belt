@@ -15,7 +15,7 @@ feed_parameters = {
 # ─── RCF reactor conditions ───────────────────────────────────────────────────
 solvolysis_params = {
     'T'                     : 225 + 273.15,  # [K]
-    'P'                     : 63e5,          # [Pa] 63 bar (Vapor pressure exerted by methanol at the reaction temperature)
+    'P'                     : 6318477.618571473,          # [Pa] 63 bar (Vapor pressure exerted by methanol at the reaction temperature)
     'tau_s'                 : 3,             # [hr] Time on stream per solvolysis batch
     'tau_s_res'             : 18/60,         # [hr] Hydraulic residence time of solvent in bed (20 min)
     'tau_0'                 : 1,             # [hr] Cycle time (tau_s + cleaning window)

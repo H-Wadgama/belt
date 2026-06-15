@@ -11,7 +11,7 @@ plt.rc('font', family='Arial')
 import os
 _dir = os.path.dirname(os.path.abspath(__file__))
 df = pd.read_excel(
-    os.path.join(_dir, 'lignin_saf', 'uncertainty-gsa', 'bartling_trial_5.xlsx'),
+    os.path.join(_dir, 'lignin_saf', 'uncertainty-gsa', 'bartling_trial_7.xlsx'),
     header=[0, 1], index_col=0, skiprows=[2]
 )
 msp_values = df[("TEA", "Minimum jet selling price [USD/gal]")].dropna().values
@@ -67,7 +67,7 @@ def setup_axes():
         sp.set_visible(False)
 
     ax_kde.set_xlim(x_min, x_max)
-    ax_kde.set_xlabel('RCF Crude price (USD/kg)', fontsize=12)
+    ax_kde.set_xlabel('MSP of Crude RCF Oil (USD/kg)', fontsize=12)
     ax_kde.set_ylabel('Probability density', fontsize=12)
     ax_kde.tick_params(axis='both', which='major', labelsize=10, width=1.0, length=5)
     for sp in ax_kde.spines.values():
@@ -75,8 +75,8 @@ def setup_axes():
 
     ax_box.axvline(baseline_mjsp, color='black', ls='--', lw=1.2, zorder=1)
     ax_kde.axvline(baseline_mjsp, color='black', ls='--', lw=1.2)
-    ax_kde.text(baseline_mjsp, 1.02, 'Baseline MJSP', ha='center', va='bottom',
-                fontsize=9, color='black', transform=ax_kde.get_xaxis_transform())
+    #ax_kde.text(baseline_mjsp, 1.02, 'Baseline MJSP', ha='center', va='bottom',
+    #            fontsize=9, color='black', transform=ax_kde.get_xaxis_transform())
 
 
 def draw_bg_points():
