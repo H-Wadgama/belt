@@ -9,7 +9,7 @@ from atj_saf.atj_bst.etj_settings import feed_parameters, dehyd_data, olig_data,
 from atj_saf.atj_bst.etj_utils import calculate_ethanol_flow
 from atj_saf.atj_bst.atj_bst_units import AdiabaticReactor, IsothermalReactor, EthanolStorageTank, HydrocarbonProductTank, HydrogenStorageTank, CatalystMixer
 from atj_saf.atj_bst.atj_bst_tea_saf import ConventionalEthanolTEA
-from cellulosic_tea_etj import create_cellulosic_ethanol_tea
+#from cellulosic_tea_etj import create_cellulosic_ethanol_tea
 bst.F.set_flowsheet('etj') # F is the main flowsheet
 bst.settings.CEPCI = 800.8 # For the year 2023 from https://personalpages.manchester.ac.uk/staff/tom.rodgers/Interactive_graphs/CEPCI.html?reactors/CEPCI/index.html
 etj_chems = create_chemicals()
