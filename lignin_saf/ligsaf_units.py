@@ -664,7 +664,8 @@ class HydrogenolysisReactor(bst.Unit, bst.units.design_tools.PressureVessel):
         )
 
         #duty = (rcf_oil_yield['Monomers'])**0.5 * self.ins[0].imol['SolubleLignin'] * 1000 * hydrogenolysis_params['duty'] * 4.184
-        duty = -7426 * self.ins[0].imol['SolubleLignin'] * 1000
+        duty = -7426 * self.ins[0].imol['SolubleLignin'] * 1000 # 7426 kJ/mol lignin estimated in https://www.science.org/doi/abs/10.1126/science.aau1567 Liao et al SI
+
         # B-O-4 linkages in lignin [mol fraction] × SolubleLignin [kmol/hr] × 1000 [mol/kmol] × 60.5 kcal/mol × 4.184 kJ/kcal
 
         self.add_heat_utility(duty / N_reactors, self.T)
