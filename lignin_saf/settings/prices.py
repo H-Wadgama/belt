@@ -9,7 +9,7 @@ mj_per_btu    = 0.00105506  # [MJ / BTU]
 
 
 # ─── Feedstock ───────────────────────────────────────────────────────────────
-_feedstock_price_dry_ton = 70           # [USD / dry short ton] from Bartling et al.
+_feedstock_price_dry_ton = 70        # [USD / dry short ton] from Bartling et al.
 _moisture                = 0.2          # [wt fraction] moisture content of as-received biomass
 moisture                 = _moisture    # exported alias used in feedstock_price calc
 feedstock_price = _feedstock_price_dry_ton / kg_per_ton / (1 + _moisture)  # [USD/kg wet]

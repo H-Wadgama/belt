@@ -5,7 +5,7 @@
 
 # ─── Feed ─────────────────────────────────────────────────────────────────────
 feed_parameters = {
-    'flow'    : 2000,   # [dry metric tons per day], consistent with other TEA models
+    'flow'    : 10000,   # [dry metric tons per day], consistent with other TEA models
     'moisture': 0.2,    # [wt fraction] 20% moisture
     'poplar_density' : 485 # [kg/m³] bulk density of poplar chips ADD REFERENCE
 }
