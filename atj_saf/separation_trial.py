@@ -103,7 +103,7 @@ def run_separation(
                        moles of target key in the product / moles of
                        target key in the feed. 'target'/'met' are only
                        populated when spec='recovery'.
-        'capex_usd'  : float -- column purchase cost.
+        'capex_usd'  : float -- column installed cost.
         'utilities'  : {'heating_duty_kJ_per_hr', 'heating_cost_USD_per_hr',
                        'cooling_duty_kJ_per_hr', 'cooling_cost_USD_per_hr'}.
         'streams'    : {'feed', 'product', 'waste'}, each a dict of
@@ -211,7 +211,7 @@ def run_separation(
             and achieved_recovery >= results['recovery']['target'] - tol
         )
 
-    results['capex_usd'] = D1.purchase_cost
+    results['capex_usd'] = D1.installed_cost
 
     heating_duty = heating_cost = cooling_duty = cooling_cost = 0.0
     for hu in D1.heat_utilities:

@@ -7,13 +7,38 @@ whether the target was actually met, along with cost and stream data.
 
 The module exposes one function: `run_separation(...)`.
 
+## A note on reflux ratio terminology: `k` vs. absolute L/D
+
+Every function in this file and in `sweep_separation.py`/`separation_plots.py`
+takes a reflux ratio *input* named **`reflux_ratio_k`** (or, in the sweep,
+`reflux_ratios_k`). This is **not** an absolute reflux ratio — it is
+BioSTEAM's shortcut (Fenske-Underwood-Gilliland) multiplier `k`, defined as:
+
+```
+k = actual_reflux_ratio_LD / minimum_reflux_ratio_LD
+```
+
+You supply `k`; BioSTEAM works out the column's minimum reflux ratio for the
+given separation and multiplies it by `k` internally to get the absolute
+reflux ratio (L/D) actually used. The two absolute quantities that come out
+of that calculation are always named with an `_LD` suffix and only ever
+appear in *outputs*, never as something you pass in:
+
+- **`actual_reflux_ratio_LD`** — the absolute L/D the column actually runs at.
+- **`minimum_reflux_ratio_LD`** — the absolute L/D minimum reflux for that separation.
+
+So `reflux_ratio_k=2` does **not** mean "L/D = 2" — it means "run at 2x the
+minimum reflux," whatever absolute L/D that works out to. Keep an eye on the
+`_k` vs. `_LD` suffixes throughout the tables below; they are the only thing
+distinguishing the input multiplier from the two absolute values it produces.
+
 ## What you need to provide (inputs)
 
 | Argument | Required? | Description |
 |---|---|---|
 | `feed` | Yes | A `bst.Stream` feed to the column. `bst.settings.set_thermo(...)` must already be called before building it. |
 | `LHK` | Yes | `(light_key, heavy_key)` — the two component IDs the column is designed around. |
-| `reflux_ratio_k` | Yes | `k`: BioSTEAM's shortcut (Fenske-Underwood-Gilliland) input — the ratio of the actual (absolute L/D) reflux ratio to the *minimum* reflux ratio, i.e. `k = actual_reflux_ratio_LD / minimum_reflux_ratio_LD`. **Not the absolute L/D itself** — those are reported back in the output as `actual_reflux_ratio_LD` and `minimum_reflux_ratio_LD`. |
+| `reflux_ratio_k` | Yes | `k` — see [A note on reflux ratio terminology](#a-note-on-reflux-ratio-terminology-k-vs-absolute-ld) above. **Not the absolute L/D itself** — that's reported back in the output as `actual_reflux_ratio_LD` and `minimum_reflux_ratio_LD`. |
 | `P` | No (default `101325`) | Column pressure in Pa. |
 | `spec` | No (default `'purity'`) | `'purity'` or `'recovery'` — which kind of target to check feasibility against. |
 | `target` | No (default `'top'`) | `'top'` or `'bottom'` — which outlet is the product you care about. `'top'` checks the light key in the distillate; `'bottom'` checks the heavy key in the bottoms. The other outlet is reported as `waste`. |
@@ -40,7 +65,7 @@ A single `results` dictionary:
 | `error` | `None`, or a string with the exception message if the column failed to build/converge (e.g. spec unreachable in under 100 stages). |
 | `purity` | `{'target', 'achieved', 'met'}`. `achieved` is the *overall* molar fraction of the target key actually present in the product stream (all components counted) — this can legitimately read lower than the LHK-basis `target` if non-key components end up in that stream. `target`/`met` are only populated when `spec='purity'`. |
 | `recovery` | `{'target', 'achieved', 'met'}`. `achieved` = moles of target key in the product ÷ moles of target key in the feed. `target`/`met` are only populated when `spec='recovery'`. |
-| `capex_usd` | Column purchase cost (`float`). |
+| `capex_usd` | Column installed cost (`float`). |
 | `utilities` | `{'heating_duty_kJ_per_hr', 'heating_cost_USD_per_hr', 'cooling_duty_kJ_per_hr', 'cooling_cost_USD_per_hr'}`. |
 | `streams` | `{'feed', 'product', 'waste'}`. Each is a dict: `{'stream': <bst.Stream>, 'flow_kg_per_hr': {component: kg/hr, ...}, 'total_kg_per_hr': float}`. `product` and `waste` are `None` if the simulation failed. |
 | `operating_conditions` | `{'pressure_Pa', 'reflux_ratio_k', 'actual_reflux_ratio_LD', 'minimum_reflux_ratio_LD', 'theoretical_stages', 'feed_stage'}`. `reflux_ratio_k` echoes back the *input* multiplier k; `actual_reflux_ratio_LD` and `minimum_reflux_ratio_LD` are the *absolute* (L/D) reflux ratios BioSTEAM computed from it — do not confuse k with an L/D value. |
@@ -88,7 +113,7 @@ The module exposes one function: `sweep_reflux_ratio(...)`.
 |---|---|---|
 | `feed` | Yes | A `bst.Stream` feed. A separate copy of this stream is made for every run in the sweep, so the original `feed` is never mutated or consumed. |
 | `LHK` | Yes | `(light_key, heavy_key)` — same meaning as in `run_separation`. |
-| `reflux_ratios_k` | Yes | A sequence of `k` values — BioSTEAM's shortcut multiplier over minimum reflux, **not** absolute L/D values (see `reflux_ratio_k` in `run_separation` above) — to sweep over. One column is built and simulated per value. |
+| `reflux_ratios_k` | Yes | A sequence of `k` values — see [A note on reflux ratio terminology](#a-note-on-reflux-ratio-terminology-k-vs-absolute-ld) above. **Not** absolute L/D values. One column is built and simulated per value. |
 | `P`, `spec`, `target`, `y_top`, `x_bot`, `Lr`, `Hr`, `is_divided`, `tol` | No | Passed straight through to `run_separation` unchanged on every run in the sweep — see `run_separation` above for what each one means. Only `reflux_ratio_k` (and the per-run `feed` copy/unit `ID`) vary across rows; sweeping separation specs (e.g. varying `y_top` too) is a future extension, not handled here. |
 | `csv_path` | No (default `None`) | If given, the resulting DataFrame is written here via `df.to_csv(csv_path, index=False)`. |
 | `**design_kwargs` | No | Any other `BinaryDistillation` keyword arguments, passed through to `run_separation` on every run. |
@@ -112,7 +137,7 @@ A single `pandas.DataFrame`, one row per reflux ratio, with columns:
 | `recovery` | Achieved recovery, from `results['recovery']['achieved']`. |
 | `recovery_target` | Target recovery, from `results['recovery']['target']` — `None` unless `spec='recovery'`. |
 | `feasible` | Whether that row's run met its target, from `results['feasible']`. |
-| `CAPEX_USD` | Column purchase cost for that row. |
+| `CAPEX_USD` | Column installed cost for that row. |
 | `heating_cost_USD_hr` | Reboiler heating cost for that row. |
 | `cooling_cost_USD_hr` | Condenser cooling cost for that row. |
 | `error` | `None`, or the exception message if that row's run failed to converge. |
