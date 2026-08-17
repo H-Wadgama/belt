@@ -3,8 +3,8 @@ matplotlib.use('Agg')
 
 import biosteam as bst
 
-from sweep_separation import sweep_reflux_ratio
-from separation_plots import (
+from atj_saf.atj_bst.Xseparation_agent.sweep_separation import sweep_reflux_ratio
+from atj_saf.atj_bst.Xseparation_agent.separation_plots import (
     plot_purity_vs_reflux,
     plot_utility_cost_vs_reflux,
     plot_reflux_sweep,

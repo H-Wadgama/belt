@@ -25,6 +25,7 @@ def run_separation(
     is_divided=True,
     tol=1e-3,
     ID='D1',
+    lifetime_years=20,
     **design_kwargs,
 ):
     """
@@ -78,6 +79,10 @@ def run_separation(
         (`f'{ID}_distillate'`, `f'{ID}_bottoms'`) so that repeated calls
         with different IDs (e.g. in a parameter sweep) don't collide in
         BioSTEAM's flowsheet registry.
+    lifetime_years : float
+        Column equipment lifetime in years, used only for annualizing
+        `capex_usd` downstream (e.g. in `sep_economic_analysis.py`). Not
+        used by the simulation itself. Default 20.
     **design_kwargs
         Any other BinaryDistillation keyword arguments (e.g.
         `vessel_material`, `tray_type`, `stage_efficiency`), passed
@@ -104,6 +109,9 @@ def run_separation(
                        target key in the feed. 'target'/'met' are only
                        populated when spec='recovery'.
         'capex_usd'  : float -- column installed cost.
+        'lifetime_years' : float -- echoes back the `lifetime_years` input;
+                       column equipment lifetime used for annualizing
+                       `capex_usd` downstream.
         'utilities'  : {'heating_duty_kJ_per_hr', 'heating_cost_USD_per_hr',
                        'cooling_duty_kJ_per_hr', 'cooling_cost_USD_per_hr'}.
         'streams'    : {'feed', 'product', 'waste'}, each a dict of
@@ -133,6 +141,7 @@ def run_separation(
         'purity': {'target': None, 'achieved': None, 'met': None},
         'recovery': {'target': None, 'achieved': None, 'met': None},
         'capex_usd': None,
+        'lifetime_years': lifetime_years,
         'utilities': {
             'heating_duty_kJ_per_hr': None,
             'heating_cost_USD_per_hr': None,

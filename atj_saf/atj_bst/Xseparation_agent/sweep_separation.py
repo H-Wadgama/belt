@@ -17,6 +17,7 @@ def sweep_reflux_ratio(
     Hr=0.99,
     is_divided=True,
     tol=1e-3,
+    lifetime_years=20,
     csv_path=None,
     **design_kwargs,
 ):
@@ -41,7 +42,7 @@ def sweep_reflux_ratio(
         multiplier over the minimum reflux ratio, NOT an absolute L/D
         value (see `run_separation`'s `reflux_ratio_k` for the full
         explanation). One column is built and simulated per value.
-    P, spec, target, y_top, x_bot, Lr, Hr, is_divided, tol
+    P, spec, target, y_top, x_bot, Lr, Hr, is_divided, tol, lifetime_years
         Passed straight through to `run_separation` for every reflux ratio
         in the sweep -- see `separation_trial.run_separation` for details.
         (Only `reflux_ratio_k` and the per-run `feed`/`ID` vary across
@@ -63,9 +64,12 @@ def sweep_reflux_ratio(
         computed from `reflux_ratio_k`), `minimum_reflux_ratio_LD` (the
         absolute L/D minimum reflux that `reflux_ratio_k` is relative to),
         `theoretical_stages`, `purity`, `purity_target`, `recovery`,
-        `recovery_target`, `feasible`, `CAPEX_USD`, `heating_cost_USD_hr`,
-        `cooling_cost_USD_hr`, `error`. `purity_target`/`recovery_target`
-        are `None` for whichever of the two `spec` doesn't apply.
+        `recovery_target`, `feasible`, `CAPEX_USD`, `lifetime_years`,
+        `heating_cost_USD_hr`, `cooling_cost_USD_hr`, `error`.
+        `purity_target`/`recovery_target` are `None` for whichever of the
+        two `spec` doesn't apply. `CAPEX_USD` and `lifetime_years` are the
+        two inputs `sep_economic_analysis.annualize_sweep` needs to turn
+        this table into annualized $/yr figures.
     """
     table = []
     for i, k in enumerate(reflux_ratios_k):
@@ -84,6 +88,7 @@ def sweep_reflux_ratio(
             is_divided=is_divided,
             tol=tol,
             ID=f'D_sweep{i}',
+            lifetime_years=lifetime_years,
             **design_kwargs,
         )
         table.append({
@@ -97,6 +102,7 @@ def sweep_reflux_ratio(
             'recovery_target': result['recovery']['target'],
             'feasible': result['feasible'],
             'CAPEX_USD': result['capex_usd'],
+            'lifetime_years': result['lifetime_years'],
             'heating_cost_USD_hr': result['utilities']['heating_cost_USD_per_hr'],
             'cooling_cost_USD_hr': result['utilities']['cooling_cost_USD_per_hr'],
             'error': result['error'],
