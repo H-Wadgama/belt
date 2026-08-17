@@ -69,7 +69,10 @@ def run_separation(
     tol : float
         Absolute tolerance used when checking achieved vs. target.
     ID : str
-        Unit ID for the column.
+        Unit ID for the column. Also used to name the two outlet streams
+        (`f'{ID}_distillate'`, `f'{ID}_bottoms'`) so that repeated calls
+        with different IDs (e.g. in a parameter sweep) don't collide in
+        BioSTEAM's flowsheet registry.
     **design_kwargs
         Any other BinaryDistillation keyword arguments (e.g.
         `vessel_material`, `tray_type`, `stage_efficiency`), passed
@@ -153,7 +156,7 @@ def run_separation(
         results['recovery']['target'] = Lr if target == 'top' else Hr
 
     column_kwargs = dict(
-        ID=ID, ins=feed, outs=('distillate', 'bottoms'),
+        ID=ID, ins=feed, outs=(f'{ID}_distillate', f'{ID}_bottoms'),
         LHK=LHK, k=reflux_ratio, P=P, is_divided=is_divided,
         **design_kwargs,
     )
@@ -262,7 +265,7 @@ if __name__ == '__main__':
     feed2.T = feed2.bubble_point_at_P().T
     recovery_results = run_separation(
         feed2, LHK=('Methanol', 'Water'), reflux_ratio=1.5, P=101325,
-        spec='recovery', target='bottom', Lr=0.99, Hr=0.99,
+        spec='recovery', target='bottom', Lr=0.99, Hr=0.99, ID='D2',
     )
     print('\n--- Recovery-spec run ---')
     print(f"Feasible: {recovery_results['feasible']}")

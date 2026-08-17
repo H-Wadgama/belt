@@ -1,0 +1,124 @@
+import biosteam as bst
+import pandas as pd
+
+from separation_trial import run_separation
+
+
+def sweep_reflux_ratio(
+    feed,
+    LHK,
+    reflux_ratios,
+    P=101325,
+    spec='purity',
+    target='top',
+    y_top=0.99,
+    x_bot=0.01,
+    Lr=0.99,
+    Hr=0.99,
+    is_divided=True,
+    tol=1e-3,
+    csv_path=None,
+    **design_kwargs,
+):
+    """
+    Run `run_separation` once per reflux ratio in `reflux_ratios` and
+    collect the results into a single pandas DataFrame (one row per run).
+
+    Every run gets its own copy of `feed` and its own unit ID (derived from
+    the run's position in `reflux_ratios`), so repeated/looped calls don't
+    collide in BioSTEAM's flowsheet registry the way reusing one `feed`
+    stream and a fixed `ID='D1'` across iterations would.
+
+    Parameters
+    ----------
+    feed : bst.Stream
+        Feed to copy for each column in the sweep (thermo must already be
+        set on `bst.settings`). The original `feed` is left untouched.
+    LHK : tuple[str, str]
+        (light_key, heavy_key) component IDs.
+    reflux_ratios : Sequence[float]
+        The `k` values (ratio of actual to minimum reflux) to sweep over.
+        One column is built and simulated per value.
+    P, spec, target, y_top, x_bot, Lr, Hr, is_divided, tol
+        Passed straight through to `run_separation` for every reflux ratio
+        in the sweep -- see `separation_trial.run_separation` for details.
+        (Only `reflux_ratio` and the per-run `feed`/`ID` vary across rows;
+        everything else is held fixed for now. Sweeping separation specs
+        as well is a future extension, not handled here.)
+    csv_path : str or None
+        If given, the resulting DataFrame is written to this path via
+        `DataFrame.to_csv(csv_path, index=False)`.
+    **design_kwargs
+        Any other `BinaryDistillation` keyword arguments, passed through
+        to `run_separation` for every run.
+
+    Returns
+    -------
+    df : pandas.DataFrame
+        One row per reflux ratio, with columns: `reflux_ratio`,
+        `actual_reflux_ratio`, `minimum_reflux_ratio`,
+        `theoretical_stages`, `purity`, `recovery`, `feasible`,
+        `CAPEX_USD`, `heating_cost_USD_hr`, `cooling_cost_USD_hr`, `error`.
+    """
+    table = []
+    for i, R in enumerate(reflux_ratios):
+        run_feed = feed.copy(f'{feed.ID}_sweep{i}')
+        result = run_separation(
+            feed=run_feed,
+            LHK=LHK,
+            reflux_ratio=R,
+            P=P,
+            spec=spec,
+            target=target,
+            y_top=y_top,
+            x_bot=x_bot,
+            Lr=Lr,
+            Hr=Hr,
+            is_divided=is_divided,
+            tol=tol,
+            ID=f'D_sweep{i}',
+            **design_kwargs,
+        )
+        table.append({
+            'reflux_ratio': result['operating_conditions']['reflux_ratio_input_k'],
+            'actual_reflux_ratio': result['operating_conditions']['actual_reflux_ratio'],
+            'minimum_reflux_ratio': result['operating_conditions']['minimum_reflux_ratio'],
+            'theoretical_stages': result['operating_conditions']['theoretical_stages'],
+            'purity': result['purity']['achieved'],
+            'recovery': result['recovery']['achieved'],
+            'feasible': result['feasible'],
+            'CAPEX_USD': result['capex_usd'],
+            'heating_cost_USD_hr': result['utilities']['heating_cost_USD_per_hr'],
+            'cooling_cost_USD_hr': result['utilities']['cooling_cost_USD_per_hr'],
+            'error': result['error'],
+        })
+
+    df = pd.DataFrame(table)
+
+    if csv_path is not None:
+        df.to_csv(csv_path, index=False)
+
+    return df
+
+
+if __name__ == '__main__':
+    bst.settings.set_thermo(['Water', 'Methanol', 'Glycerol'], cache=True)
+
+    feed = bst.Stream('feed', flow=(80, 100, 25), units='kmol/hr')
+    feed.T = feed.bubble_point_at_P().T
+
+    reflux_ratios = [1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5]
+
+    df = sweep_reflux_ratio(
+        feed=feed,
+        LHK=('Methanol', 'Water'),
+        reflux_ratios=reflux_ratios,
+        P=101325,
+        spec='purity',
+        target='top',
+        y_top=0.99,
+        x_bot=0.01,
+        csv_path='reflux_ratio_sweep.csv',
+    )
+
+    print(df)
