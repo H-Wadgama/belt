@@ -1,0 +1,10 @@
+reflux_ratio_k,actual_reflux_ratio_LD,minimum_reflux_ratio_LD,theoretical_stages,purity,purity_target,recovery,recovery_target,feasible,CAPEX_USD,lifetime_years,heating_cost_USD_hr,cooling_cost_USD_hr,error
+1.5,,,,,0.9999,,,False,,20,,,UndefinedChemicalAlias: 'Methanol'
+1.75,,,,,0.9999,,,False,,20,,,UndefinedChemicalAlias: 'Methanol'
+2.0,,,,,0.9999,,,False,,20,,,UndefinedChemicalAlias: 'Methanol'
+2.25,,,,,0.9999,,,False,,20,,,UndefinedChemicalAlias: 'Methanol'
+2.5,,,,,0.9999,,,False,,20,,,UndefinedChemicalAlias: 'Methanol'
+2.75,,,,,0.9999,,,False,,20,,,UndefinedChemicalAlias: 'Methanol'
+3.0,,,,,0.9999,,,False,,20,,,UndefinedChemicalAlias: 'Methanol'
+3.25,,,,,0.9999,,,False,,20,,,UndefinedChemicalAlias: 'Methanol'
+3.5,,,,,0.9999,,,False,,20,,,UndefinedChemicalAlias: 'Methanol'

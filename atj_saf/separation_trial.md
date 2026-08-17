@@ -1,3 +1,91 @@
+# `atj_saf/atj_bst/Xseparation_agent/` — distillation sizing & optimization toolkit
+
+This folder is a self-contained toolkit for scoping out a single BioSTEAM
+`BinaryDistillation` column against a purity/recovery target, sweeping that
+column over a range of reflux ratios, costing each point in the sweep, and
+picking the cheapest one that actually hits the target. Each layer is a thin
+wrapper around the one below it — nothing here re-implements BioSTEAM's
+shortcut method; it only drives it and organizes the results.
+
+## Hierarchy
+
+```
+run_separation()            separation_trial.py
+    builds + simulates ONE BinaryDistillation column for a given
+    reflux_ratio_k, reports feasible/not + cost + stream data
+        │
+        ▼
+sweep_reflux_ratio()        sweep_separation.py
+    calls run_separation() once per reflux_ratio_k in a list,
+    collects the per-run results dicts into one DataFrame
+        │
+        ▼
+annualize_sweep()           sep_economic_analysis.py
+    adds $/yr columns to that DataFrame: annualized CAPEX
+    (CAPEX_USD / lifetime_years) + annualized utility cost
+        │
+        ▼
+find_best_design()          best_design.py
+    filters the annualized DataFrame to feasible==True rows,
+    returns whichever has the lowest total annualized cost
+        │
+        ▼
+optimize_reflux_ratio()     optimizer.py
+    ties all four steps above together behind one call:
+    feed + spec + reflux range + economic assumptions in,
+    {best_design, sweep_results, sweep_df, n_feasible, ...} out
+```
+
+`optimize_reflux_ratio()` is the intended entry point for most uses — call
+it once and read `result['best_design']`. The lower layers (`run_separation`,
+`sweep_reflux_ratio`, `annualize_sweep`, `find_best_design`) exist to be
+composed that way, but each is also usable standalone (e.g. to scope a
+single column, or to re-cost an existing sweep DataFrame with a different
+`lifetime_years`).
+
+## Files in this folder
+
+| File | Role |
+|---|---|
+| `separation_trial.py` | `run_separation()` — single-column build + simulate + feasibility check. |
+| `sweep_separation.py` | `sweep_reflux_ratio()` — runs `run_separation()` across a list of reflux ratios into a DataFrame. |
+| `sep_economic_analysis.py` | `annualize_capex()`, `annualize_utilities()`, `annualize_results()`, `annualize_sweep()` — turn CAPEX + hourly utility cost into $/yr figures, for one run or a whole sweep. |
+| `best_design.py` | `find_best_design()` — picks the lowest-annualized-cost feasible row out of an annualized sweep. |
+| `optimizer.py` | `optimize_reflux_ratio()` — the high-level function that chains all of the above. |
+| `separation_plots.py` | `plot_purity_vs_reflux()`, `plot_utility_cost_vs_reflux()`, `plot_reflux_sweep()` — matplotlib plots of a sweep DataFrame (achieved-vs-target performance, utility cost) against `reflux_ratio_k`. |
+| `testing_caes.ipynb` | Scratch/interactive notebook for ad hoc testing — not a maintained module; nothing else in this folder imports it. |
+
+The runnable end-to-end example living outside this folder is
+`atj_saf/demo_separation.py`, which calls `optimize_reflux_ratio()` on a
+toy Water/Methanol/Glycerol feed and plots the resulting sweep.
+
+## A note on imports within this folder
+
+Every module here imports its neighbors with a bare same-directory import
+(e.g. `sweep_separation.py` does `from separation_trial import run_separation`,
+`optimizer.py` does `from sweep_separation import sweep_reflux_ratio`, etc.),
+not a package-relative import. That only resolves when this directory is on
+`sys.path` — true automatically when you `cd` here and run one of these
+files directly (`python optimizer.py`), but **not** when importing this
+folder as a package from elsewhere (e.g.
+`from atj_saf.atj_bst.Xseparation_agent.optimizer import optimize_reflux_ratio`
+from a script in `atj_saf/`). Callers outside this folder need to add it to
+`sys.path` first:
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent / 'atj_bst' / 'Xseparation_agent'))
+
+from atj_saf.atj_bst.Xseparation_agent.optimizer import optimize_reflux_ratio
+```
+
+`atj_saf/demo_separation.py` does exactly this — see that file for a working
+example.
+
+---
+
 # `separation_trial.py`
 
 A trial/scoping helper for running a single BioSTEAM `BinaryDistillation`
@@ -167,3 +255,221 @@ df = sweep_reflux_ratio(
 Running `python sweep_separation.py` directly sweeps that same reflux ratio
 list, prints the resulting DataFrame, and writes it to
 `reflux_ratio_sweep.csv`.
+
+---
+
+# `sep_economic_analysis.py`
+
+Turns the CAPEX and hourly utility cost that `run_separation`/
+`sweep_reflux_ratio` report into annualized `$/yr` figures — straight-line
+CAPEX annualization plus utility cost scaled up to a full operating year.
+No optimization here either; it's pure unit conversion on top of numbers
+that already exist.
+
+Four functions, in increasing order of what they operate on:
+
+| Function | Operates on | Returns |
+|---|---|---|
+| `annualize_capex(capex_usd, lifetime_years)` | A single CAPEX figure. | `capex_usd / lifetime_years`, or `None` if either input is `None`. |
+| `annualize_utilities(heating_cost_usd_hr, cooling_cost_usd_hr, operating_days=330)` | A single run's hourly heating/cooling cost. | `(heating + cooling, $/hr) × (operating_days × 24 hr/day)`. |
+| `annualize_results(results, operating_days=330, lifetime_years=None)` | One `run_separation(...)` output dict. | A dict of annualized figures for that one column (see below). |
+| `annualize_sweep(df, operating_days=330)` | A whole `sweep_reflux_ratio(...)` DataFrame. | A copy of `df` with three new annualized columns added, one set of values per row. |
+
+`DEFAULT_OPERATING_DAYS = 330` (0.9 operating factor) is the module-level
+default used everywhere `operating_days` isn't given explicitly — it
+matches the `lignin_saf` TEA convention.
+
+## `annualize_results(results, ...)` — output
+
+| Key | Contents |
+|---|---|
+| `lifetime_years` | Lifetime actually used (falls back to `results['lifetime_years']` if not passed in). |
+| `operating_days` | Operating days/yr actually used. |
+| `annualized_capex_usd_per_yr` | `capex_usd / lifetime_years`, or `None`. |
+| `total_utility_cost_usd_per_yr` | `(heating_cost + cooling_cost) × operating_hours/yr`, or `None`. |
+| `total_annual_cost_usd_per_yr` | `annualized_capex + total_utility_cost` — the headline $/yr figure for that column, or `None` if either input is missing (e.g. the run failed). |
+
+## `annualize_sweep(df, ...)` — output
+
+A copy of the input DataFrame with three columns appended, computed from
+the existing `CAPEX_USD`, `lifetime_years`, `heating_cost_USD_hr`,
+`cooling_cost_USD_hr` columns that `sweep_reflux_ratio` already produces:
+
+| New column | Contents |
+|---|---|
+| `annualized_capex_usd_per_yr` | `CAPEX_USD / lifetime_years`, per row. |
+| `total_utility_cost_usd_per_yr` | `(heating_cost_USD_hr + cooling_cost_USD_hr) × operating_hours/yr`, per row. |
+| `total_annual_cost_usd_per_yr` | Sum of the two above — the column `find_best_design` (next section) minimizes over by default. |
+
+## Example
+
+```python
+from sep_economic_analysis import annualize_sweep
+from sweep_separation import sweep_reflux_ratio
+
+df = sweep_reflux_ratio(feed=feed, LHK=('Methanol', 'Water'),
+                         reflux_ratios_k=[1.5, 2.0, 2.5], spec='purity',
+                         target='top', y_top=0.99, x_bot=0.01)
+econ_df = annualize_sweep(df)
+econ_df[['reflux_ratio_k', 'CAPEX_USD', 'total_annual_cost_usd_per_yr']]
+```
+
+Running `python sep_economic_analysis.py` directly demos both
+`annualize_results` on a single `run_separation` call and `annualize_sweep`
+on a full `sweep_reflux_ratio` sweep, printing each.
+
+---
+
+# `best_design.py`
+
+Picks the lowest-annualized-cost **feasible** design out of a sweep. This
+is the answer to "given the sweep, what's the best design?" — it runs no
+new simulations; it just filters and sorts a DataFrame that already came
+out of `annualize_sweep`.
+
+The module exposes one function: `find_best_design(econ_df, cost_col='total_annual_cost_usd_per_yr')`.
+
+## What you need to provide (inputs)
+
+| Argument | Required? | Description |
+|---|---|---|
+| `econ_df` | Yes | Output of `sep_economic_analysis.annualize_sweep` (or any DataFrame with the same `feasible` and `cost_col` columns). |
+| `cost_col` | No (default `'total_annual_cost_usd_per_yr'`) | Which column to minimize over among feasible rows. |
+
+## What you get back (output)
+
+A single `result` dictionary:
+
+| Key | Contents |
+|---|---|
+| `found` | `bool` — `True` if at least one row in `econ_df` was feasible. |
+| `design` | `dict` or `None` — the winning row (every column of `econ_df` for that reflux ratio) as a plain dict; `None` if nothing was feasible. |
+| `message` | Human-readable one-line summary: either announcing the winning `reflux_ratio_k`/L-D/cost, or explaining that every row in the sweep failed or missed its target. |
+| `n_feasible` | How many rows in `econ_df` were feasible. |
+| `n_total` | How many rows `econ_df` had in total. |
+
+If no row is feasible, `find_best_design` does **not** raise — it returns
+`found=False`, `design=None`, and an explanatory `message`. Callers should
+check `found` before reading `design`.
+
+## Example
+
+```python
+from best_design import find_best_design
+
+best = find_best_design(econ_df)
+if best['found']:
+    print(best['message'])
+    best['design']['reflux_ratio_k']   # the winning k
+```
+
+Running `python best_design.py` directly runs the full
+`sweep_reflux_ratio` → `annualize_sweep` → `find_best_design` chain on the
+toy Water/Methanol/Glycerol feed and prints both the sweep table and the
+winning design.
+
+---
+
+# `optimizer.py`
+
+The high-level entry point for this whole folder: one function call that
+chains `sweep_reflux_ratio()` → `annualize_sweep()` → `find_best_design()`
+and hands back both the winner and the full sweep. It is still not a new
+optimization method — same shortcut-method sweep as the layers below it,
+just wired together so callers don't have to do it by hand.
+
+The module exposes one function: `optimize_reflux_ratio(...)`.
+
+## What you need to provide (inputs)
+
+| Argument | Required? | Description |
+|---|---|---|
+| `feed` | Yes | Feed stream; a fresh copy is made per reflux ratio internally (via `sweep_reflux_ratio`) — `feed` itself is never mutated. |
+| `LHK` | Yes | `(light_key, heavy_key)` — same meaning as in `run_separation`. |
+| `reflux_ratios_k` | Yes | The `k` values to sweep — see [the reflux ratio terminology note](#a-note-on-reflux-ratio-terminology-k-vs-absolute-ld) above. |
+| `P` | No (default `101325`) | Column pressure in Pa. |
+| `spec` | No (default `'purity'`) | `'purity'` or `'recovery'`. |
+| `target` | No (default `'top'`) | `'top'` or `'bottom'`. |
+| `purity_target` | Needed if `spec='purity'` and `y_top`/`x_bot` aren't given | Convenience shorthand: sets the symmetric pair `y_top=purity_target`, `x_bot=1-purity_target` (the 0.99/0.01 convention used everywhere else in this folder). |
+| `recovery_target` | Needed if `spec='recovery'` and `Lr`/`Hr` aren't given | Convenience shorthand: sets `Lr=Hr=recovery_target`. |
+| `y_top`, `x_bot` | No | Explicit purity spec — overrides `purity_target` if both given. |
+| `Lr`, `Hr` | No | Explicit recovery spec — overrides `recovery_target` if both given. |
+| `is_divided`, `tol` | No | Passed straight through to `run_separation` on every run — see `separation_trial.py` above. |
+| `lifetime_years` | No (default `20`) | Column equipment lifetime, for CAPEX annualization. |
+| `operating_days` | No (default `330`) | Plant operating days/yr, for utility cost annualization. |
+| `cost_col` | No (default `'total_annual_cost_usd_per_yr'`) | Passed to `find_best_design` — which annualized column to minimize. |
+| `csv_path` | No (default `None`) | If given, the raw (pre-annualized) sweep is written here (same as `sweep_reflux_ratio`'s own `csv_path`). |
+| `**design_kwargs` | No | Any other `BinaryDistillation` keyword arguments, passed through to every run. |
+
+Exactly one of (`purity_target`) or (`y_top` **and** `x_bot`) is required
+when `spec='purity'`; exactly one of (`recovery_target`) or (`Lr` **and**
+`Hr`) is required when `spec='recovery'`. Mixing (e.g. giving `y_top` but
+not `x_bot`) raises `ValueError`.
+
+## What you get back (output)
+
+A single `result` dictionary:
+
+| Key | Contents |
+|---|---|
+| `best_design` | `dict` or `None` — same as `find_best_design`'s `design`: the lowest-cost feasible row, or `None` if nothing was feasible. |
+| `sweep_results` | `list[dict]` — the complete annualized sweep, one dict per reflux ratio (`econ_df.to_dict('records')`); JSON-friendly. |
+| `sweep_df` | `pandas.DataFrame` — the same complete sweep, for direct use with `separation_plots.plot_reflux_sweep` or further analysis. |
+| `n_feasible` | How many reflux ratios in the sweep were feasible. |
+| `n_total` | How many reflux ratios were swept. |
+| `found` | `bool` — whether at least one feasible design was found. |
+| `message` | Human-readable summary from `find_best_design`. |
+
+## Example
+
+```python
+from optimizer import optimize_reflux_ratio
+
+result = optimize_reflux_ratio(
+    feed=feed,
+    LHK=('Methanol', 'Water'),
+    reflux_ratios_k=[1.5, 1.75, 2.0, 2.25, 2.5],
+    purity_target=0.99,
+)
+
+result['n_feasible']            # 5
+result['best_design']['reflux_ratio_k']   # winning k, e.g. 1.5
+result['message']               # "Best feasible design: reflux_ratio_k=1.5 ..."
+```
+
+Running `python optimizer.py` directly runs this exact example on the toy
+Water/Methanol/Glycerol feed and prints the feasibility count, summary
+message, and full best-design breakdown.
+
+---
+
+# `separation_plots.py`
+
+Matplotlib plots of a `sweep_reflux_ratio` (or `annualize_sweep`/
+`optimize_reflux_ratio`) DataFrame, always against `reflux_ratio_k` on the
+x-axis. Pure visualization — no new computation beyond what's already in
+the DataFrame's columns.
+
+| Function | Plots | Notes |
+|---|---|---|
+| `plot_purity_vs_reflux(df, spec=None, ...)` | Achieved purity or recovery (whichever `spec` picks) vs. `reflux_ratio_k`, with the target drawn as a reference line. | If `spec=None`, it's inferred from whichever of `purity_target`/`recovery_target` is actually populated in `df`. |
+| `plot_utility_cost_vs_reflux(df, ...)` | Reboiler heating cost and condenser cooling cost (`$/hr`) vs. `reflux_ratio_k`. | Two lines, one legend. |
+| `plot_reflux_sweep(df, spec=None, save_dir=None, show=True)` | Convenience wrapper: draws both plots above in one call. | If `save_dir` is given, saves `{save_dir}/{purity or recovery}_vs_reflux.png` and `{save_dir}/utility_cost_vs_reflux.png`. |
+
+All three take an optional `ax`/`save_path` (or `save_dir`) and `show`
+argument, following standard matplotlib-wrapper conventions — pass `ax` to
+draw onto an existing axes instead of creating a new figure, `save_path`/
+`save_dir` to write PNGs, `show=False` to suppress the interactive
+`plt.show()` call (needed in headless/non-interactive runs, e.g. with
+`matplotlib.use('Agg')`).
+
+## Example
+
+```python
+from separation_plots import plot_reflux_sweep
+
+plot_reflux_sweep(result['sweep_df'], save_dir='.', show=False)
+```
+
+Running `python separation_plots.py` directly reads `reflux_ratio_sweep.csv`
+(as written by `sweep_separation.py`'s own demo run) and plots it.
