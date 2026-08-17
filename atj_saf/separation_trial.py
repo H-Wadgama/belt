@@ -14,7 +14,7 @@ def _mass_flows_kg_hr(stream):
 def run_separation(
     feed,
     LHK,
-    reflux_ratio,
+    reflux_ratio_k,
     P=101325,
     spec='purity',
     target='top',
@@ -40,11 +40,16 @@ def run_separation(
         Feed to the column (thermo must already be set on `bst.settings`).
     LHK : tuple[str, str]
         (light_key, heavy_key) component IDs.
-    reflux_ratio : float
-        `k` in BioSTEAM's shortcut (Fenske-Underwood-Gilliland) method:
-        the ratio of the actual reflux ratio to the minimum reflux ratio.
-        The resulting absolute reflux ratio (L/D) is reported separately
-        in `operating_conditions['actual_reflux_ratio']`.
+    reflux_ratio_k : float
+        `k` in BioSTEAM's shortcut (Fenske-Underwood-Gilliland) method --
+        NOT an absolute reflux ratio. `k` is the ratio of the actual
+        (absolute L/D) reflux ratio to the minimum reflux ratio, i.e.
+        `k = actual_reflux_ratio_LD / minimum_reflux_ratio_LD`. You supply
+        `k`; BioSTEAM computes the absolute L/D from it internally. Both
+        the resulting absolute reflux ratio and the minimum reflux ratio
+        it was computed from are reported back in
+        `operating_conditions['actual_reflux_ratio_LD']` and
+        `operating_conditions['minimum_reflux_ratio_LD']`, respectively.
     P : float
         Column pressure [Pa]. Default 101325 (1 atm).
     spec : {'purity', 'recovery'}
@@ -105,9 +110,13 @@ def run_separation(
                        {'stream': <bst.Stream>, 'flow_kg_per_hr': {component:
                        kg/hr, ...}, 'total_kg_per_hr': float}. 'product' and
                        'waste' are None if simulation failed.
-        'operating_conditions' : {'pressure_Pa', 'reflux_ratio_input_k',
-                       'actual_reflux_ratio', 'minimum_reflux_ratio',
-                       'theoretical_stages', 'feed_stage'}.
+        'operating_conditions' : {'pressure_Pa', 'reflux_ratio_k',
+                       'actual_reflux_ratio_LD', 'minimum_reflux_ratio_LD',
+                       'theoretical_stages', 'feed_stage'} -- 'reflux_ratio_k'
+                       echoes back the *input* multiplier k; the other two
+                       are the *absolute* (L/D) reflux ratios BioSTEAM
+                       computed from it. Do not confuse the two: k is not
+                       an L/D value.
         'unit'       : the simulated BinaryDistillation instance, or None
                        if construction/simulation failed.
     """
@@ -141,9 +150,9 @@ def run_separation(
         },
         'operating_conditions': {
             'pressure_Pa': P,
-            'reflux_ratio_input_k': reflux_ratio,
-            'actual_reflux_ratio': None,
-            'minimum_reflux_ratio': None,
+            'reflux_ratio_k': reflux_ratio_k,      # BioSTEAM input multiplier, NOT an L/D value
+            'actual_reflux_ratio_LD': None,        # absolute L/D BioSTEAM computed from k
+            'minimum_reflux_ratio_LD': None,       # absolute L/D minimum reflux
             'theoretical_stages': None,
             'feed_stage': None,
         },
@@ -157,7 +166,7 @@ def run_separation(
 
     column_kwargs = dict(
         ID=ID, ins=feed, outs=(f'{ID}_distillate', f'{ID}_bottoms'),
-        LHK=LHK, k=reflux_ratio, P=P, is_divided=is_divided,
+        LHK=LHK, k=reflux_ratio_k, P=P, is_divided=is_divided,
         **design_kwargs,
     )
     if spec == 'purity':
@@ -221,8 +230,8 @@ def run_separation(
 
     dr = D1.design_results
     results['operating_conditions'].update(
-        actual_reflux_ratio=dr.get('Reflux'),
-        minimum_reflux_ratio=dr.get('Minimum reflux'),
+        actual_reflux_ratio_LD=dr.get('Reflux'),
+        minimum_reflux_ratio_LD=dr.get('Minimum reflux'),
         theoretical_stages=dr.get('Theoretical stages'),
         feed_stage=dr.get('Theoretical feed stage'),
     )
@@ -243,8 +252,10 @@ if __name__ == '__main__':
     feed.T = bp.T  # Feed at bubble point T
 
     # Example 1: purity spec, checking distillate (top) methanol purity
+    # reflux_ratio_k=2 means k=2, i.e. actual L/D = 2x the minimum reflux --
+    # NOT an absolute L/D of 2.
     purity_results = run_separation(
-        feed, LHK=('Methanol', 'Water'), reflux_ratio=2, P=101325,
+        feed, LHK=('Methanol', 'Water'), reflux_ratio_k=2, P=101325,
         spec='purity', target='top', y_top=0.99, x_bot=0.01,
     )
     print('--- Purity-spec run ---')
@@ -264,7 +275,7 @@ if __name__ == '__main__':
     feed2 = bst.Stream('feed2', flow=(80, 100, 25))
     feed2.T = feed2.bubble_point_at_P().T
     recovery_results = run_separation(
-        feed2, LHK=('Methanol', 'Water'), reflux_ratio=1.5, P=101325,
+        feed2, LHK=('Methanol', 'Water'), reflux_ratio_k=1.5, P=101325,
         spec='recovery', target='bottom', Lr=0.99, Hr=0.99, ID='D2',
     )
     print('\n--- Recovery-spec run ---')

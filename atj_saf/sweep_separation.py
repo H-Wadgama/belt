@@ -7,7 +7,7 @@ from separation_trial import run_separation
 def sweep_reflux_ratio(
     feed,
     LHK,
-    reflux_ratios,
+    reflux_ratios_k,
     P=101325,
     spec='purity',
     target='top',
@@ -36,15 +36,17 @@ def sweep_reflux_ratio(
         set on `bst.settings`). The original `feed` is left untouched.
     LHK : tuple[str, str]
         (light_key, heavy_key) component IDs.
-    reflux_ratios : Sequence[float]
-        The `k` values (ratio of actual to minimum reflux) to sweep over.
-        One column is built and simulated per value.
+    reflux_ratios_k : Sequence[float]
+        The `k` values to sweep over -- each is BioSTEAM's shortcut
+        multiplier over the minimum reflux ratio, NOT an absolute L/D
+        value (see `run_separation`'s `reflux_ratio_k` for the full
+        explanation). One column is built and simulated per value.
     P, spec, target, y_top, x_bot, Lr, Hr, is_divided, tol
         Passed straight through to `run_separation` for every reflux ratio
         in the sweep -- see `separation_trial.run_separation` for details.
-        (Only `reflux_ratio` and the per-run `feed`/`ID` vary across rows;
-        everything else is held fixed for now. Sweeping separation specs
-        as well is a future extension, not handled here.)
+        (Only `reflux_ratio_k` and the per-run `feed`/`ID` vary across
+        rows; everything else is held fixed for now. Sweeping separation
+        specs as well is a future extension, not handled here.)
     csv_path : str or None
         If given, the resulting DataFrame is written to this path via
         `DataFrame.to_csv(csv_path, index=False)`.
@@ -55,18 +57,23 @@ def sweep_reflux_ratio(
     Returns
     -------
     df : pandas.DataFrame
-        One row per reflux ratio, with columns: `reflux_ratio`,
-        `actual_reflux_ratio`, `minimum_reflux_ratio`,
-        `theoretical_stages`, `purity`, `recovery`, `feasible`,
-        `CAPEX_USD`, `heating_cost_USD_hr`, `cooling_cost_USD_hr`, `error`.
+        One row per reflux ratio, with columns: `reflux_ratio_k` (the
+        *input* multiplier over minimum reflux -- NOT an absolute L/D
+        value), `actual_reflux_ratio_LD` (the absolute L/D BioSTEAM
+        computed from `reflux_ratio_k`), `minimum_reflux_ratio_LD` (the
+        absolute L/D minimum reflux that `reflux_ratio_k` is relative to),
+        `theoretical_stages`, `purity`, `purity_target`, `recovery`,
+        `recovery_target`, `feasible`, `CAPEX_USD`, `heating_cost_USD_hr`,
+        `cooling_cost_USD_hr`, `error`. `purity_target`/`recovery_target`
+        are `None` for whichever of the two `spec` doesn't apply.
     """
     table = []
-    for i, R in enumerate(reflux_ratios):
+    for i, k in enumerate(reflux_ratios_k):
         run_feed = feed.copy(f'{feed.ID}_sweep{i}')
         result = run_separation(
             feed=run_feed,
             LHK=LHK,
-            reflux_ratio=R,
+            reflux_ratio_k=k,
             P=P,
             spec=spec,
             target=target,
@@ -80,12 +87,14 @@ def sweep_reflux_ratio(
             **design_kwargs,
         )
         table.append({
-            'reflux_ratio': result['operating_conditions']['reflux_ratio_input_k'],
-            'actual_reflux_ratio': result['operating_conditions']['actual_reflux_ratio'],
-            'minimum_reflux_ratio': result['operating_conditions']['minimum_reflux_ratio'],
+            'reflux_ratio_k': result['operating_conditions']['reflux_ratio_k'],
+            'actual_reflux_ratio_LD': result['operating_conditions']['actual_reflux_ratio_LD'],
+            'minimum_reflux_ratio_LD': result['operating_conditions']['minimum_reflux_ratio_LD'],
             'theoretical_stages': result['operating_conditions']['theoretical_stages'],
             'purity': result['purity']['achieved'],
+            'purity_target': result['purity']['target'],
             'recovery': result['recovery']['achieved'],
+            'recovery_target': result['recovery']['target'],
             'feasible': result['feasible'],
             'CAPEX_USD': result['capex_usd'],
             'heating_cost_USD_hr': result['utilities']['heating_cost_USD_per_hr'],
@@ -107,12 +116,13 @@ if __name__ == '__main__':
     feed = bst.Stream('feed', flow=(80, 100, 25), units='kmol/hr')
     feed.T = feed.bubble_point_at_P().T
 
-    reflux_ratios = [1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5]
+    # These are k multipliers over minimum reflux, not absolute L/D values.
+    reflux_ratios_k = [1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5]
 
     df = sweep_reflux_ratio(
         feed=feed,
         LHK=('Methanol', 'Water'),
-        reflux_ratios=reflux_ratios,
+        reflux_ratios_k=reflux_ratios_k,
         P=101325,
         spec='purity',
         target='top',
