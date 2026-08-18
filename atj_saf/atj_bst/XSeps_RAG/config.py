@@ -9,7 +9,7 @@ Edit these values to match your local setup.
 # vLLM default:   http://localhost:8000/v1
 LLM_BASE_URL = "http://localhost:11434/v1"
 LLM_API_KEY = "not-needed"          # most local servers ignore this, but the client requires a value
-LLM_MODEL = "qwen2.5:14b-instruct"  # whatever tag you've pulled/served
+LLM_MODEL = "qwen3:8b"  # whatever tag you've pulled/served
 
 # --- Embedding model (local, via sentence-transformers) ---
 # bge-small is fast enough on CPU and fine for a PoC over ~20 pages.
