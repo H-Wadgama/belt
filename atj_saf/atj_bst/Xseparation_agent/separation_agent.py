@@ -55,7 +55,7 @@ def _run_tool_call(call):
 
 def ask(client, messages):
     """Send `messages` to the model, resolving any tool calls, and return the final assistant message text."""
-    response = client.chat(model=MODEL, messages=messages, tools=TOOLS)
+    response = client.chat(model=MODEL, messages=messages, tools=TOOLS, think=False)
     messages.append(response.message)
 
     while response.message.tool_calls:
@@ -67,7 +67,7 @@ def ask(client, messages):
                 'tool_name': call.function.name,
                 'content': json.dumps(result),
             })
-        response = client.chat(model=MODEL, messages=messages, tools=TOOLS)
+        response = client.chat(model=MODEL, messages=messages, tools=TOOLS, think=False)
         messages.append(response.message)
 
     return response.message.content
