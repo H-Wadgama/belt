@@ -560,6 +560,13 @@ resolved tool call is echoed to stdout as
 `[calling optimize_separation({...})]` before the result comes back, so
 you can see what arguments the model actually chose.
 
+Both `client.chat(...)` calls in `ask()` pass `think=False`. `qwen3:8b` is a
+hybrid thinking model that otherwise emits a `<think>...</think>` reasoning
+block before every response and before every tool call; `think=False` turns
+that off via Ollama's chat API. This was switched off deliberately — it made
+the agent noticeably faster, since the model no longer spends tokens
+reasoning through each tool-call decision and each final summary.
+
 ### How to run it
 
 From an Anaconda Prompt (or any terminal with `conda` on `PATH`):
