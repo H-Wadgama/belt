@@ -5,6 +5,88 @@ from sep_economic_analysis import annualize_sweep, DEFAULT_OPERATING_DAYS
 from best_design import find_best_design
 
 
+def validate_key_selection(feed, LHK):
+    """
+    Check whether a light_key/heavy_key pair is valid for the shortcut
+    (Fenske-Underwood-Gilliland) BinaryDistillation workflow used
+    throughout this package.
+
+    The shortcut method assumes light_key and heavy_key are adjacent in
+    relative volatility -- every other feed component is expected to fall
+    cleanly on one side of the split. If some other feed component's
+    normal boiling point lies between light_key's and heavy_key's, that
+    component is a "distributed" component the shortcut method has no way
+    to pin down, and any resulting (in)feasibility may have nothing to do
+    with reflux ratio.
+
+    This function only checks and reports -- it never changes `LHK` or
+    picks keys on the caller's behalf.
+
+    Parameters
+    ----------
+    feed : bst.Stream
+        Feed stream (thermo already set). Only components with nonzero
+        flow in `feed` are checked against the keys.
+    LHK : tuple[str, str]
+        (light_key, heavy_key) component IDs.
+
+    Returns
+    -------
+    dict with keys:
+        'valid'   : bool -- True if no other feed component's boiling
+                    point falls strictly between light_key's and
+                    heavy_key's.
+        'warning' : str or None -- human-readable warning if not valid,
+                    else None.
+        'light_key', 'heavy_key' : str -- echoed back from LHK.
+        'light_key_Tb_K', 'heavy_key_Tb_K' : float -- normal boiling
+                    points (K) used for the comparison.
+        'distributed_components' : list[dict] -- one
+                    {'component', 'Tb_K'} entry per feed component whose
+                    boiling point falls between the two keys'.
+    """
+    light_key, heavy_key = LHK
+    chemicals = feed.chemicals
+
+    Tb_lk = chemicals[light_key].Tb
+    Tb_hk = chemicals[heavy_key].Tb
+    lo, hi = sorted((Tb_lk, Tb_hk))
+
+    distributed = []
+    for ID in feed.chemicals.IDs:
+        if ID in (light_key, heavy_key):
+            continue
+        if feed.imol[ID] <= 0:
+            continue
+        Tb = chemicals[ID].Tb
+        if Tb is not None and lo < Tb < hi:
+            distributed.append({'component': ID, 'Tb_K': Tb})
+
+    valid = len(distributed) == 0
+    warning = None
+    if not valid:
+        names = ', '.join(f"{d['component']} (Tb={d['Tb_K']:.1f} K)" for d in distributed)
+        warning = (
+            f"Key selection may be ambiguous/invalid for the shortcut method: "
+            f"light_key={light_key} (Tb={Tb_lk:.1f} K) and heavy_key={heavy_key} "
+            f"(Tb={Tb_hk:.1f} K) are not adjacent in volatility -- the following "
+            f"feed component(s) boil in between and are 'distributed' "
+            f"components the shortcut method cannot resolve: {names}. Consider "
+            f"choosing light_key/heavy_key that are adjacent in volatility, or "
+            f"treat this design/feasibility result with caution."
+        )
+
+    return {
+        'valid': valid,
+        'warning': warning,
+        'light_key': light_key,
+        'heavy_key': heavy_key,
+        'light_key_Tb_K': Tb_lk,
+        'heavy_key_Tb_K': Tb_hk,
+        'distributed_components': distributed,
+    }
+
+
 def optimize_reflux_ratio(
     feed,
     LHK,
@@ -114,9 +196,18 @@ def optimize_reflux_ratio(
                        was found.
         'message'       : str -- human-readable summary from
                        `find_best_design`.
+        'key_selection' : dict -- output of `validate_key_selection(feed,
+                       LHK)`, run before the sweep. `LHK` is never changed
+                       based on this check; `key_selection['warning']` is
+                       non-None when another feed component's boiling
+                       point falls between the light and heavy keys',
+                       which can explain an unexpected infeasible result
+                       independent of reflux ratio.
     """
     if spec not in ('purity', 'recovery'):
         raise ValueError("spec must be 'purity' or 'recovery'")
+
+    key_selection = validate_key_selection(feed, LHK)
 
     if spec == 'purity':
         if y_top is None and x_bot is None:
@@ -173,6 +264,7 @@ def optimize_reflux_ratio(
         'n_total': best['n_total'],
         'found': best['found'],
         'message': best['message'],
+        'key_selection': key_selection,
     }
 
 
@@ -191,6 +283,22 @@ if __name__ == '__main__':
 
     print(f"n_feasible: {result['n_feasible']}/{result['n_total']}")
     print(result['message'])
+    print(f"key_selection: {result['key_selection']}")
     print('\nBest design:')
     for k, v in result['best_design'].items():
         print(f'  {k}: {v}')
+
+    # Same feed, but LK/HK skip over Water -- Water is a distributed
+    # component and validate_key_selection() should flag it.
+    feed2 = bst.Stream('feed2', flow=(80, 100, 25), units='kmol/hr')
+    feed2.T = feed2.bubble_point_at_P().T
+
+    bad_key_result = optimize_reflux_ratio(
+        feed=feed2,
+        LHK=('Methanol', 'Glycerol'),
+        reflux_ratios_k=[1.5, 1.75, 2.0, 2.25, 2.5],
+        purity_target=0.99,
+    )
+    print('\n--- Ambiguous key selection demo (Methanol/Glycerol, skips Water) ---')
+    print(f"n_feasible: {bad_key_result['n_feasible']}/{bad_key_result['n_total']}")
+    print(f"key_selection warning: {bad_key_result['key_selection']['warning']}")

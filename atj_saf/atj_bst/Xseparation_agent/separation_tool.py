@@ -59,7 +59,7 @@ def optimize_separation(
         reflux_ratios_k: List of reflux ratio multipliers (k = actual reflux ratio / minimum reflux ratio) to sweep, e.g. [1.5, 2.0, 2.5]. If omitted, a default sweep from 1.2x to 3.5x minimum reflux is used.
 
     Returns:
-        A dict with the cheapest feasible design (or a message explaining why none was feasible), including capital cost, utility cost, achieved purity/recovery, and reflux ratio.
+        A dict with the cheapest feasible design (or a message explaining why none was feasible), including capital cost, utility cost, achieved purity/recovery, and reflux ratio. Also includes 'key_selection', a validity check on light_key/heavy_key: if 'key_selection.warning' is not null, another feed component boils between the two keys and is a 'distributed' component the shortcut method can't resolve -- ALWAYS check this before attributing an infeasible result to reflux ratio or purity/recovery target.
     """
     global _call_count
     _call_count += 1
@@ -88,6 +88,7 @@ def optimize_separation(
         'n_feasible': result['n_feasible'],
         'n_total': result['n_total'],
         'best_design': result['best_design'],
+        'key_selection': result['key_selection'],
     })
 
 

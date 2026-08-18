@@ -36,10 +36,30 @@ component flows must use real chemical names (e.g. Water, Methanol, Ethanol, \
 Glycerol) and a molar (kmol/hr) or mass (kg/hr) basis -- ask the user for \
 missing flow rates or a target purity/recovery if they weren't given.
 
+Choosing light_key/heavy_key: when the feed has three or more components, \
+light_key and heavy_key must be adjacent in volatility (boiling point) for \
+the shortcut method to give a meaningful answer. Order the feed components \
+by boiling point and pick light_key/heavy_key as neighbors around the split \
+you want -- do not just pick the lightest and heaviest components in the \
+feed, since any component boiling in between them is left unresolved by the \
+shortcut method.
+
+Every tool result includes a 'key_selection' field. ALWAYS check \
+`key_selection['warning']` before explaining a result to the user, \
+especially an infeasible one (n_feasible=0). If it is not null, that warning \
+-- not the reflux ratio or purity/recovery target -- is almost always the \
+real reason the design failed or looks strange: another feed component \
+boils between your chosen keys, so the shortcut method can't resolve where \
+it goes. In that case tell the user the key selection is the likely issue, \
+name the offending component, and suggest a corrected light_key/heavy_key \
+pair (adjacent in volatility) rather than suggesting a wider reflux ratio \
+sweep.
+
 After the tool returns, summarize the result in plain language: state whether \
 a feasible design was found, the winning reflux ratio (k), achieved purity or \
-recovery, capital cost, and annualized cost. If no feasible design was found, \
-say so and suggest widening the reflux ratio sweep or relaxing the target.
+recovery, capital cost, and annualized cost. If no feasible design was found \
+AND key_selection['warning'] is null, say so and suggest widening the reflux \
+ratio sweep or relaxing the target.
 """
 
 
