@@ -53,6 +53,9 @@ single column, or to re-cost an existing sweep DataFrame with a different
 | `best_design.py` | `find_best_design()` — picks the lowest-annualized-cost feasible row out of an annualized sweep. |
 | `optimizer.py` | `optimize_reflux_ratio()` — the high-level function that chains all of the above. |
 | `separation_plots.py` | `plot_purity_vs_reflux()`, `plot_utility_cost_vs_reflux()`, `plot_reflux_sweep()` — matplotlib plots of a sweep DataFrame (achieved-vs-target performance, utility cost) against `reflux_ratio_k`. |
+| `separation_tool.py` | `optimize_separation()` — JSON-in/JSON-out wrapper around `optimize_reflux_ratio()`, built to be handed to Ollama as a tool. |
+| `separation_agent.py` | Natural-language chat front end (Ollama + `qwen3:8b`) that calls `optimize_separation()` on the model's behalf. |
+| `sample_request.py` | Minimal standalone Ollama connectivity smoke test (`client.generate(...)`) — not part of the tool-calling pipeline; predates and is unrelated to `separation_agent.py`. |
 | `testing_caes.ipynb` | Scratch/interactive notebook for ad hoc testing — not a maintained module; nothing else in this folder imports it. |
 
 The runnable end-to-end example living outside this folder is
@@ -473,3 +476,114 @@ plot_reflux_sweep(result['sweep_df'], save_dir='.', show=False)
 
 Running `python separation_plots.py` directly reads `reflux_ratio_sweep.csv`
 (as written by `sweep_separation.py`'s own demo run) and plots it.
+
+---
+
+# `separation_tool.py` + `separation_agent.py` — Ollama tool-calling agent
+
+Lets a user describe a separation in plain English (e.g. "separate 80
+kmol/hr methanol and 100 kmol/hr water, 99% pure methanol overhead") and
+get back a costed column design, via a local Ollama model (default:
+`qwen3:8b`) that decides when to call `optimize_reflux_ratio()` as a tool.
+Nothing new is computed here — it's a natural-language wrapper around the
+same `optimize_reflux_ratio()` pipeline described above.
+
+```
+User types a request in plain English
+        │
+        ▼
+separation_agent.py          qwen3:8b (via Ollama) decides whether to
+    call optimize_separation()
+        │
+        ▼
+separation_tool.py           optimize_separation() builds a bst.Stream
+    from the model's {component: flow} dict, calls optimize_reflux_ratio(),
+    returns a plain JSON-safe dict
+        │
+        ▼
+separation_agent.py           feeds the tool result back to the model,
+    which explains it in plain English
+```
+
+## `separation_tool.py`
+
+Exposes one function, `optimize_separation(...)`, meant to be passed
+directly to Ollama's `tools=[...]` argument (not called by hand). Ollama's
+client introspects the function's type hints and Google-style docstring
+(via `convert_function_to_tool`) to build the JSON schema the model sees —
+so the signature and each `Args:` line *are* the model's documentation of
+the tool; keep them accurate if the signature changes.
+
+| Argument | Meaning |
+|---|---|
+| `components` | `{component_name: flow}` dict, e.g. `{"Methanol": 80, "Water": 100}`. Keys must be valid chemical names in the `chemicals`/BioSTEAM database. |
+| `light_key`, `heavy_key` | Same as `LHK` elsewhere in this folder. |
+| `units` | `'kmol/hr'` or `'kg/hr'` for the `components` values. |
+| `spec`, `target`, `purity_target`, `recovery_target`, `pressure_Pa` | Same meaning as the corresponding arguments in `optimize_reflux_ratio()` (`purity_target`/`recovery_target` use the same convenience-shorthand convention). |
+| `reflux_ratios_k` | Optional; defaults to `DEFAULT_REFLUX_RATIOS_K = [1.2, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5]` if omitted. |
+
+Internally, each call: (1) switches to a fresh `bst.main_flowsheet` (named
+`sep_agent_{n}`, incrementing per call) so repeated calls in one chat
+session don't collide on stream/unit IDs in BioSTEAM's flowsheet registry;
+(2) calls `bst.settings.set_thermo()` on the union of `components`,
+`light_key`, and `heavy_key`; (3) builds the feed stream and sets it to
+its bubble point; (4) calls `optimize_reflux_ratio()`; (5) returns
+`{'found', 'message', 'n_feasible', 'n_total', 'best_design'}`, recursively
+converted from numpy/pandas scalars to plain Python types via the internal
+`_jsonify()` helper so the result is safely JSON-serializable.
+
+`TOOLS = [optimize_separation]` and `TOOL_FUNCTIONS = {'optimize_separation': optimize_separation}`
+are the two names `separation_agent.py` imports — the former goes straight
+into Ollama's `tools=` argument, the latter is used to dispatch a tool
+call by name back to the actual Python function.
+
+## `separation_agent.py`
+
+The runnable chat agent. Talks to a **local Ollama server** running
+`qwen3:8b` via the `ollama` Python client, with `separation_tool.TOOLS`
+registered as its one available tool. Two modes:
+
+- **Interactive REPL** — `python separation_agent.py`, then type requests
+  at the `You:` prompt; `exit`/`quit`/Ctrl+C to leave. Conversation
+  history (`messages`) persists for the life of the process, so follow-ups
+  like "now try 99.5% instead" have context from earlier turns.
+- **One-shot** — `python separation_agent.py "<prompt>"`: runs a single
+  prompt, prints the reply, exits. Useful for scripting/testing.
+
+`ask(client, messages)` is the core loop: send `messages` to the model
+with `tools=TOOLS`; while the model's response includes `tool_calls`,
+look each one up in `TOOL_FUNCTIONS` by name, call it with
+`**call.function.arguments`, append the JSON-serialized result back onto
+`messages` as a `{'role': 'tool', ...}` message, and re-query the model —
+until it responds with plain text instead of another tool call. Each
+resolved tool call is echoed to stdout as
+`[calling optimize_separation({...})]` before the result comes back, so
+you can see what arguments the model actually chose.
+
+### How to run it
+
+From an Anaconda Prompt (or any terminal with `conda` on `PATH`):
+
+```bash
+conda activate pyfuel
+cd "atj_saf/atj_bst/Xseparation_agent"    # bare-import convention -- see note above
+
+python separation_agent.py                 # interactive REPL
+python separation_agent.py "Separate 80 kmol/hr methanol and 100 kmol/hr water, 99% pure methanol overhead"   # one-shot
+```
+
+**Prerequisites:**
+- A local Ollama server must be running (normally automatic once Ollama
+  is installed — a tray app/service; `ollama serve` in a separate terminal
+  if it isn't).
+- The model must be pulled once: `ollama pull qwen3:8b`.
+- Run with the `pyfuel` environment's Python — that's where `ollama` and
+  `biosteam` are both installed (`ollama` is not in the repo's base
+  `requirements.txt`; it was added ad hoc via `pip install ollama` for
+  this agent).
+
+**Getting good results:** state real chemical names (e.g. Water,
+Methanol, Ethanol, Glycerol) with explicit flow rates and units
+(kmol/hr or kg/hr), and an explicit purity or recovery target — the model
+will usually ask a follow-up rather than guess if these are missing,
+since the tool has no default feed composition to fall back on.
