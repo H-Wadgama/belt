@@ -33,7 +33,7 @@ find_best_design()          best_design.py
 optimize_reflux_ratio()     optimizer.py
     ties all four steps above together behind one call:
     feed + spec + reflux range + economic assumptions in,
-    {best_design, sweep_results, sweep_df, n_feasible, ...} out
+    {best_design, sweep_results, sweep_df, n_feasible, key_selection, ...} out
 ```
 
 `optimize_reflux_ratio()` is the intended entry point for most uses — call
@@ -42,6 +42,12 @@ it once and read `result['best_design']`. The lower layers (`run_separation`,
 composed that way, but each is also usable standalone (e.g. to scope a
 single column, or to re-cost an existing sweep DataFrame with a different
 `lifetime_years`).
+
+Before running the sweep, `optimize_reflux_ratio()` also calls
+`validate_key_selection()` (same module) as a sanity check on the
+`LHK` pair itself, independent of reflux ratio — see
+[`validate_key_selection()`](#validate_key_selection-key-selection-sanity-check)
+in the `optimizer.py` section below.
 
 ## Files in this folder
 
@@ -422,6 +428,50 @@ A single `result` dictionary:
 | `n_total` | How many reflux ratios were swept. |
 | `found` | `bool` — whether at least one feasible design was found. |
 | `message` | Human-readable summary from `find_best_design`. |
+| `key_selection` | `dict` — output of `validate_key_selection(feed, LHK)`, run once before the sweep (see below). Present regardless of `found`/`n_feasible`; check `key_selection['warning']` before attributing an infeasible or unexpected result to reflux ratio. |
+
+## `validate_key_selection()` — key-selection sanity check
+
+`optimize_reflux_ratio()` calls this automatically before sweeping reflux
+ratios: `validate_key_selection(feed, LHK)`. It exists because the shortcut
+(Fenske-Underwood-Gilliland) method only gives a meaningful answer when
+`light_key` and `heavy_key` are **adjacent in relative volatility** — every
+other feed component is expected to fall cleanly to one side of the split.
+If a feed has 3+ components and some other component's boiling point falls
+*between* the chosen keys, that component is a "distributed" component the
+shortcut method can't resolve, and the resulting design — or its
+infeasibility — may have nothing to do with reflux ratio at all. This is
+exactly the failure mode that motivated the check: an agent (or a user)
+picking the lightest and heaviest components in a ternary feed as `LHK`
+while skipping over a middle-boiling component (e.g. `LHK=('Methanol',
+'Glycerol')` in a Methanol/Water/Glycerol feed, skipping Water) will get an
+infeasible sweep that has nothing to do with the reflux ratios tried.
+
+This function only **checks and reports** — it never changes `LHK` or picks
+keys on the caller's behalf.
+
+**Inputs:** `feed` (`bst.Stream`, thermo already set — only components with
+nonzero flow in `feed` are checked) and `LHK` (`(light_key, heavy_key)`,
+same meaning as elsewhere in this folder).
+
+**Output** — a single `dict`:
+
+| Key | Contents |
+|---|---|
+| `valid` | `bool` — `True` if no other feed component's normal boiling point (`chemicals[ID].Tb`, K) falls strictly between the light key's and heavy key's. |
+| `warning` | `str` or `None` — human-readable explanation naming the offending component(s), or `None` if `valid`. |
+| `light_key`, `heavy_key` | Echoed back from `LHK`. |
+| `light_key_Tb_K`, `heavy_key_Tb_K` | Normal boiling points (K) used for the comparison. |
+| `distributed_components` | `list[dict]` — one `{'component', 'Tb_K'}` entry per feed component whose boiling point falls between the two keys'. Empty when `valid`. |
+
+```python
+from optimizer import validate_key_selection
+
+check = validate_key_selection(feed, LHK=('Methanol', 'Glycerol'))
+check['valid']       # False
+check['warning']     # "...Water (Tb=373.1 K)... 'distributed' components the shortcut method cannot resolve..."
+check['distributed_components']   # [{'component': 'Water', 'Tb_K': 373.1...}]
+```
 
 ## Example
 
@@ -442,7 +492,10 @@ result['message']               # "Best feasible design: reflux_ratio_k=1.5 ..."
 
 Running `python optimizer.py` directly runs this exact example on the toy
 Water/Methanol/Glycerol feed and prints the feasibility count, summary
-message, and full best-design breakdown.
+message, `key_selection` result, and full best-design breakdown — then runs
+a second demo with `LHK=('Methanol', 'Glycerol')` on the same feed (skipping
+over Water) to show `validate_key_selection()` flagging the ambiguous key
+choice and the resulting sweep coming back with `n_feasible=0`.
 
 ---
 
@@ -528,9 +581,15 @@ session don't collide on stream/unit IDs in BioSTEAM's flowsheet registry;
 (2) calls `bst.settings.set_thermo()` on the union of `components`,
 `light_key`, and `heavy_key`; (3) builds the feed stream and sets it to
 its bubble point; (4) calls `optimize_reflux_ratio()`; (5) returns
-`{'found', 'message', 'n_feasible', 'n_total', 'best_design'}`, recursively
-converted from numpy/pandas scalars to plain Python types via the internal
-`_jsonify()` helper so the result is safely JSON-serializable.
+`{'found', 'message', 'n_feasible', 'n_total', 'best_design', 'key_selection'}`,
+recursively converted from numpy/pandas scalars to plain Python types via
+the internal `_jsonify()` helper so the result is safely JSON-serializable.
+`key_selection` is `optimize_reflux_ratio()`'s `validate_key_selection()`
+output passed straight through (see the `optimizer.py` section above) —
+its inclusion here is what actually gets the key-selection warning in
+front of the model; the docstring's `Returns:` line explicitly tells the
+model to check `key_selection['warning']` before attributing an infeasible
+result to reflux ratio or purity/recovery target.
 
 `TOOLS = [optimize_separation]` and `TOOL_FUNCTIONS = {'optimize_separation': optimize_separation}`
 are the two names `separation_agent.py` imports — the former goes straight
@@ -566,6 +625,34 @@ block before every response and before every tool call; `think=False` turns
 that off via Ollama's chat API. This was switched off deliberately — it made
 the agent noticeably faster, since the model no longer spends tokens
 reasoning through each tool-call decision and each final summary.
+
+### Two safeguards against wrong light_key/heavy_key choices
+
+For feeds with 3+ components, `qwen3:8b` picking `light_key`/`heavy_key`
+that aren't adjacent in volatility (e.g. lightest + heaviest, skipping a
+middle-boiling component) produces an infeasible or nonsensical design that
+has nothing to do with reflux ratio — see
+[`validate_key_selection()`](#validate_key_selection-key-selection-sanity-check)
+above for the mechanism. Two independent safeguards address this, layered
+on top of each other:
+
+1. **Prevention** — `SYSTEM_PROMPT` in `separation_agent.py` instructs the
+   model to order feed components by boiling point and choose
+   `light_key`/`heavy_key` as neighbors in that ordering *before* calling
+   the tool, rather than just picking the lightest and heaviest components
+   present.
+2. **Detection** — regardless of what the model chose, `optimize_separation`
+   always returns `key_selection` (see the `separation_tool.py` section
+   above). `SYSTEM_PROMPT` also instructs the model to check
+   `key_selection['warning']` after every tool call, *especially* on an
+   infeasible result, and to attribute the failure to the flagged
+   distributed component rather than to reflux ratio or the purity/recovery
+   target when a warning is present.
+
+Safeguard 2 is the backstop for when safeguard 1 doesn't work — the model
+can still call the tool with a bad `LHK` (as it did before either safeguard
+existed), but it now has the means to correctly diagnose why the sweep came
+back infeasible instead of guessing "reflux ratio might be too low."
 
 ### How to run it
 
