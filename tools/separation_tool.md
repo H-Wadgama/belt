@@ -704,11 +704,43 @@ their parent chunk hydrated automatically.
 | File | Role |
 |---|---|
 | `config.py` | Local LLM endpoint/model, embedding model, Chroma path, chunking/retrieval knobs. |
-| `schema.py` | `Heuristic` / `ExtractionResult` pydantic models — the shape of one extracted rule (`category`, `condition`, `principle`, `design_implication`). |
+| `schema.py` | `Heuristic` / `ExtractionResult` pydantic models — the shape of one extracted rule (`category`, `condition`, `principle`, `design_implication`, plus `heuristic_type`/`equation`/`required_variables` for calculation-based heuristics — see below). |
 | `ingest.py` | PDF → paragraph-aware chunks → LLM extraction → dual storage in Chroma. |
 | `query.py` | Embeds a question, retrieves heuristics + hydrated raw chunks, asks the LLM to answer grounded in that context. `--test` runs three canned PoC questions. |
 | `seed_heuristics.py` | Hand-seeds 2 manually-verified ground-truth heuristics directly into Chroma, bypassing LLM extraction — see below. |
 | `requirements.txt` | `chromadb`, `openai` (client, used against any OpenAI-compatible local server), `sentence-transformers`, `pymupdf`, `pydantic`. |
+
+## `schema.py` — heuristic shape, including calculation-based heuristics
+
+`Heuristic` (and the `ExtractionResult` list it lives in) has two kinds of
+rows, distinguished by `heuristic_type`:
+
+- **`"rule"`** (default) — a qualitative judgment call: `category`,
+  `condition`, `principle`, `design_implication` only. This is the original
+  shape and covers most extracted/seeded heuristics today.
+- **`"equation"`** — a calculation-based heuristic. Adds `equation` (the
+  formula as a plain string, e.g. `"SF = alpha_1,2 = Ps_1 / Ps_2"`) and
+  `required_variables` (`List[str]` of the variable names on the
+  right-hand side, e.g. `["Ps_1", "Ps_2"]`). `ingest.py`'s extraction prompt
+  asks the LLM to classify each extracted heuristic this way, and
+  `seed_heuristics.py` has one hand-seeded example (separation-factor ≈
+  relative volatility, from Seader ch. 9).
+
+`equation` is currently opaque text — nothing parses or evaluates it; a
+human (or the answering LLM in `query.py`) reads it and applies it by hand.
+Chroma metadata values must be scalars, so `required_variables` is stored as
+a comma-joined string (`ingest.py`/`seed_heuristics.py`) and split back into
+a list wherever it's read for display (`query.py`).
+
+**Future work (not started):** wire `heuristic_type="equation"` heuristics
+into an actual BioSTEAM calculation instead of just surfacing the formula as
+text — e.g. a small registry mapping `required_variables` names to how to
+pull/compute them from a live BioSTEAM stream or chemical (`Ps_1` →
+`chemicals['X'].Psat(T)`), plus a generic evaluator that plugs those into
+`equation`. This is a distinct, later step from the `chopper`↔`chopperRAG`
+wiring already flagged as future work below (turning a `design_implication`
+into an `optimize_reflux_ratio()` call) — both are on the roadmap, neither
+is built yet.
 
 ## `seed_heuristics.py` — ground-truth retrieval validation
 
