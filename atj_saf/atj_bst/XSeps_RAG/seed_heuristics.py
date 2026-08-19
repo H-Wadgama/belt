@@ -44,10 +44,6 @@ SEED_HEURISTICS = [
     ),
 ]
 
-# Tag these by source so you can tell hand-seeded ground truth apart from
-# whatever ingest.py later extracts automatically from the same book.
-SOURCE_TAG = "seader_separation_process_principles_ch9"
-
 
 def render_heuristic_for_embedding(h: Heuristic) -> str:
     return f"When {h.condition}: {h.principle}. Design implication: {h.design_implication}"

@@ -681,3 +681,121 @@ Methanol, Ethanol, Glycerol) with explicit flow rates and units
 (kmol/hr or kg/hr), and an explicit purity or recovery target — the model
 will usually ask a follow-up rather than guess if these are missing,
 since the tool has no default feed composition to fall back on.
+
+---
+
+# `atj_saf/atj_bst/XSeps_RAG/` — separation-heuristics RAG (separate toolkit)
+
+A **different, unconnected** proof-of-concept living alongside
+`Xseparation_agent/` in the same `atj_bst/` folder. Where `Xseparation_agent`
+*runs* BioSTEAM columns, `XSeps_RAG` *mines a separations textbook* for
+engineering design heuristics (rules of thumb like "if the compound is
+heat-sensitive, do X") and makes them queryable via a local LLM + vector
+search. The two are not wired together yet — per the folder's own README,
+turning a retrieved heuristic's `design_implication` into an actual
+`optimize_reflux_ratio()` call is future work, not something either tool
+does today.
+
+**Dual-storage RAG design:** every textbook chunk is stored raw in Chroma,
+and any heuristics an LLM extracts from it are stored as separate, linked
+records in the same collection (`parent_chunk_id` ties a heuristic back to
+its source chunk). One query returns a mix of both; heuristic hits get
+their parent chunk hydrated automatically.
+
+| File | Role |
+|---|---|
+| `config.py` | Local LLM endpoint/model, embedding model, Chroma path, chunking/retrieval knobs. |
+| `schema.py` | `Heuristic` / `ExtractionResult` pydantic models — the shape of one extracted rule (`category`, `condition`, `principle`, `design_implication`). |
+| `ingest.py` | PDF → paragraph-aware chunks → LLM extraction → dual storage in Chroma. |
+| `query.py` | Embeds a question, retrieves heuristics + hydrated raw chunks, asks the LLM to answer grounded in that context. `--test` runs three canned PoC questions. |
+| `seed_heuristics.py` | Hand-seeds 2 manually-verified ground-truth heuristics directly into Chroma, bypassing LLM extraction — see below. |
+| `requirements.txt` | `chromadb`, `openai` (client, used against any OpenAI-compatible local server), `sentence-transformers`, `pymupdf`, `pydantic`. |
+
+## `seed_heuristics.py` — ground-truth retrieval validation
+
+Before trusting `ingest.py`'s LLM-driven extraction across a whole
+textbook, `seed_heuristics.py` plants two known-good heuristics (from
+Seader's *Separation Process Principles*, ch. 9) straight into the Chroma
+collection, so retrieval quality can be checked independently of
+extraction quality:
+
+1. **Vapor feed** → don't default to ordinary distillation; consider
+   partial condensation, cryogenic distillation, gas absorption/adsorption,
+   membrane gas permeation, or desublimation instead.
+2. **Liquid feed** → a much broader toolkit applies: flash, ordinary
+   distillation, stripping, extractive/azeotropic distillation, LLE,
+   crystallization, liquid adsorption, membrane processes (dialysis/RO/UF/
+   pervaporation), or supercritical extraction.
+
+Each is rendered to the same `"When {condition}: {principle}. Design
+implication: {design_implication}"` sentence `ingest.py` uses, embedded
+with `config.EMBED_MODEL`, and `upsert`ed with `parent_chunk_id=""` (no
+source chunk on file, since it was typed by hand).
+
+**Run it:**
+```bash
+conda activate pyfuel
+cd "atj_saf/atj_bst/XSeps_RAG"
+pip install -r requirements.txt   # one-time
+python seed_heuristics.py         # no Ollama needed — embedding-only
+```
+
+**Then validate retrieval with `query.py`** (this step needs a local Ollama
+server running the model named in `config.py`'s `LLM_MODEL`):
+```bash
+python query.py "What separation technique should I use for a vapor feed?"
+python query.py "What separation options exist if my feed is a liquid?"
+```
+Check that the printed heuristics block ranks the *matching* seed entry
+first (not just "both come back," which is trivial with only 2 rows in the
+store) and that the `ANSWER:` text is actually grounded in that entry
+rather than the other one.
+
+**Validated 2026-08-18/19** against `qwen3:8b` (config's `LLM_MODEL`
+updated from the default `qwen2.5:14b-instruct` to match): both directions
+passed — the vapor question ranked the vapor heuristic first and answered
+from it exclusively; the liquid question ranked the liquid heuristic first
+and answered from it exclusively. Confirms the embedding model
+(`BAAI/bge-small-en-v1.5`) can tell the two heuristics apart despite their
+near-identical boilerplate phrasing ("feed is a X, or is readily converted
+to a X..."), and that the answer-generation prompt grounds itself in the
+correct retrieved entry rather than defaulting to whichever is listed
+first.
+
+**Caveat:** `query.py`'s `answer()` call does not pass a `think=False`
+equivalent, unlike `separation_agent.py`'s `ask()` (see above) — since
+`qwen3:8b` is a hybrid thinking model, expect a `<think>...</think>` block
+ahead of the answer text in `query.py`'s output.
+
+## Where the similarity comparison actually happens
+
+`sentence-transformers` only *produces* vectors (`embedder.encode(text)` —
+text in, a fixed-length embedding out); it has no notion of "similar to
+what." The nearest-neighbor comparison itself happens inside **`chromadb`**,
+in `collection.query(query_embeddings=[q_emb], n_results=top_k)`
+(`query.py`'s `retrieve()`) — Chroma walks its internal HNSW index and
+returns the stored vectors closest to the query vector, ranked
+nearest-first. That ranking is what determined "vapor heuristic ranks
+first for a vapor question" in the validation above; the LLM never
+re-judges relevance itself, it only sees results Chroma already ranked.
+
+**Distance metric caveat (unverified against a larger corpus):** none of
+`ingest.py`/`query.py`/`seed_heuristics.py` pass `metadata={"hnsw:space":
+...}` to `get_or_create_collection`, so the collection runs Chroma's
+default distance metric (squared L2), and `embedder.encode(...)` is never
+called with `normalize_embeddings=True` either. `bge-small-en-v1.5` is
+trained/benchmarked for cosine similarity, not raw L2 — on 2 seed entries
+the ranking still came out correct, but this is worth revisiting (set
+`hnsw:space="cosine"` and/or `normalize_embeddings=True`) before trusting
+retrieval precision at full-textbook scale, per the README's own
+"precision on the structured side" checklist item.
+
+## Library roles at a glance
+
+| Library | Job in this pipeline |
+|---|---|
+| `pymupdf` (`fitz`) | Reads the source PDF, extracts raw page text. |
+| `sentence-transformers` | Text → embedding vector. The engine behind both storage-time and query-time embedding; does not compare vectors itself. |
+| `chromadb` | Stores (text, vector, metadata) records and performs the actual nearest-neighbor similarity search + plain ID lookups (for parent-chunk hydration). |
+| `pydantic` | Validates that any `Heuristic` (hand-seeded or LLM-extracted) has all four required string fields before it's stored — schema enforcement, not content judgment. |
+| `openai` (client) | Generic OpenAI-compatible HTTP client, pointed at the local Ollama server — carries both the extraction request (`ingest.py`) and the answer-generation request (`query.py`) to `qwen3:8b`. |
