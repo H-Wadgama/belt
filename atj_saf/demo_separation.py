@@ -6,14 +6,14 @@ matplotlib.use('Agg')
 
 import biosteam as bst
 
-# Xseparation_agent's modules import each other with bare same-directory
-# imports (e.g. `from sweep_separation import ...`), which only resolve
-# when that directory is on sys.path -- true when running a script from
-# inside it directly, but not when importing it as a package from here.
-sys.path.insert(0, str(Path(__file__).parent / 'atj_bst' / 'Xseparation_agent'))
+# chopper's modules import each other with bare same-directory imports
+# (e.g. `from sweep_separation import ...`), which only resolve when that
+# directory is on sys.path -- true when running a script from inside it
+# directly, but not when importing it as a package from here.
+sys.path.insert(0, str(Path(__file__).parent.parent / 'tools' / 'chopper'))
 
-from atj_saf.atj_bst.Xseparation_agent.optimizer import optimize_reflux_ratio
-from atj_saf.atj_bst.Xseparation_agent.separation_plots import (
+from optimizer import optimize_reflux_ratio
+from separation_plots import (
     plot_purity_vs_reflux,
     plot_utility_cost_vs_reflux,
     plot_reflux_sweep,

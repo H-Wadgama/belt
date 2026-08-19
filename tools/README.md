@@ -1,4 +1,4 @@
-# `atj_saf/atj_bst/Xseparation_agent/` — distillation sizing & optimization toolkit
+# `tools/chopper/` — distillation sizing & optimization toolkit
 
 This folder is a self-contained toolkit for scoping out a single BioSTEAM
 `BinaryDistillation` column against a purity/recovery target, sweeping that
@@ -76,18 +76,17 @@ Every module here imports its neighbors with a bare same-directory import
 not a package-relative import. That only resolves when this directory is on
 `sys.path` — true automatically when you `cd` here and run one of these
 files directly (`python optimizer.py`), but **not** when importing this
-folder as a package from elsewhere (e.g.
-`from atj_saf.atj_bst.Xseparation_agent.optimizer import optimize_reflux_ratio`
-from a script in `atj_saf/`). Callers outside this folder need to add it to
-`sys.path` first:
+folder from elsewhere (e.g. from a script in `atj_saf/`). Callers outside
+this folder need to add it to `sys.path` first, then import bare (not as a
+package):
 
 ```python
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / 'atj_bst' / 'Xseparation_agent'))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'tools' / 'chopper'))
 
-from atj_saf.atj_bst.Xseparation_agent.optimizer import optimize_reflux_ratio
+from optimizer import optimize_reflux_ratio
 ```
 
 `atj_saf/demo_separation.py` does exactly this — see that file for a working
@@ -660,7 +659,7 @@ From an Anaconda Prompt (or any terminal with `conda` on `PATH`):
 
 ```bash
 conda activate pyfuel
-cd "atj_saf/atj_bst/Xseparation_agent"    # bare-import convention -- see note above
+cd "tools/chopper"    # bare-import convention -- see note above
 
 python separation_agent.py                 # interactive REPL
 python separation_agent.py "Separate 80 kmol/hr methanol and 100 kmol/hr water, 99% pure methanol overhead"   # one-shot
@@ -684,11 +683,11 @@ since the tool has no default feed composition to fall back on.
 
 ---
 
-# `atj_saf/atj_bst/XSeps_RAG/` — separation-heuristics RAG (separate toolkit)
+# `tools/chopperRAG/` — separation-heuristics RAG (separate toolkit)
 
 A **different, unconnected** proof-of-concept living alongside
-`Xseparation_agent/` in the same `atj_bst/` folder. Where `Xseparation_agent`
-*runs* BioSTEAM columns, `XSeps_RAG` *mines a separations textbook* for
+`chopper/` in the same top-level `tools/` folder. Where `chopper`
+*runs* BioSTEAM columns, `chopperRAG` *mines a separations textbook* for
 engineering design heuristics (rules of thumb like "if the compound is
 heat-sensitive, do X") and makes them queryable via a local LLM + vector
 search. The two are not wired together yet — per the folder's own README,
@@ -735,7 +734,7 @@ source chunk on file, since it was typed by hand).
 **Run it:**
 ```bash
 conda activate pyfuel
-cd "atj_saf/atj_bst/XSeps_RAG"
+cd "tools/chopperRAG"
 pip install -r requirements.txt   # one-time
 python seed_heuristics.py         # no Ollama needed — embedding-only
 ```
