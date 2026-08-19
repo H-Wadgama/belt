@@ -63,12 +63,17 @@ def format_heuristics(heuristics) -> str:
         return "(none retrieved)"
     out = []
     for h in heuristics:
-        out.append(json.dumps({
+        entry = {
             "category": h["category"],
             "condition": h["condition"],
             "principle": h["principle"],
             "design_implication": h["design_implication"],
-        }, indent=2))
+        }
+        if h.get("heuristic_type") == "equation":
+            entry["equation"] = h.get("equation", "")
+            required_variables = h.get("required_variables", "")
+            entry["required_variables"] = required_variables.split(",") if required_variables else []
+        out.append(json.dumps(entry, indent=2))
     return "\n".join(out)
 
 

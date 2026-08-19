@@ -14,6 +14,8 @@ from sentence_transformers import SentenceTransformer
 import config
 from schema import Heuristic
 
+SOURCE_TAG = "seader_ch9"  # Seader's Separation Process Principles, ch. 9
+
 SEED_HEURISTICS = [
     Heuristic(
         category="separation_technique_selection",
@@ -42,11 +44,38 @@ SEED_HEURISTICS = [
             "pervaporation with a membrane, or supercritical extraction"
         ),
     ),
+    Heuristic(
+        category="separation_factor_estimation",
+        condition=(
+            "liquid and vapor solutions are nearly ideal "
+            "and the vapor phase obeys the ideal gas law"
+        ),
+        principle=(
+            "For vapor-liquid separation using an ESA, "
+            "the separation factor equals the relative volatility."
+        ),
+        design_implication=(
+            "Estimate separation difficulty from the ratio "
+            "of the component vapor pressures."
+        ),
+        heuristic_type="equation",
+        equation="SF = alpha_1,2 = Ps_1 / Ps_2",
+        required_variables=["Ps_1", "Ps_2"],
+    ),
 ]
 
 
 def render_heuristic_for_embedding(h: Heuristic) -> str:
-    return f"When {h.condition}: {h.principle}. Design implication: {h.design_implication}"
+    sentence = f"When {h.condition}: {h.principle}. Design implication: {h.design_implication}"
+    if h.heuristic_type == "equation" and h.equation:
+        sentence += f" Equation: {h.equation}."
+    return sentence
+
+
+def _serialize_required_variables(required_variables) -> str:
+    """Chroma metadata values must be scalars, so a list is joined into a
+    comma-separated string for storage; split back on ',' when reading."""
+    return ",".join(required_variables) if required_variables else ""
 
 
 def main():
@@ -69,6 +98,9 @@ def main():
                 "condition": h.condition,
                 "principle": h.principle,
                 "design_implication": h.design_implication,
+                "heuristic_type": h.heuristic_type,
+                "equation": h.equation or "",
+                "required_variables": _serialize_required_variables(h.required_variables),
             }],
         )
         print(f"seeded: [{h.category}] {h.principle[:70]}")

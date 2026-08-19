@@ -31,10 +31,17 @@ For each heuristic found, fill in:
 - condition: the scenario/context the heuristic applies under
 - principle: the rule of thumb itself
 - design_implication: the concrete consequence for process selection or design
+- heuristic_type: "equation" if the principle is a calculation with a formula given or clearly
+  implied by the text, otherwise "rule" for a qualitative judgment call
+- equation: if heuristic_type is "equation", the formula as a plain-text string (e.g.
+  "SF = alpha_1,2 = Ps_1 / Ps_2"); omit or leave empty otherwise
+- required_variables: if heuristic_type is "equation", a list of the variable names that
+  appear on the right-hand side (e.g. ["Ps_1", "Ps_2"]); omit or leave empty otherwise
 
-If the passage contains no such heuristic (e.g. it's pure background, definitions, or math
-derivation with no judgment call), return an empty list. Do not invent heuristics that
-aren't clearly supported by the text.
+A passage with a named equation for something like relative volatility, minimum reflux, or
+recovery IS a heuristic in this sense - extract it as heuristic_type="equation" rather than
+skipping it as "math derivation." Only skip passages with no rule of thumb and no equation
+useful for a design decision. Do not invent heuristics that aren't clearly supported by the text.
 
 Passage:
 \"\"\"
@@ -42,7 +49,7 @@ Passage:
 \"\"\"
 
 Respond with ONLY a JSON object matching this shape:
-{{"heuristics": [{{"category": "...", "condition": "...", "principle": "...", "design_implication": "..."}}]}}
+{{"heuristics": [{{"category": "...", "condition": "...", "principle": "...", "design_implication": "...", "heuristic_type": "rule", "equation": null, "required_variables": null}}]}}
 """
 
 
@@ -91,7 +98,16 @@ def call_qwen_extraction(client: OpenAI, chunk_text: str) -> ExtractionResult:
 def render_heuristic_for_embedding(h) -> str:
     """Turn structured JSON into a natural-language sentence for embedding.
     Embedding models are trained on prose, not JSON syntax, so this matters."""
-    return f"When {h.condition}: {h.principle}. Design implication: {h.design_implication}"
+    sentence = f"When {h.condition}: {h.principle}. Design implication: {h.design_implication}"
+    if h.heuristic_type == "equation" and h.equation:
+        sentence += f" Equation: {h.equation}."
+    return sentence
+
+
+def _serialize_required_variables(required_variables) -> str:
+    """Chroma metadata values must be scalars, so a list is joined into a
+    comma-separated string for storage; split back on ',' when reading."""
+    return ",".join(required_variables) if required_variables else ""
 
 
 def main():
@@ -145,6 +161,9 @@ def main():
                     "condition": h.condition,
                     "principle": h.principle,
                     "design_implication": h.design_implication,
+                    "heuristic_type": h.heuristic_type,
+                    "equation": h.equation or "",
+                    "required_variables": _serialize_required_variables(h.required_variables),
                 }],
             )
             print(f"  page {page_num}: extracted heuristic [{h.category}] {h.principle[:70]}")
