@@ -1,0 +1,16 @@
+﻿reflux_recycle:
+  Ethanol: 5331.90 kg/hr (72.3 wt%)
+  Water:   2043.00 kg/hr (27.7 wt%)
+  Total:   7374.90 kg/hr
+  T: 71.0 C, P: 3.00 atm
+
+makeup_water flow: 0.0 kg/hr
+
+molecular_sieve product (final ethanol product):
+Stream: sieve_product from <Splitter: molecular_sieve>
+phase: 'l', T: 311.15 K, P: 303975 Pa
+flow (kmol/hr): Water       254
+                Ethanol     328
+                AceticAcid  2.39
+                LacticAcid  1.23e-17
+

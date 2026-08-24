@@ -1,0 +1,29 @@
+﻿conda : C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\design_tools\pressure_vessel.py:104: 
+CostWarning: [38;2;229;63;229m<RefluxDrum: reflux_drum>[0m Vertical vessel length (9 ft) is out of bounds (12 to 40 
+ft) for cost correlation
+At line:1 char:302
++ ... tch {} } }; conda run -n pyfuel python "C:\Users\hwadg\OneDrive - The ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\hwadg\...ost correlation:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  return method(pressure, diameter, length)
+sys:1: RuntimeWarning: undocked inlet Ethanol_In_Beer from D1; Ethanol_In_Beer is now docked at beer_mesh
+Traceback (most recent call last):
+  File "C:\Users\hwadg\OneDrive - The Pennsylvania State 
+University\Shi_Wadgama_shared\Models\ATJSPK\atj_saf\atj_bst\kay_testing.py", line 129, in <module>
+    rectif_mesh = bst.MESHDistillation(
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 1554, in __init__
+    Unit.__init__(self, ID, ins, outs, thermo, **kwargs)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_unit.py", line 611, in __init__
+    super().__init__(ID, ins, outs, thermo, **kwargs)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\network.py", line 1052, in __init__
+    self._init(**kwargs)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\distillation.py", line 2755, in _init
+    super()._init(N_stages=N_stages, feed_stages=feed_stages,
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 1763, in _init
+    self.method = self.default_methods[self.algorithm] if method is None else method
+KeyError: 'sequential'
+
+ERROR conda.cli.main_run:execute(125): `conda run python C:\Users\hwadg\OneDrive - The Pennsylvania State 
+University\Shi_Wadgama_shared\Models\ATJSPK\atj_saf\atj_bst\kay_testing.py` failed. (See above for error)

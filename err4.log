@@ -1,0 +1,11 @@
+﻿conda : C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\design_tools\pressure_vessel.py:104: 
+CostWarning: [38;2;229;63;229m<RefluxDrum: reflux_drum>[0m Vertical vessel length (9 ft) is out of bounds (12 to 40 
+ft) for cost correlation
+At line:1 char:302
++ ... tch {} } }; conda run -n pyfuel python "C:\Users\hwadg\AppData\Local\ ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\hwadg\...ost correlation:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  return method(pressure, diameter, length)
+

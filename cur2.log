@@ -1,0 +1,62 @@
+﻿feed_stage_beer = 1
+feed_stage_rectif = 1
+N_stages_beer = 9
+N_stages_rectif = 11
+boilup_rectif = 3.39535574441068
+
+rectif_mesh.condenser: condenser
+rectif_mesh.reflux_drum: reflux_drum
+
+rectif_mesh raw outs[0] (post internal condenser, feeds HX_sieve):
+Stream: rectif_mesh_vapor from <MESHDistillation: rectif_mesh> to <HXprocess: HX_sieve>
+phase: 'g', T: 395.26 K, P: 303975 Pa
+flow (kmol/hr): Water       898
+                Ethanol     450
+                AceticAcid  3.95
+                LacticAcid  1.72e-05
+y_Ethanol = 0.3329268499476577
+
+rectif_mesh outs[1] bottoms:
+Stream: rectif_mesh_bottoms from <MESHDistillation: rectif_mesh>
+phase: 'l', T: 407.12 K, P: 303975 Pa
+flow (kmol/hr): Water       1.3e+03
+                Ethanol     2.37e-08
+                AceticAcid  0.645
+                LacticAcid  0.0574
+
+rectif_mesh condenser design/cost (if present):
+Heat exchanger                                            Units  condenser
+Cooling water       Duty                                  kJ/hr  -1.79e+08
+                    Flow                                kmol/hr   1.23e+05
+                    Cost                                 USD/hr       59.8
+Design              Area                                   ft^2   1.28e+04
+                    Overall heat transfer coefficient  kW/m^2/K        0.5
+                    Log-mean temperature difference           K         84
+                    Fouling correction factor                        0.999
+                    Operating pressure                      psi       44.1
+                    Total tube length                        ft         20
+Purchase cost       Floating head                           USD   2.05e+05
+Total purchase cost                                         USD   2.05e+05
+Utility cost                                             USD/hr       59.8
+
+reflux_recycle converged:
+MultiStream: reflux_recycle from <HXutility: cooler_reflux> to <MESHDistillation: rectif_mesh>
+phases: ('g', 'l'), T: 344.15 K, P: 303975 Pa
+flow (kmol/hr): (l) Water    919
+                    Ethanol  113
+  Ethanol kg/hr: 5190.074407363885
+  Water kg/hr: 16553.248076414053
+
+sieve_water_heated:
+MultiStream: sieve_water_heated from <HXprocess: HX_sieve>
+phases: ('g', 'l'), T: 373.12 K, P: 101325 Pa
+flow (kmol/hr): (g) Water  269
+                (l) Water  1e+04
+
+molecular_sieve product:
+Stream: sieve_product from <Splitter: molecular_sieve>
+phase: 'l', T: 311.15 K, P: 303975 Pa
+flow (kmol/hr): Ethanol     337
+                AceticAcid  3.95
+                LacticAcid  1.72e-05
+

@@ -41,9 +41,9 @@ def retrieve(collection, embedder, question: str, top_k: int = config.TOP_K):
     results = collection.query(query_embeddings=[q_emb], n_results=top_k)
 
     heuristics, raw_chunks = [], []
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+    for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
         if meta["type"] == "heuristic":
-            heuristics.append(meta)
+            heuristics.append({**meta, "_distance": dist})
         else:
             raw_chunks.append((meta.get("page"), doc))
 
@@ -64,6 +64,7 @@ def format_heuristics(heuristics) -> str:
     out = []
     for h in heuristics:
         entry = {
+            "distance": round(h["_distance"], 4),
             "category": h["category"],
             "condition": h["condition"],
             "principle": h["principle"],

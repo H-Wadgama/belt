@@ -1,0 +1,5 @@
+﻿k=3: N_stages=10.0, feed_stage=1.0, Rmin=5.109, R=15.326
+k=8: N_stages=9.0, feed_stage=1.0, Rmin=5.109, R=40.870
+k=15: N_stages=9.0, feed_stage=1.0, Rmin=5.109, R=76.632
+k=30: N_stages=9.0, feed_stage=1.0, Rmin=5.109, R=153.263
+

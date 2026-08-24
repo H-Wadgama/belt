@@ -1,0 +1,16 @@
+﻿conda : C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\design_tools\pressure_vessel.py:104: 
+CostWarning: [38;2;229;63;229m<RefluxDrum: reflux_drum>[0m Vertical vessel length (9 ft) is out of bounds (12 to 40 
+ft) for cost correlation
+At line:1 char:302
++ ... tch {} } }; conda run -n pyfuel python "C:\Users\hwadg\OneDrive - The ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\hwadg\...ost correlation:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  return method(pressure, diameter, length)
+sys:1: RuntimeWarning: undocked inlet Ethanol_In_Beer from D1; Ethanol_In_Beer is now docked at beer_mesh
+C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\_pump.py:224: RuntimeWarning: <Pump: pump> no pump 
+type available at current power (805 hp), head (1.4e+04 ft), kinematic viscosity (2.37e-05 m2/s), and NPSH (-9.55e+03 
+ft); assuming centrigugal pump
+  warn(f'{repr(self)} no pump type available at current power '
+

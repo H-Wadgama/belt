@@ -1,0 +1,57 @@
+﻿--- beer_shortcut design_results ---
+Theoretical feed stage = 1.0
+Theoretical stages = 9.0
+Minimum reflux = 0.01
+Reflux = 0.08
+Actual stages = 22.0
+Height = 43.516416
+Diameter = 9.841134855800993
+Wall thickness = 0.4375
+Weight = 28532.038521920775
+
+--- rectification_shortcut design_results ---
+Theoretical feed stage = 1.0
+Theoretical stages = 10.0
+Minimum reflux = 5.108770186528488
+Reflux = 15.326310559585462
+Actual stages = 17.0
+Height = 36.136416
+Diameter = 20.980859028988608
+Wall thickness = 0.875
+Weight = 125255.74047304605
+
+beer top (feed to rectif):
+Stream: shortcut_beer_top from <ShortcutColumn: D1> to <ShortcutColumn: D2>
+phase: 'g', T: 400.82 K, P: 303975 Pa
+flow (kmol/hr): Water       2.01e+03
+                Ethanol     463
+                AceticAcid  12.1
+                LacticAcid  0.000479
+
+rectif top:
+Stream: shortcut_rectif_top from <ShortcutColumn: D2>
+phase: 'g', T: 382.22 K, P: 303975 Pa
+flow (kmol/hr): Water       92.5
+                Ethanol     462
+                AceticAcid  0.00703
+
+rectif bottom:
+Stream: shortcut_rectif_bottom from <ShortcutColumn: D2>
+phase: 'l', T: 406.96 K, P: 303975 Pa
+flow (kmol/hr): Water       1.92e+03
+                Ethanol     0.377
+                AceticAcid  12.1
+                LacticAcid  0.000479
+
+beer bottom:
+Stream: shortcut_beer_bottom from <ShortcutColumn: D1>
+phase: 'l', T: 407.04 K, P: 303975 Pa
+flow (kmol/hr): Water       1.97e+04
+                Ethanol     4.06
+                AceticAcid  48.9
+                LacticAcid  23.7
+                Xylose      2.1
+                Extract     67.8
+                Ash         4.11e+03
+                ...         308
+

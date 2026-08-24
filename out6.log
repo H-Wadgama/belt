@@ -1,0 +1,14 @@
+﻿Column 1 (beer) feed region:
+z_Ethanol=0.0010  T_bubble=133.6 C  y_Ethanol=0.0123  K_e=12.285 K_w=0.989  alpha(E/W)=12.43
+z_Ethanol=0.0050  T_bubble=132.1 C  y_Ethanol=0.0570  K_e=11.407 K_w=0.948  alpha(E/W)=12.04
+z_Ethanol=0.0210  T_bubble=127.7 C  y_Ethanol=0.1862  K_e=8.865 K_w=0.831  alpha(E/W)=10.66
+z_Ethanol=0.0500  T_bubble=122.8 C  y_Ethanol=0.3153  K_e=6.306 K_w=0.721  alpha(E/W)=8.75
+
+Column 2 (rectification) feed region -> toward azeotrope:
+z_Ethanol=0.1000  T_bubble=118.5 C  y_Ethanol=0.4206  K_e=4.206 K_w=0.644  alpha(E/W)=6.53
+z_Ethanol=0.1860  T_bubble=115.3 C  y_Ethanol=0.5003  K_e=2.690 K_w=0.614  alpha(E/W)=4.38
+z_Ethanol=0.4000  T_bubble=111.9 C  y_Ethanol=0.5998  K_e=1.500 K_w=0.667  alpha(E/W)=2.25
+z_Ethanol=0.6000  T_bubble=110.1 C  y_Ethanol=0.6929  K_e=1.155 K_w=0.768  alpha(E/W)=1.50
+z_Ethanol=0.8000  T_bubble=109.1 C  y_Ethanol=0.8182  K_e=1.023 K_w=0.909  alpha(E/W)=1.13
+z_Ethanol=0.8940  T_bubble=109.0 C  y_Ethanol=0.8947  K_e=1.001 K_w=0.994  alpha(E/W)=1.01
+

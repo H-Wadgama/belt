@@ -1,0 +1,61 @@
+﻿boilup_beer = 0.11087356828705144
+boilup_rectif = 3.39535574441068
+N_stages_beer = 9 feed_stage_beer = 1
+N_stages_rectif = 11
+sieve_ethanol_reject_frac = 0.25029432430035925
+makeup_water_flow = 376.9098378290671
+
+=== RESULTS ===
+beer_mesh vapor out:
+Stream: beer_mesh_vapor from <MESHDistillation: beer_mesh> to <MESHDistillation: rectif_mesh>
+phase: 'g', T: 400.08 K, P: 303975 Pa
+flow (kmol/hr): Water       1.28e+03
+                Ethanol     337
+                AceticAcid  4.59
+                LacticAcid  0.0574
+
+rectif_mesh vapor out:
+Stream: rectif_mesh_vapor from <MESHDistillation: rectif_mesh> to <HXprocess: HX_sieve>
+phase: 'g', T: 403.29 K, P: 303975 Pa
+flow (kmol/hr): Water       3.47e+03
+                Ethanol     437
+                AceticAcid  164
+                LacticAcid  1.37e-14
+
+rectif_mesh bottoms:
+Stream: rectif_mesh_bottoms from <MESHDistillation: rectif_mesh>
+phase: 'l', T: 404.47 K, P: 303975 Pa
+flow (kmol/hr): Water       1.3e+03
+                Ethanol     9.92
+                AceticAcid  4.55
+                LacticAcid  0.0574
+
+sieve_water_heated (should be ~100C):
+MultiStream: sieve_water_heated from <HXprocess: HX_sieve>
+phases: ('g', 'l'), T: 373.12 K, P: 101325 Pa
+flow (kmol/hr): (g) Water  787
+                (l) Water  3e+04
+
+molecular_sieve product (final ethanol product):
+Stream: sieve_product from <Splitter: molecular_sieve>
+phase: 'l', T: 311.15 K, P: 303975 Pa
+flow (kmol/hr): Ethanol  328
+
+molecular_sieve reject:
+Stream: sieve_reject from <Splitter: molecular_sieve> to <Mixer: reflux_mixer>
+phase: 'l', T: 311.15 K, P: 303975 Pa
+flow (kmol/hr): Water       3.47e+03
+                Ethanol     109
+                AceticAcid  164
+                LacticAcid  1.37e-14
+
+reflux_recycle (converged, should be ~71C, ~5332 kg/hr ethanol, ~2043 kg/hr water):
+MultiStream: reflux_recycle from <HXutility: cooler_reflux> to <MESHDistillation: rectif_mesh>
+phases: ('g', 'l'), T: 344.15 K, P: 303975 Pa
+flow (kmol/hr): (l) Water       3.49e+03
+                    Ethanol     109
+                    AceticAcid  164
+                    LacticAcid  1.37e-14
+  Ethanol kg/hr: 5037.420727683469
+  Water kg/hr: 62879.44480771834
+

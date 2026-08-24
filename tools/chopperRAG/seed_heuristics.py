@@ -14,10 +14,15 @@ from sentence_transformers import SentenceTransformer
 import config
 from schema import Heuristic
 
-SOURCE_TAG = "seader_ch9"  # Seader's Separation Process Principles, ch. 9
+DEFAULT_SOURCE_TAG = "seader_ch9"  # Seader's Separation Process Principles, ch. 9
 
+# Each entry pairs a Heuristic with the source it actually came from. Two
+# different textbooks are both cited as "ch. 9" here (Seader's *Separation
+# Process Principles* vs. Seider et al.'s *Product and Process Design
+# Principles*) so the source tag is set explicitly per-heuristic rather than
+# assumed from one module-level constant.
 SEED_HEURISTICS = [
-    Heuristic(
+    (DEFAULT_SOURCE_TAG, Heuristic(
         category="separation_technique_selection",
         condition="feed is a vapor, or is readily converted to a vapor",
         principle=(
@@ -29,8 +34,8 @@ SEED_HEURISTICS = [
             "gas absorption, gas adsorption, gas permeation with a membrane, "
             "or desublimation - not an ambient-condition BinaryDistillation column"
         ),
-    ),
-    Heuristic(
+    )),
+    (DEFAULT_SOURCE_TAG, Heuristic(
         category="separation_technique_selection",
         condition="feed is a liquid, or is readily converted to a liquid",
         principle=(
@@ -43,8 +48,8 @@ SEED_HEURISTICS = [
             "crystallization, liquid adsorption, dialysis/reverse osmosis/ultrafiltration/"
             "pervaporation with a membrane, or supercritical extraction"
         ),
-    ),
-    Heuristic(
+    )),
+    (DEFAULT_SOURCE_TAG, Heuristic(
         category="separation_factor_estimation",
         condition=(
             "liquid and vapor solutions are nearly ideal "
@@ -61,7 +66,22 @@ SEED_HEURISTICS = [
         heuristic_type="equation",
         equation="SF = alpha_1,2 = Ps_1 / Ps_2",
         required_variables=["Ps_1", "Ps_2"],
-    ),
+    )),
+    ("seider_ch9", Heuristic(
+        category="separation_sequence_selection",
+        condition=(
+            "a feed contains thermally unstable, corrosive, "
+            "or chemically reactive components"
+        ),
+        principle=(
+            "thermally unstable, corrosive, or chemically reactive "
+            "components should be removed early in the separation sequence"
+        ),
+        design_implication=(
+            "prioritize separation steps that remove these components "
+            "before downstream operations"
+        ),
+    )),
 ]
 
 
@@ -83,8 +103,8 @@ def main():
     chroma = chromadb.PersistentClient(path=config.CHROMA_DIR)
     collection = chroma.get_or_create_collection(config.COLLECTION_NAME)
 
-    for i, h in enumerate(SEED_HEURISTICS):
-        heur_id = f"heur_seed_{SOURCE_TAG}_{i}"
+    for i, (source_tag, h) in enumerate(SEED_HEURISTICS):
+        heur_id = f"heur_seed_{source_tag}_{i}"
         embed_text = render_heuristic_for_embedding(h)
         collection.upsert(
             ids=[heur_id],
@@ -93,7 +113,7 @@ def main():
             metadatas=[{
                 "type": "heuristic",
                 "parent_chunk_id": "",  # hand-seeded, no source chunk on file
-                "source_file": SOURCE_TAG,
+                "source_file": source_tag,
                 "category": h.category,
                 "condition": h.condition,
                 "principle": h.principle,

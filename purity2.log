@@ -1,0 +1,62 @@
+﻿=== rectif_mesh raw overhead vapor (outs[0], BEFORE HX_sieve) ===
+Stream: rectif_mesh_vapor from <MESHDistillation: rectif_mesh> to <HXprocess: HX_sieve>
+phase: 'g', T: 382.38 K, P: 303975 Pa
+flow (kmol/hr): Water       116
+                Ethanol     448
+                AceticAcid  0.00159
+                LacticAcid  1.57e-23
+Ethanol wt% = 90.76%  (azeotrope is ~95.6 wt%)
+
+=== HX_sieve cooled/condensed outlet (outs[0], feed to molecular sieve) ===
+Stream: rectif_vapor_cooled from <HXprocess: HX_sieve> to <Splitter: molecular_sieve>
+phase: 'l', T: 311.15 K, P: 303975 Pa
+flow (kmol/hr): Water       116
+                Ethanol     448
+                AceticAcid  0.00159
+                LacticAcid  1.57e-23
+Ethanol wt% = 90.76%
+
+=== molecular_sieve PRODUCT (final output) ===
+Stream: sieve_product from <Splitter: molecular_sieve>
+phase: 'l', T: 311.15 K, P: 303975 Pa
+flow (kmol/hr): Water       3.05
+                Ethanol     332
+                AceticAcid  0.00159
+                LacticAcid  1.57e-23
+Ethanol wt% = 99.64%
+
+=== molecular_sieve REJECT ===
+Stream: sieve_reject from <Splitter: molecular_sieve> to <Mixer: reflux_mixer>
+phase: 'l', T: 311.15 K, P: 303975 Pa
+flow (kmol/hr): Water    113
+                Ethanol  116
+Ethanol wt% = 72.30%
+
+=== reflux_recycle (converged) ===
+MultiStream: reflux_recycle from <HXutility: cooler_reflux> to <MESHDistillation: rectif_mesh>
+phases: ('g', 'l'), T: 344.15 K, P: 303975 Pa
+flow (kmol/hr): (l) Water    113
+                    Ethanol  116
+Ethanol wt% = 72.30%
+
+boilup_rectif used for shortcut boilup calc (not used since boilup=0.5 hardcoded): 3.39535574441068
+rectif_mesh.boilup actual: 0.5
+rectif_mesh.reflux actual: 3
+N_stages_rectif: 11
+
+=== rectif_mesh bottoms ===
+Stream: rectif_mesh_bottoms from <MESHDistillation: rectif_mesh>
+phase: 'l', T: 405.49 K, P: 303975 Pa
+flow (kmol/hr): Water       1.28e+03
+                Ethanol     5.67
+                AceticAcid  4.59
+                LacticAcid  0.0574
+
+=== beer_mesh vapor (feed into rectif_mesh) ===
+Stream: beer_mesh_vapor from <MESHDistillation: beer_mesh> to <MESHDistillation: rectif_mesh>
+phase: 'g', T: 400.08 K, P: 303975 Pa
+flow (kmol/hr): Water       1.28e+03
+                Ethanol     337
+                AceticAcid  4.59
+                LacticAcid  0.0574
+

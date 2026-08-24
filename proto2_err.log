@@ -1,0 +1,117 @@
+﻿conda : C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\design_tools\pressure_vessel.py:104: 
+CostWarning: [38;2;229;63;229m<RefluxDrum: reflux_drum>[0m Vertical vessel length (9 ft) is out of bounds (12 to 40 
+ft) for cost correlation
+At line:1 char:302
++ ... tch {} } }; conda run -n pyfuel python "C:\Users\hwadg\AppData\Local\ ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\hwadg\...ost correlation:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  return method(pressure, diameter, length)
+sys:1: RuntimeWarning: undocked inlet Ethanol_In_Beer from D1; Ethanol_In_Beer is now docked at beer_mesh
+Traceback (most recent call last):
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\flexsolve\iterative_solvers.py", line 139, in 
+conditional_aitken
+    g, condition = f(x)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 2361, in _iter_run_conditional
+    self.run()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 2529, in run
+    self.run_sequential_modular()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 2582, in run_sequential_modular
+    f(i, i.run)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\exceptions.py", line 94, in 
+try_method_with_object_stamp
+    raise_error_with_object_stamp(object, error)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\exceptions.py", line 84, in 
+raise_error_with_object_stamp
+    raise error
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\exceptions.py", line 88, in 
+try_method_with_object_stamp
+    return method(*args)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\network.py", line 1543, in run
+    self._run_with_specifications()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\network.py", line 1559, in 
+_run_with_specifications
+    self._run()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2213, in _run
+    raise e
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2126, in _run
+    top_flow_rates = solver(self._conditional_iter, top_flow_rates)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\flexsolve\iterative_solvers.py", line 48, in 
+conditional_fixed_point
+    x1, condition = f(x0)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 3014, in _conditional_iter
+    top_flow_rates_new = self._iter(top_flow_rates)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2916, in _iter
+    self.update_energy_balance_phase_ratio_departures()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2597, in 
+update_energy_balance_phase_ratio_departures
+    dBs = self.get_energy_balance_phase_ratio_departures()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2585, in 
+get_energy_balance_phase_ratio_departures
+    dB = phase_ratio_departures(
+ZeroDivisionError: [38;2;229;63;229m<MESHDistillation: beer_mesh>[0m division by zero
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\hwadg\AppData\Local\Temp\claude\C--Users-hwadg-OneDrive---The-Pennsylvania-State-University-Shi-Wadgama-
+shared-Models-ATJSPK\fde1a502-2182-447a-bf30-70ed1a541646\scratchpad\proto_mesh.py", line 99, in <module>
+    rectif_loop_sys.simulate()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 3358, in simulate
+    with self.flowsheet:
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_flowsheet.py", line 120, in __exit__
+    if exception: raise exception
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 3419, in simulate
+    raise error
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 3406, in simulate
+    outputs = self.converge(**kwargs)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 3031, in converge
+    method()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 2984, in _solve
+    try: solver(f, data, **kwargs)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\flexsolve\iterative_solvers.py", line 142, in 
+conditional_aitken
+    g, condition = f(x)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 2361, in _iter_run_conditional
+    self.run()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 2529, in run
+    self.run_sequential_modular()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_system.py", line 2582, in run_sequential_modular
+    f(i, i.run)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\exceptions.py", line 94, in 
+try_method_with_object_stamp
+    raise_error_with_object_stamp(object, error)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\exceptions.py", line 84, in 
+raise_error_with_object_stamp
+    raise error
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\exceptions.py", line 88, in 
+try_method_with_object_stamp
+    return method(*args)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\network.py", line 1543, in run
+    self._run_with_specifications()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\network.py", line 1559, in 
+_run_with_specifications
+    self._run()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2213, in _run
+    raise e
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2126, in _run
+    top_flow_rates = solver(self._conditional_iter, top_flow_rates)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\flexsolve\iterative_solvers.py", line 48, in 
+conditional_fixed_point
+    x1, condition = f(x0)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 3014, in _conditional_iter
+    top_flow_rates_new = self._iter(top_flow_rates)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2916, in _iter
+    self.update_energy_balance_phase_ratio_departures()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2597, in 
+update_energy_balance_phase_ratio_departures
+    dBs = self.get_energy_balance_phase_ratio_departures()
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\stage.py", line 2585, in 
+get_energy_balance_phase_ratio_departures
+    dB = phase_ratio_departures(
+ZeroDivisionError: [38;2;229;63;229m<MESHDistillation: beer_mesh>[0m division by zero
+
+ERROR conda.cli.main_run:execute(125): `conda run python C:\Users\hwadg\AppData\Local\Temp\claude\C--Users-hwadg-OneDrive
+---The-Pennsylvania-State-University-Shi-Wadgama-shared-Models-ATJSPK\fde1a502-2182-447a-bf30-70ed1a541646\scratchpad\pro
+to_mesh.py` failed. (See above for error)

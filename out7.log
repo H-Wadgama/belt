@@ -1,0 +1,15 @@
+﻿Current shortcut_rectif_top (proxy for column-2 vapor product):
+Stream: shortcut_rectif_top from <ShortcutColumn: D2>
+phase: 'g', T: 382.22 K, P: 303975 Pa
+flow (kmol/hr): Water       92.5
+                Ethanol     462
+                AceticAcid  0.00703
+
+  Water: 1666.0902 kg/hr
+  Ethanol: 21302.5206 kg/hr
+  AceticAcid: 0.4220 kg/hr
+
+Target reject stream: Ethanol=5331.9 kg/hr, Water=2043 kg/hr
+Feed Ethanol=21302.5 kg/hr  -> reject needs 5331.9 kg/hr (25.0% split)
+Feed Water=1666.1 kg/hr  -> reject needs 2043.0 kg/hr (122.6% split)
+

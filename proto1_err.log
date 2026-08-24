@@ -1,0 +1,24 @@
+﻿conda : C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\units\design_tools\pressure_vessel.py:104: 
+CostWarning: [38;2;229;63;229m<RefluxDrum: reflux_drum>[0m Vertical vessel length (9 ft) is out of bounds (12 to 40 
+ft) for cost correlation
+At line:1 char:302
++ ... tch {} } }; conda run -n pyfuel python "C:\Users\hwadg\AppData\Local\ ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\hwadg\...ost correlation:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  return method(pressure, diameter, length)
+sys:1: RuntimeWarning: undocked inlet Ethanol_In_Beer from D1; Ethanol_In_Beer is now docked at beer_mesh
+Traceback (most recent call last):
+  File "C:\Users\hwadg\AppData\Local\Temp\claude\C--Users-hwadg-OneDrive---The-Pennsylvania-State-University-Shi-Wadgama-
+shared-Models-ATJSPK\fde1a502-2182-447a-bf30-70ed1a541646\scratchpad\proto_mesh.py", line 90, in <module>
+    cooler_reflux = bst.HXutility('cooler_reflux', ins=reflux_mixer-0,
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\biosteam\_unit.py", line 611, in __init__
+    super().__init__(ID, ins, outs, thermo, **kwargs)
+  File "C:\Users\hwadg\anaconda3\envs\pyfuel\lib\site-packages\thermosteam\network.py", line 1052, in __init__
+    self._init(**kwargs)
+TypeError: HXutility._init() got an unexpected keyword argument 'P'
+
+ERROR conda.cli.main_run:execute(125): `conda run python C:\Users\hwadg\AppData\Local\Temp\claude\C--Users-hwadg-OneDrive
+---The-Pennsylvania-State-University-Shi-Wadgama-shared-Models-ATJSPK\fde1a502-2182-447a-bf30-70ed1a541646\scratchpad\pro
+to_mesh.py` failed. (See above for error)

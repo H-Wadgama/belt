@@ -1,0 +1,11 @@
+﻿Stream: new_feed
+phase: 'l', T: 344.15 K, P: 324240 Pa
+flow (kmol/hr): Water    113
+                Ethanol  116
+vapor_fraction at 71C, 3.2 atm: 0.0
+bubble point T at 3.2 atm: 112.95306090762182 C
+dew point T at 3.2 atm: 117.11120126914255 C
+
+mol fractions: None
+z_Ethanol (mol frac): 0.5050949490059145
+

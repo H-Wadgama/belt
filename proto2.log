@@ -1,0 +1,7 @@
+﻿boilup_beer = 0.11087356828705144
+boilup_rectif = 3.39535574441068
+N_stages_beer = 9 feed_stage_beer = 1
+N_stages_rectif = 11
+sieve_ethanol_reject_frac = 0.25029432430035925
+makeup_water_flow = 376.9098378290671
+

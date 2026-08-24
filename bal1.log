@@ -1,0 +1,26 @@
+﻿N_stages: 11 (valid stage indices 0..10)
+feed_stages: [10, 8]
+
+rectif_mesh total mass IN:  46292.496 kg/hr
+rectif_mesh total mass OUT: 46292.496 kg/hr
+imbalance: 0.000000 kg/hr (0.0000%)
+
+Ethanol: in=20877.7109  out=20877.7109  diff=0.000000
+Water: in=25133.9023  out=25133.9023  diff=-0.000000
+AceticAcid: in=275.7099  out=275.7099  diff=-0.000000
+LacticAcid: in=5.1728  out=5.1728  diff=0.000000
+
+ins[0] (beer vapor):
+Stream: beer_mesh_vapor from <MESHDistillation: beer_mesh> to <MESHDistillation: rectif_mesh>
+phase: 'g', T: 400.08 K, P: 303975 Pa
+flow (kmol/hr): Water       1.28e+03
+                Ethanol     337
+                AceticAcid  4.59
+                LacticAcid  0.0574
+
+ins[1] (reflux recycle):
+MultiStream: reflux_recycle from <HXutility: cooler_reflux> to <MESHDistillation: rectif_mesh>
+phases: ('g', 'l'), T: 344.15 K, P: 303975 Pa
+flow (kmol/hr): (l) Water    113
+                    Ethanol  116
+
