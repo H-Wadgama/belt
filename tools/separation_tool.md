@@ -707,8 +707,9 @@ their parent chunk hydrated automatically.
 | `schema.py` | `Heuristic` / `ExtractionResult` pydantic models — the shape of one extracted rule (`category`, `condition`, `principle`, `design_implication`, plus `heuristic_type`/`equation`/`required_variables` for calculation-based heuristics — see below). |
 | `ingest.py` | PDF → paragraph-aware chunks → LLM extraction → dual storage in Chroma. |
 | `query.py` | Embeds a question, retrieves heuristics + hydrated raw chunks, asks the LLM to answer grounded in that context. `--test` runs three canned PoC questions. |
-| `seed_heuristics.py` | Hand-seeds 2 manually-verified ground-truth heuristics directly into Chroma, bypassing LLM extraction — see below. |
+| `seed_heuristics.py` | Hand-seeds a set of manually-verified ground-truth heuristics directly into Chroma, bypassing LLM extraction — see below. |
 | `requirements.txt` | `chromadb`, `openai` (client, used against any OpenAI-compatible local server), `sentence-transformers`, `pymupdf`, `pydantic`. |
+| `SETUP.md` | Step-by-step run checklist (activate `pyfuel`, `cd` here, confirm Ollama's up with the model pulled, seed, query) — a cheat sheet for re-running the tool, not design notes. |
 
 ## `schema.py` — heuristic shape, including calculation-based heuristics
 
@@ -745,30 +746,60 @@ is built yet.
 ## `seed_heuristics.py` — ground-truth retrieval validation
 
 Before trusting `ingest.py`'s LLM-driven extraction across a whole
-textbook, `seed_heuristics.py` plants two known-good heuristics (from
-Seader's *Separation Process Principles*, ch. 9) straight into the Chroma
-collection, so retrieval quality can be checked independently of
-extraction quality:
+textbook, `seed_heuristics.py` plants a set of known-good heuristics
+straight into the Chroma collection, so retrieval quality can be checked
+independently of extraction quality. `SEED_HEURISTICS` is a list of
+**`(source_tag, Heuristic)`** tuples, not a flat list of `Heuristic` —
+two different textbooks are both cited as "ch. 9" here (Seader's
+*Separation Process Principles* vs. Seider et al.'s *Product and Process
+Design Principles* — easy to confuse given the near-identical author
+names), so each entry carries its own `source_tag` explicitly rather than
+relying on one module-level constant. `DEFAULT_SOURCE_TAG = "seader_ch9"`
+covers most entries; a couple are tagged `"seider_ch9"` instead.
 
-1. **Vapor feed** → don't default to ordinary distillation; consider
-   partial condensation, cryogenic distillation, gas absorption/adsorption,
-   membrane gas permeation, or desublimation instead.
-2. **Liquid feed** → a much broader toolkit applies: flash, ordinary
-   distillation, stripping, extractive/azeotropic distillation, LLE,
-   crystallization, liquid adsorption, membrane processes (dialysis/RO/UF/
-   pervaporation), or supercritical extraction.
+Twelve heuristics are currently seeded, spanning two qualitatively
+different categories:
 
-Each is rendered to the same `"When {condition}: {principle}. Design
-implication: {design_implication}"` sentence `ingest.py` uses, embedded
-with `config.EMBED_MODEL`, and `upsert`ed with `parent_chunk_id=""` (no
-source chunk on file, since it was typed by hand).
+- **`separation_technique_selection`** (2 entries, Seader ch. 9) — *what
+  class of separation technique to even consider*, based on feed phase:
+  vapor feed → don't default to ordinary distillation, consider partial
+  condensation, cryogenic distillation, gas absorption/adsorption,
+  membrane gas permeation, or desublimation instead; liquid feed → a much
+  broader toolkit applies (flash, ordinary distillation, stripping,
+  extractive/azeotropic distillation, LLE, crystallization, liquid
+  adsorption, membrane processes, supercritical extraction).
+- **`separation_factor_estimation`** (1 entry, Seader ch. 9) — the
+  equation-type heuristic (separation factor ≈ relative volatility); see
+  the `schema.py` section above.
+- **`separation_sequence_selection`** (2 entries) — *where in a
+  multi-step sequence a given separation belongs*, not which technique to
+  use. Qualitatively distinct from `separation_technique_selection` above:
+  (1, Seider ch. 9) remove thermally unstable/corrosive/reactive
+  components early in the sequence; (2, Seader ch. 9 sec. 9.4) for a
+  nearly-ideal multicomponent feed (e.g. a hydrocarbon mixture or a
+  homologous series like alcohols), an all-ordinary-distillation sequence
+  is often economical, provided each column's feasibility conditions hold.
+- **`distillation_feasibility`** (7 entries, Seader ch. 9 sec. 9.4) — the
+  per-column feasibility checks that back up the sequencing heuristic
+  above: relative volatility between keys > 1.05, reboiler duty not
+  excessive, tower pressure not near the critical temperature, overhead
+  vapor condensable without excessive refrigeration, bottoms temperature
+  below the point of thermal decomposition, no azeotrope blocking the
+  split, and tolerable column pressure drop (especially under vacuum).
 
-**Run it:**
+Each heuristic is rendered to the same `"When {condition}: {principle}.
+Design implication: {design_implication}"` sentence `ingest.py` uses,
+embedded with `config.EMBED_MODEL`, and `upsert`ed with
+`parent_chunk_id=""` (no source chunk on file, since it was typed by
+hand) and `source_file=<its own source_tag>`.
+
+**Run it** — see `SETUP.md` for the full walkthrough (env activation,
+Ollama check, troubleshooting); short version:
 ```bash
 conda activate pyfuel
 cd "tools/chopperRAG"
 pip install -r requirements.txt   # one-time
-python seed_heuristics.py         # no Ollama needed — embedding-only
+python seed_heuristics.py         # no Ollama needed — embedding-only; upserts by ID, safe to re-run
 ```
 
 **Then validate retrieval with `query.py`** (this step needs a local Ollama
@@ -776,14 +807,21 @@ server running the model named in `config.py`'s `LLM_MODEL`):
 ```bash
 python query.py "What separation technique should I use for a vapor feed?"
 python query.py "What separation options exist if my feed is a liquid?"
+python query.py "My feed has a corrosive component - where in the separation sequence should I remove it?"
+python query.py "Can I use a plain sequence of distillation columns for a nearly ideal hydrocarbon mixture?"
 ```
 Check that the printed heuristics block ranks the *matching* seed entry
-first (not just "both come back," which is trivial with only 2 rows in the
-store) and that the `ANSWER:` text is actually grounded in that entry
-rather than the other one.
+first, and — now that `retrieve()`/`format_heuristics()` attach each
+result's raw Chroma distance as a `distance` field (added after the
+initial 2-entry validation below; **lower = more similar**, results are
+already ordered nearest-first) — that its `distance` is meaningfully
+lower than the next entry's, not just "first by luck." Also confirm the
+`ANSWER:` text is grounded in the matching entry rather than a different
+one.
 
 **Validated 2026-08-18/19** against `qwen3:8b` (config's `LLM_MODEL`
-updated from the default `qwen2.5:14b-instruct` to match): both directions
+updated from the default `qwen2.5:14b-instruct` to match), when the store
+held only the original 2 technique-selection heuristics: both directions
 passed — the vapor question ranked the vapor heuristic first and answered
 from it exclusively; the liquid question ranked the liquid heuristic first
 and answered from it exclusively. Confirms the embedding model
@@ -791,7 +829,7 @@ and answered from it exclusively. Confirms the embedding model
 near-identical boilerplate phrasing ("feed is a X, or is readily converted
 to a X..."), and that the answer-generation prompt grounds itself in the
 correct retrieved entry rather than defaulting to whichever is listed
-first.
+first. Not yet re-validated against the full 12-entry set above.
 
 **Caveat:** `query.py`'s `answer()` call does not pass a `think=False`
 equivalent, unlike `separation_agent.py`'s `ask()` (see above) — since
@@ -809,6 +847,10 @@ returns the stored vectors closest to the query vector, ranked
 nearest-first. That ranking is what determined "vapor heuristic ranks
 first for a vapor question" in the validation above; the LLM never
 re-judges relevance itself, it only sees results Chroma already ranked.
+`retrieve()` also pulls `results["distances"][0]` alongside the documents/
+metadatas and attaches it to each heuristic dict; `format_heuristics()`
+prints it as a `distance` field, so the raw per-result score is visible
+in `query.py`'s output, not just the (already-sorted) print order.
 
 **Distance metric caveat (unverified against a larger corpus):** none of
 `ingest.py`/`query.py`/`seed_heuristics.py` pass `metadata={"hnsw:space":
@@ -830,3 +872,61 @@ retrieval precision at full-textbook scale, per the README's own
 | `chromadb` | Stores (text, vector, metadata) records and performs the actual nearest-neighbor similarity search + plain ID lookups (for parent-chunk hydration). |
 | `pydantic` | Validates that any `Heuristic` (hand-seeded or LLM-extracted) has all four required string fields before it's stored — schema enforcement, not content judgment. |
 | `openai` (client) | Generic OpenAI-compatible HTTP client, pointed at the local Ollama server — carries both the extraction request (`ingest.py`) and the answer-generation request (`query.py`) to `qwen3:8b`. |
+
+---
+
+# `tools/separation_rag_agent.py` — the merged agent
+
+The chopper↔chopperRAG wiring flagged as future work above (now built, in a
+first, prompt-guided form): one Ollama tool-calling agent, `TOOLS =
+[optimize_separation, retrieve_separation_heuristics]`, that decides per
+turn which tool(s) to call. `optimize_separation` is imported unchanged from
+`chopper/separation_tool.py`. `retrieve_separation_heuristics` is new — a
+thin wrapper around `chopperRAG/query.py`'s `retrieve()` that returns raw
+matched heuristics + hydrated textbook chunks (not a pre-synthesized answer,
+to avoid a redundant second LLM call inside the tool — the outer chat model
+already gets a turn to read and summarize tool output).
+
+Neither `chopper/separation_agent.py` nor `chopperRAG/query.py` is changed
+or superseded — both remain independently runnable exactly as documented
+above, for standalone testing of each half.
+
+**Heuristic checking is model-decided, not auto-triggered.** `SYSTEM_PROMPT`
+nudges the model to call `retrieve_separation_heuristics` before/alongside a
+sizing call when the situation looks unusual (vapor feed, heat-sensitive/
+corrosive/reactive component, azeotrope, or a qualitative "what should I
+use" question) and to fold any resulting caveat into the same summary as the
+costed design — e.g. a vapor-feed sizing request gets back one answer noting
+both the column cost *and* that ordinary distillation isn't the default
+choice for a vapor feed — rather than two disconnected outputs. It is not
+required on plain, ordinary-distillation-appropriate requests. Equation-type
+heuristics (`heuristic_type='equation'`) are explicitly called out as
+non-evaluated reference text, same as `query.py` treats them today —
+building an evaluator for those is a separate, still-unstarted piece of
+future work.
+
+**Prerequisites** (all already present in the `pyfuel` conda env as of this
+writing): everything `chopper/separation_agent.py` needs (`biosteam`,
+`ollama`) *and* everything `chopperRAG` needs (`chromadb`, `openai`,
+`sentence-transformers`, `pymupdf`, `pydantic`), plus a local Ollama server
+running `qwen3:8b`, plus a seeded Chroma collection:
+```bash
+conda activate pyfuel
+python tools/chopperRAG/seed_heuristics.py   # once, if not already seeded
+```
+
+**Run it** (from anywhere — unlike the two standalones, `sys.path` wiring at
+the top of the script makes cwd irrelevant):
+```bash
+python tools/separation_rag_agent.py                 # interactive REPL
+python tools/separation_rag_agent.py "I have a vapor feed of 80 kmol/hr methanol and 100 kmol/hr water at 1 atm. Should I use ordinary distillation, and if so what would a 99% pure methanol column cost?"
+```
+
+`tools/chopperRAG/config.py`'s `CHROMA_DIR` was changed from the relative
+`"./chroma_db"` to an absolute path (`Path(__file__).parent / "chroma_db"`)
+so it resolves correctly regardless of the caller's cwd — this is what lets
+the merged agent (which does not run from `tools/chopperRAG`) find the same
+Chroma collection `query.py`/`ingest.py`/`seed_heuristics.py` use. The two
+paths are identical when those three are run the documented way (cwd already
+`tools/chopperRAG`), so this is a pure robustness fix with no behavior
+change for their existing documented usage.

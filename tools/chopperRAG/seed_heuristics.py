@@ -74,12 +74,141 @@ SEED_HEURISTICS = [
             "or chemically reactive components"
         ),
         principle=(
-            "thermally unstable, corrosive, or chemically reactive "
+            "thermally unstable/heat-sensitive, corrosive, or chemically reactive "
             "components should be removed early in the separation sequence"
         ),
         design_implication=(
             "prioritize separation steps that remove these components "
             "before downstream operations"
+        ),
+    )),
+    # --- Seader ch. 9, sec. 9.4: sequencing/feasibility of ordinary
+    # distillation for nearly ideal multicomponent mixtures ---
+    (DEFAULT_SOURCE_TAG, Heuristic(
+        category="separation_sequence_selection",
+        condition=(
+            "a multicomponent feed is nearly ideal, such as a hydrocarbon "
+            "mixture or a mixture from a homologous series such as alcohols"
+        ),
+        principle=(
+            "an economical separation sequence will often consist only of "
+            "ordinary distillation columns when the required feasibility "
+            "conditions for each column are satisfied"
+        ),
+        design_implication=(
+            "consider a sequence of two-product ordinary distillation columns, "
+            "but verify relative volatility, reboiler duty, critical-temperature "
+            "limitations, overhead condensation, thermal stability, azeotropes, "
+            "and pressure drop before accepting the sequence"
+        ),
+    )),
+    (DEFAULT_SOURCE_TAG, Heuristic(
+        category="distillation_feasibility",
+        condition=(
+            "ordinary distillation is being considered for a split between "
+            "two selected key components"
+        ),
+        principle=(
+            "the relative volatility between the selected key components "
+            "should be greater than 1.05"
+        ),
+        design_implication=(
+            "check that the relative volatility of the selected light and "
+            "heavy keys is greater than 1.05 before treating ordinary "
+            "distillation as suitable for that split"
+        ),
+    )),
+    (DEFAULT_SOURCE_TAG, Heuristic(
+        category="distillation_feasibility",
+        condition=(
+            "ordinary distillation is being considered and the required "
+            "reboiler duty may be large"
+        ),
+        principle=(
+            "the reboiler duty should not be excessive; excessive duty can "
+            "occur when the relative volatility between the key components is "
+            "low and the light key has a high heat of vaporization, such as water"
+        ),
+        design_implication=(
+            "estimate the reboiler energy requirement and reject or reconsider "
+            "the ordinary-distillation split if the required duty is excessive"
+        ),
+    )),
+    (DEFAULT_SOURCE_TAG, Heuristic(
+        category="distillation_feasibility",
+        condition=(
+            "a distillation column is being considered at a specified tower pressure"
+        ),
+        principle=(
+            "the tower pressure should not cause the mixture to approach its "
+            "critical temperature"
+        ),
+        design_implication=(
+            "check the relationship between operating pressure, mixture "
+            "temperature, and critical-temperature limits before accepting "
+            "the proposed column pressure"
+        ),
+    )),
+    (DEFAULT_SOURCE_TAG, Heuristic(
+        category="distillation_feasibility",
+        condition=(
+            "ordinary distillation requires overhead vapor condensation to "
+            "provide reflux"
+        ),
+        principle=(
+            "the overhead vapor should be at least partially condensable at "
+            "the column pressure without excessive refrigeration requirements"
+        ),
+        design_implication=(
+            "verify that the overhead can be condensed sufficiently to provide "
+            "reflux at the proposed column pressure without requiring excessive "
+            "refrigeration"
+        ),
+    )),
+    (DEFAULT_SOURCE_TAG, Heuristic(
+        category="distillation_feasibility",
+        condition=(
+            "ordinary distillation produces a high bottoms temperature at the "
+            "selected tower pressure"
+        ),
+        principle=(
+            "the bottoms temperature should not be so high that chemical "
+            "decomposition occurs"
+        ),
+        design_implication=(
+            "compare the expected bottoms temperature with the thermal stability "
+            "of the mixture and reject or modify the operating conditions if "
+            "decomposition would occur"
+        ),
+    )),
+    (DEFAULT_SOURCE_TAG, Heuristic(
+        category="distillation_feasibility",
+        condition=(
+            "ordinary distillation is being considered for a desired separation "
+            "that may be affected by azeotropic behavior"
+        ),
+        principle=(
+            "azeotropes should not prevent the desired separation"
+        ),
+        design_implication=(
+            "check for azeotropic limitations before relying on ordinary "
+            "distillation to achieve the required product split"
+        ),
+    )),
+    (DEFAULT_SOURCE_TAG, Heuristic(
+        category="distillation_feasibility",
+        condition=(
+            "a distillation column may experience significant pressure drop, "
+            "particularly during vacuum operation"
+        ),
+        principle=(
+            "column pressure drop should be tolerable, especially when the "
+            "column operates under vacuum"
+        ),
+        design_implication=(
+            "evaluate whether the expected pressure drop is acceptable for the "
+            "proposed operation and pay particular attention to pressure-drop "
+            "limitations in vacuum columns"
         ),
     )),
 ]

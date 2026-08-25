@@ -2,6 +2,7 @@
 Configuration for the separation-heuristics RAG proof of concept.
 Edit these values to match your local setup.
 """
+from pathlib import Path
 
 # --- Local LLM (Qwen) endpoint ---
 # Works with any OpenAI-compatible server: Ollama, vLLM, LM Studio, text-generation-webui.
@@ -17,7 +18,9 @@ LLM_MODEL = "qwen3:8b"  # whatever tag you've pulled/served
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
 # --- Storage ---
-CHROMA_DIR = "./chroma_db"
+# Absolute so this resolves correctly regardless of the caller's cwd
+# (e.g. tools/separation_rag_agent.py, which doesn't run from this folder).
+CHROMA_DIR = str(Path(__file__).parent / "chroma_db")
 COLLECTION_NAME = "separation_heuristics"
 
 # --- Chunking ---
