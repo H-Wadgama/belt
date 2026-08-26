@@ -67,9 +67,11 @@ in the `optimizer.py` section below.
 | `sep_economic_analysis.py` | `annualize_capex()`, `annualize_utilities()`, `annualize_results()`, `annualize_sweep()` — turn CAPEX + hourly utility cost into $/yr figures, for one run or a whole sweep. |
 | `best_design.py` | `find_best_design()` — picks the lowest-annualized-cost feasible row out of an annualized sweep. |
 | `optimizer.py` | `optimize_reflux_ratio()` — the high-level function that chains all of the above. |
+| `problem_spec.py` | `validate_problem()`, `check_essential_inputs()`, `identify_case()` — deterministic, LLM-free implementation of the Wankat Table 3-1/3-2 structured input check from `tools/binary-distillation-context.md`. |
+| `case_design.py` | `design_binary_distillation()` — executes one already-identified Wankat Case A/B design as a single deterministic run (not a cost sweep); reports Case C/D as recognized-but-not-implemented. |
 | `separation_plots.py` | `plot_purity_vs_reflux()`, `plot_utility_cost_vs_reflux()`, `plot_reflux_sweep()` — matplotlib plots of a sweep DataFrame (achieved-vs-target performance, utility cost) against `reflux_ratio_k`. |
-| `separation_tool.py` | `optimize_separation()` — JSON-in/JSON-out wrapper around `optimize_reflux_ratio()`, built to be handed to Ollama as a tool. |
-| `separation_agent.py` | Natural-language chat front end (Ollama + `qwen3:8b`) that calls `optimize_separation()` on the model's behalf. |
+| `separation_tool.py` | `design_separation_case()` and `optimize_separation()` — JSON-in/JSON-out wrappers around `case_design.design_binary_distillation()` and `optimizer.optimize_reflux_ratio()` respectively, built to be handed to Ollama as tools. |
+| `separation_agent.py` | Natural-language chat front end (Ollama + `qwen3:8b`) that calls `design_separation_case()`/`optimize_separation()` on the model's behalf. |
 | `sample_request.py` | Minimal standalone Ollama connectivity smoke test (`client.generate(...)`) — not part of the tool-calling pipeline; predates and is unrelated to `separation_agent.py`. |
 | `testing_caes.ipynb` | Scratch/interactive notebook for ad hoc testing — not a maintained module; nothing else in this folder imports it. |
 
@@ -520,6 +522,79 @@ release" `ValueError`, caught and printed rather than propagated.
 
 ---
 
+# `problem_spec.py` + `case_design.py` — deterministic Wankat Case A-D layer
+
+These two modules implement the structured input-check procedure from
+`tools/binary-distillation-context.md` (itself based on Wankat, P.C.
+*Separation Process Engineering*, 2022, Tables 3-1 and 3-2), so that
+whether a binary-distillation request is completely and unambiguously
+specified — and which of Wankat's four design cases it matches — is
+determined by deterministic code, never by asking an LLM to infer it.
+
+## `problem_spec.py`
+
+Pure field-presence logic over a plain `dict` — no BioSTEAM or LLM calls.
+Three functions:
+
+| Function | Does |
+|---|---|
+| `check_essential_inputs(spec)` | Step 1: checks Wankat Table 3-1's "usual specified variables" are all present — `pressure_Pa`, `components` (feed flow + composition), a feed thermal condition (**exactly one** of `feed_temperature_K`, `feed_quality`, `feed_enthalpy_kJ_per_hr` — never defaulted, e.g. never silently set to bubble point), and `reflux_condition` (must be stated explicitly; today only the literal string `'saturated_liquid'` is supported, since that's the only condition the underlying shortcut column model implements). |
+| `identify_case(spec)` | Steps 2-3: deterministically matches whichever of `xD`/`xB`, `Lr`/`Hr`, `distillate_flow`/`bottoms_flow`, `boilup_ratio_VB`, `external_reflux_ratio_LD`, `reflux_ratio_multiplier_k` are present against Wankat's Cases A-D (see `tools/binary-distillation-context.md` section 2). Detects genuine conflicts (e.g. both `external_reflux_ratio_LD` *and* `reflux_ratio_multiplier_k` given — these are explicitly **not** the same quantity, see that doc's section 4) as `ambiguous`, and reports, for every case still consistent with what's given so far, exactly which of its fields remain missing. |
+| `validate_problem(spec)` | Runs both of the above and returns one report: `{'valid', 'case', 'case_candidates', 'missing_essential_inputs', 'missing_case_inputs_by_candidate', 'ambiguous', 'ambiguous_reason', 'message', 'provenance'}`. `provenance` always carries the Table 3-1/Table 3-2/full-citation strings (`TABLE_3_1_PROVENANCE`, `TABLE_3_2_PROVENANCE`, `FULL_CITATION` module constants), per that doc's section 9 ("this provenance should be retained ... in the ... binary-distillation tool documentation"). `valid` is `True` only when every Table 3-1 essential is present, unambiguous, and exactly one Case A-D is fully satisfied. |
+
+`validate_problem()` never raises and never picks a value on the caller's
+behalf — callers (`separation_tool.py`) are expected to check `valid`
+before building any feed stream or BioSTEAM unit, and to surface
+`message`/`missing_*`/`ambiguous_reason` back to the user/LLM instead of
+guessing. Running `python problem_spec.py` directly prints five demo
+reports (nothing given; a complete Case A; Case A missing `xB`; an
+ambiguous L0/D-and-k spec; a missing feed thermal condition).
+
+## `case_design.py`
+
+`design_binary_distillation(feed, LHK, case, ...)` executes **one**
+already-identified case as a single deterministic run — this is a
+direct-design calculation (Wankat gives you one answer for one stated
+reflux ratio), not a cost sweep like `optimizer.optimize_reflux_ratio()`.
+It assumes the caller already ran `problem_spec.validate_problem()` and
+that `feed`'s thermal condition was already set explicitly (it never calls
+`feed.bubble_point_at_P()` or otherwise imposes a condition itself).
+
+Only **Case A** (`xD`/`xB` + a reflux ratio) and **Case B** (`Lr`/`Hr` + a
+reflux ratio) are actually executable today — the underlying BioSTEAM
+shortcut `BinaryDistillation` model has no way to accept a direct
+product-flow-rate spec (Case C) or a boilup-ratio spec (Case D) as an
+input. `IMPLEMENTED_CASES = ('A', 'B')`; calling with `case='C'` or
+`case='D'` returns `{'implemented': False, 'message': ...}` explaining
+this rather than silently forcing the request through the Case A/B
+machinery.
+
+**Converting `external_reflux_ratio_LD` to the internal `k`:** Wankat's
+Cases A-C specify the external/actual reflux ratio L0/D directly, but the
+BioSTEAM shortcut column only accepts the multiplier `k = R/Rmin` (see
+`separation_trial.py`'s note on `k` vs. absolute L/D). When the caller
+supplies `external_reflux_ratio_LD` (rather than `reflux_ratio_multiplier_k`
+directly), `design_binary_distillation()`:
+
+1. Runs the column once at a trial `k` purely to read back
+   `minimum_reflux_ratio_LD` from BioSTEAM's design results (this is
+   computed via the Underwood equations independent of the `k` chosen, so
+   any converged trial run reveals it).
+2. Computes `k_actual = external_reflux_ratio_LD / minimum_reflux_ratio_LD`.
+   If `external_reflux_ratio_LD <= minimum_reflux_ratio_LD`, the request is
+   infeasible (would need infinite stages) and this is reported directly
+   rather than attempting to simulate it.
+3. Re-runs the column once more at `k_actual` for the real design.
+
+The result's `'reflux'` dict always reports `external_reflux_ratio_LD`,
+`reflux_ratio_multiplier_k`, and `minimum_reflux_ratio_LD` together with a
+`'basis'` field (`'user_specified_external_LD'` vs.
+`'user_specified_internal_k'`) so the two reflux quantities are never
+conflated in the output either. Running `python case_design.py` directly
+demos both conversion paths plus the Case C not-implemented message.
+
+---
+
 # `separation_plots.py`
 
 Matplotlib plots of a `sweep_reflux_ratio` (or `annualize_sweep`/
@@ -555,64 +630,112 @@ Running `python separation_plots.py` directly reads `reflux_ratio_sweep.csv`
 
 # `separation_tool.py` + `separation_agent.py` — Ollama tool-calling agent
 
-Lets a user describe a separation in plain English (e.g. "separate 80
-kmol/hr methanol and 100 kmol/hr water, 99% pure methanol overhead") and
-get back a costed column design, via a local Ollama model (default:
-`qwen3:8b`) that decides when to call `optimize_reflux_ratio()` as a tool.
-Nothing new is computed here — it's a natural-language wrapper around the
-same `optimize_reflux_ratio()` pipeline described above.
+Lets a user describe a separation in plain English and get back a column
+design, via a local Ollama model (default: `qwen3:8b`) that decides when
+to call one of two tools: `design_separation_case()` (a single
+deterministic Wankat-case design) or `optimize_separation()` (a
+cost-optimized sweep over an internal reflux multiplier). Neither tool
+silently completes a missing input — both run the `problem_spec`/
+`case_design` machinery described above before doing anything
+BioSTEAM-related, and refuse to proceed on an incomplete or ambiguous
+request.
 
 ```
 User types a request in plain English
         │
         ▼
 separation_agent.py          qwen3:8b (via Ollama) decides whether to
-    call optimize_separation()
+    call design_separation_case() or optimize_separation()
         │
         ▼
-separation_tool.py           optimize_separation() builds a bst.Stream
-    from the model's {component: flow} dict, calls optimize_reflux_ratio(),
-    returns a plain JSON-safe dict
+separation_tool.py           validate_problem()/check_essential_inputs()
+    check completeness FIRST (no feed/BioSTEAM built yet); only if valid,
+    builds a bst.Stream with the feed's stated thermal condition, then
+    calls case_design.design_binary_distillation() or
+    optimizer.optimize_reflux_ratio(); returns a plain JSON-safe dict
         │
         ▼
 separation_agent.py           feeds the tool result back to the model,
-    which explains it in plain English
+    which explains it in plain English (or relays the missing/ambiguous
+    fields back to the user, per SYSTEM_PROMPT)
 ```
 
 ## `separation_tool.py`
 
-Exposes one function, `optimize_separation(...)`, meant to be passed
-directly to Ollama's `tools=[...]` argument (not called by hand). Ollama's
-client introspects the function's type hints and Google-style docstring
-(via `convert_function_to_tool`) to build the JSON schema the model sees —
-so the signature and each `Args:` line *are* the model's documentation of
-the tool; keep them accurate if the signature changes.
+Exposes two functions, `design_separation_case(...)` and
+`optimize_separation(...)`, both meant to be passed directly to Ollama's
+`tools=[...]` argument (not called by hand). Ollama's client introspects
+each function's type hints and Google-style docstring (via
+`convert_function_to_tool`) to build the JSON schema the model sees — so
+the signature and each `Args:` line *are* the model's documentation of the
+tool; keep them accurate if the signature changes. In both, `pressure_Pa`
+and `reflux_condition` are required arguments with no default, so Ollama's
+generated schema itself marks them required — the model cannot omit them
+from a call.
+
+### `design_separation_case(...)` — single deterministic Wankat-case design
 
 | Argument | Meaning |
 |---|---|
-| `components` | `{component_name: flow}` dict, e.g. `{"Methanol": 80, "Water": 100}`. Keys must be valid chemical names in the `chemicals`/BioSTEAM database. Must have exactly 2 nonzero entries — see the top-level "Scope" note; a 3rd nonzero component raises `ValueError` (via `check_binary_feed`, surfaced through `optimize_reflux_ratio`). |
-| `light_key`, `heavy_key` | Same as `LHK` elsewhere in this folder. |
-| `units` | `'kmol/hr'` or `'kg/hr'` for the `components` values. |
-| `spec`, `target`, `purity_target`, `recovery_target`, `pressure_Pa` | Same meaning as the corresponding arguments in `optimize_reflux_ratio()` (`purity_target`/`recovery_target` use the same convenience-shorthand convention). |
-| `reflux_ratios_k` | Optional; defaults to `DEFAULT_REFLUX_RATIOS_K = [1.2, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5]` if omitted. |
+| `components`, `light_key`, `heavy_key`, `units` | Same as below — feed composition/flow and key components. |
+| `pressure_Pa` | Column pressure (Pa). **Required, no default.** |
+| `reflux_condition` | Must be the literal string `'saturated_liquid'` — the only reflux thermal condition the engineering layer implements; must be stated explicitly rather than assumed. **Required, no default.** |
+| `feed_temperature_K`, `feed_quality`, `feed_enthalpy_kJ_per_hr` | The feed's thermal condition — give **exactly one**. Never defaulted (no bubble-point fallback); omitting all three is reported as a missing essential input, not silently resolved. |
+| `xD`, `xB` | Case A/D — distillate/bottoms light-key mole fractions. |
+| `Lr`, `Hr` | Case B — fractional recoveries of light key (distillate) and heavy key (bottoms). |
+| `distillate_flow`, `bottoms_flow` | Case C — give at most one. |
+| `boilup_ratio_VB` | Case D — boilup ratio V/B. |
+| `external_reflux_ratio_LD` | Wankat's external/actual reflux ratio L0/D (Cases A-C). **Not the same quantity as** `reflux_ratio_multiplier_k` — see `problem_spec.py`/`case_design.py` above; giving both is rejected as ambiguous. |
+| `reflux_ratio_multiplier_k` | The internal BioSTEAM shortcut parameter k = R/Rmin (Cases A-C, alternative to `external_reflux_ratio_LD`). |
+| `target` | `'top'` or `'bottom'` — which outlet is labeled `'product'`; doesn't affect case identification. |
 
-Internally, each call: (1) switches to a fresh `bst.main_flowsheet` (named
-`sep_agent_{n}`, incrementing per call) so repeated calls in one chat
-session don't collide on stream/unit IDs in BioSTEAM's flowsheet registry;
-(2) calls `bst.settings.set_thermo()` on the union of `components`,
-`light_key`, and `heavy_key`; (3) builds the feed stream and sets it to
-its bubble point; (4) calls `optimize_reflux_ratio()`; (5) returns
-`{'found', 'message', 'n_feasible', 'n_total', 'best_design', 'key_selection'}`,
+Internally: builds a `spec` dict from all the arguments and calls
+`problem_spec.validate_problem(spec)` **before** touching BioSTEAM at all.
+If `not valid`, the function returns that report directly (`{'valid':
+False, 'case', 'missing_essential_inputs', 'case_candidates',
+'missing_case_inputs_by_candidate', 'ambiguous', 'ambiguous_reason',
+'message', 'provenance'}`) — no flowsheet switch, no feed stream, no
+column. Only if valid does it switch to a fresh `bst.main_flowsheet`
+(`sep_agent_{n}`), build the feed with its stated thermal condition via
+`feed.vle(...)` (never `.bubble_point_at_P()`), and call
+`case_design.design_binary_distillation()`, merging that result with the
+`validate_problem()` report (so `case`/`provenance` are always present
+alongside the design/`implemented`/`reflux` fields described in the
+`case_design.py` section above).
+
+### `optimize_separation(...)` — cost-optimized reflux sweep
+
+Same purpose as before (sweep `reflux_ratios_k` and return the cheapest
+feasible design), but now:
+
+| Argument | Meaning |
+|---|---|
+| `components`, `light_key`, `heavy_key`, `units` | Same as `design_separation_case`. |
+| `pressure_Pa`, `reflux_condition` | **Required, no default** — same meaning as `design_separation_case`. |
+| `feed_temperature_K`, `feed_quality`, `feed_enthalpy_kJ_per_hr` | Feed thermal condition — give exactly one; never defaulted. Replaces the old hardcoded `feed.T = feed.bubble_point_at_P().T`. |
+| `spec`, `target`, `purity_target`, `recovery_target` | Unchanged — same meaning as `optimize_reflux_ratio()`. |
+| `reflux_ratios_k` | Unchanged; the **internal** multiplier sweep, explicitly documented in the docstring as not the external/actual reflux ratio. Defaults to `DEFAULT_REFLUX_RATIOS_K = [1.2, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5]` if omitted. |
+
+Internally: calls `problem_spec.check_essential_inputs()` first (Table 3-1
+only — this tool isn't organized around a single Wankat case, so
+`identify_case()` doesn't apply); if anything essential is missing or the
+feed thermal condition is ambiguous/the reflux condition unsupported,
+returns `{'valid': False, 'missing_essential_inputs', ..., 'message',
+'provenance'}` without building anything. Otherwise builds the feed (same
+`feed.vle(...)` pattern, no bubble-point default), calls
+`optimize_reflux_ratio()`, and returns
+`{'valid': True, 'found', 'message', 'n_feasible', 'n_total', 'best_design', 'key_selection'}`,
 recursively converted from numpy/pandas scalars to plain Python types via
-the internal `_jsonify()` helper so the result is safely JSON-serializable.
-`key_selection` is `optimize_reflux_ratio()`'s `validate_key_selection()`
-output passed straight through (see the `optimizer.py` section above) —
-its inclusion here is what actually gets the key-selection warning in
-front of the model; the docstring's `Returns:` line explicitly tells the
-model to check `key_selection['warning']` before attributing an infeasible
-result to reflux ratio or purity/recovery target.
+the internal `_jsonify()` helper. `key_selection` is
+`optimize_reflux_ratio()`'s `validate_key_selection()` output passed
+straight through (see the `optimizer.py` section above) — its inclusion
+here is what gets the key-selection warning in front of the model; the
+docstring's `Returns:` line explicitly tells the model to check
+`key_selection['warning']` before attributing an infeasible result to
+reflux ratio or purity/recovery target.
 
-`TOOLS = [optimize_separation]` and `TOOL_FUNCTIONS = {'optimize_separation': optimize_separation}`
+`TOOLS = [design_separation_case, optimize_separation]` and
+`TOOL_FUNCTIONS = {'design_separation_case': design_separation_case, 'optimize_separation': optimize_separation}`
 are the two names `separation_agent.py` imports — the former goes straight
 into Ollama's `tools=` argument, the latter is used to dispatch a tool
 call by name back to the actual Python function.
@@ -621,7 +744,16 @@ call by name back to the actual Python function.
 
 The runnable chat agent. Talks to a **local Ollama server** running
 `qwen3:8b` via the `ollama` Python client, with `separation_tool.TOOLS`
-registered as its one available tool. Two modes:
+(both `design_separation_case` and `optimize_separation`) registered.
+`SYSTEM_PROMPT` tells the model: use `design_separation_case` when the
+user has stated (or has been asked for and given) a specific reflux
+ratio; use `optimize_separation` for a cost search; never assume
+pressure, feed thermal condition, or reflux condition — ask instead;
+treat `external_reflux_ratio_LD` and `reflux_ratio_multiplier_k` as
+different quantities and never convert one into the other itself; and
+read `missing_essential_inputs`/`case_candidates`/`ambiguous_reason` back
+to the user verbatim when a call returns `valid: false` rather than
+retrying with a guess. Two modes:
 
 - **Interactive REPL** — `python separation_agent.py`, then type requests
   at the `You:` prompt; `exit`/`quit`/Ctrl+C to leave. Conversation
@@ -699,11 +831,17 @@ python separation_agent.py "Separate 80 kmol/hr methanol and 100 kmol/hr water, 
 **Getting good results:** state real chemical names for exactly **two**
 components (e.g. Water, Methanol, Ethanol, Glycerol — any two of these,
 not three or more) with explicit flow rates and units (kmol/hr or kg/hr),
-and an explicit purity or recovery target — the model will usually ask a
-follow-up rather than guess if these are missing, since the tool has no
-default feed composition to fall back on. A three-or-more-component feed
-is not supported yet (see the top-level "Scope" note); the model should
-say so rather than guessing which two components to keep.
+a column pressure, the feed's thermal condition (temperature, vapor
+fraction, or enthalpy), confirmation that reflux is saturated liquid, and
+either a specific reflux ratio (for `design_separation_case`) or a purity/
+recovery target (for `optimize_separation`). None of these are ever
+defaulted for you — expect the model to ask a follow-up for any of them
+it wasn't given, per `problem_spec.py`'s Table 3-1 essential-input check
+(see the `problem_spec.py`/`case_design.py` section above), rather than
+silently assuming bubble point, 1 atm, or saturated-liquid reflux. A
+three-or-more-component feed is not supported yet (see the top-level
+"Scope" note); the model should say so rather than guessing which two
+components to keep.
 
 ---
 
@@ -903,13 +1041,18 @@ retrieval precision at full-textbook scale, per the README's own
 
 The chopper↔chopperRAG wiring flagged as future work above (now built, in a
 first, prompt-guided form): one Ollama tool-calling agent, `TOOLS =
-[optimize_separation, retrieve_separation_heuristics]`, that decides per
-turn which tool(s) to call. `optimize_separation` is imported unchanged from
-`chopper/separation_tool.py`. `retrieve_separation_heuristics` is new — a
-thin wrapper around `chopperRAG/query.py`'s `retrieve()` that returns raw
-matched heuristics + hydrated textbook chunks (not a pre-synthesized answer,
-to avoid a redundant second LLM call inside the tool — the outer chat model
-already gets a turn to read and summarize tool output).
+[design_separation_case, optimize_separation, retrieve_separation_heuristics]`,
+that decides per turn which tool(s) to call. `design_separation_case` and
+`optimize_separation` are imported unchanged from `chopper/separation_tool.py`
+(see the `problem_spec.py`/`case_design.py` and `separation_tool.py`
+sections above — neither silently completes a missing pressure, feed
+thermal condition, or reflux condition, and neither conflates the external
+reflux ratio L0/D with the internal k = R/Rmin multiplier).
+`retrieve_separation_heuristics` is new — a thin wrapper around
+`chopperRAG/query.py`'s `retrieve()` that returns raw matched heuristics +
+hydrated textbook chunks (not a pre-synthesized answer, to avoid a
+redundant second LLM call inside the tool — the outer chat model already
+gets a turn to read and summarize tool output).
 
 Neither `chopper/separation_agent.py` nor `chopperRAG/query.py` is changed
 or superseded — both remain independently runnable exactly as documented
