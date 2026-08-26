@@ -122,7 +122,12 @@ def optimize_reflux_ratio(
     feed : bst.Stream
         Feed to the column (thermo must already be set on `bst.settings`).
         A fresh copy is made per reflux ratio internally (see
-        `sweep_reflux_ratio`); `feed` itself is never mutated.
+        `sweep_reflux_ratio`); `feed` itself is never mutated. Must have
+        exactly 2 nonzero-flow components -- this tool currently only
+        supports strictly binary feeds (raises ValueError otherwise; see
+        `separation_trial.check_binary_feed`). Ternary/multicomponent feed
+        support is planned but not implemented yet -- see
+        `tools/binary-distillation-context.md`.
     LHK : tuple[str, str]
         (light_key, heavy_key) component IDs.
     reflux_ratios_k : Sequence[float]
@@ -269,9 +274,11 @@ def optimize_reflux_ratio(
 
 
 if __name__ == '__main__':
-    bst.settings.set_thermo(['Water', 'Methanol', 'Glycerol'], cache=True)
+    # Binary feed only -- this tool currently rejects 3+ nonzero-flow
+    # components (see separation_trial.check_binary_feed).
+    bst.settings.set_thermo(['Water', 'Methanol'], cache=True)
 
-    feed = bst.Stream('feed', flow=(80, 100, 25), units='kmol/hr')
+    feed = bst.Stream('feed', flow=(80, 100), units='kmol/hr')
     feed.T = feed.bubble_point_at_P().T
 
     result = optimize_reflux_ratio(
@@ -288,17 +295,21 @@ if __name__ == '__main__':
     for k, v in result['best_design'].items():
         print(f'  {k}: {v}')
 
-    # Same feed, but LK/HK skip over Water -- Water is a distributed
-    # component and validate_key_selection() should flag it.
+    # Ternary feed demo -- 3+ nonzero-flow components are rejected up
+    # front with a clear error, rather than run through key selection as
+    # before. Ternary/multicomponent support is planned for later, not
+    # implemented yet -- see tools/binary-distillation-context.md.
+    bst.settings.set_thermo(['Water', 'Methanol', 'Glycerol'], cache=True)
     feed2 = bst.Stream('feed2', flow=(80, 100, 25), units='kmol/hr')
     feed2.T = feed2.bubble_point_at_P().T
 
-    bad_key_result = optimize_reflux_ratio(
-        feed=feed2,
-        LHK=('Methanol', 'Glycerol'),
-        reflux_ratios_k=[1.5, 1.75, 2.0, 2.25, 2.5],
-        purity_target=0.99,
-    )
-    print('\n--- Ambiguous key selection demo (Methanol/Glycerol, skips Water) ---')
-    print(f"n_feasible: {bad_key_result['n_feasible']}/{bad_key_result['n_total']}")
-    print(f"key_selection warning: {bad_key_result['key_selection']['warning']}")
+    print('\n--- Ternary feed demo (Water/Methanol/Glycerol) ---')
+    try:
+        optimize_reflux_ratio(
+            feed=feed2,
+            LHK=('Methanol', 'Water'),
+            reflux_ratios_k=[1.5, 1.75, 2.0, 2.25, 2.5],
+            purity_target=0.99,
+        )
+    except ValueError as e:
+        print(f'Rejected as expected: {e}')

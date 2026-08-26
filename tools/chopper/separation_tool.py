@@ -46,8 +46,10 @@ def optimize_separation(
 ) -> dict:
     """Size and cost a binary distillation column for a feed, sweeping reflux ratio to find the cheapest design that hits a purity or recovery target.
 
+    This tool currently only supports strictly binary feeds: `components` must have exactly 2 entries with nonzero flow. A 3+ component feed raises an error -- ternary/multicomponent feed support is planned for later but not implemented yet.
+
     Args:
-        components: Feed component flow rates, e.g. {"Water": 80, "Methanol": 100, "Glycerol": 25}. Keys must be valid BioSTEAM/chemicals-package chemical names (e.g. "Water", "Methanol", "Ethanol", "Glycerol", "Ethylene").
+        components: Feed component flow rates -- exactly 2 nonzero entries, e.g. {"Water": 80, "Methanol": 100}. Keys must be valid BioSTEAM/chemicals-package chemical names (e.g. "Water", "Methanol", "Ethanol", "Glycerol", "Ethylene").
         light_key: Component name of the light key -- the component that should concentrate in the distillate (top) product.
         heavy_key: Component name of the heavy key -- the component that should concentrate in the bottoms (bottom) product.
         units: Flow rate units for the `components` values. Either "kmol/hr" or "kg/hr".

@@ -21,10 +21,35 @@ TEST_QUESTIONS = [
 ]
 
 ANSWER_PROMPT = """You are helping select and configure a separation process.
-Use the retrieved material below to answer the question. Prefer the structured
-engineering rules when they directly apply; use the raw textbook passages for
-context or when no rule covers the question. If nothing retrieved is relevant,
-say so rather than guessing.
+Answer the question using only the retrieved context that is directly
+relevant to it. Do not mention a retrieved rule merely because it was
+provided -- ignore anything that doesn't help answer this specific question,
+even if it's highly ranked. If nothing retrieved is relevant, say so plainly
+rather than guessing.
+
+For each rule you do use, judge whether its condition is actually established
+by the question:
+- Directly triggered: the condition is explicitly stated or clearly implied
+  by the question (e.g. a stated relative volatility, a named heat-sensitive/
+  corrosive/reactive component). State its principle as an active finding.
+- Conditionally relevant: the rule bears on the situation but its own
+  condition hasn't been established yet (e.g. a rule about high bottoms
+  temperature when no bottoms temperature is known or given). Phrase it as a
+  check still to be performed, not as a conclusion already reached.
+
+A question can trigger multiple rules at once, operating at different levels
+-- selection, sequencing, feasibility. Don't reduce this to one "winning"
+rule; synthesize across levels into one coherent answer. For example, given
+"Relative volatility is 1.03 and the compound is heat sensitive": "A relative
+volatility of 1.03 is below the heuristic threshold of 1.05 for ordinary
+distillation, so the proposed split may be difficult. Because the component
+is heat-sensitive, it should also be prioritized for removal early in the
+separation sequence. If ordinary distillation is still considered, the
+expected bottoms temperature should be checked against the component's
+thermal stability to ensure decomposition does not occur."
+
+Do not introduce engineering recommendations that aren't supported by the
+retrieved context.
 
 Structured engineering rules:
 {heuristics}

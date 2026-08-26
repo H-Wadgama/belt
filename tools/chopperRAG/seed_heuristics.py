@@ -67,19 +67,25 @@ SEED_HEURISTICS = [
         equation="SF = alpha_1,2 = Ps_1 / Ps_2",
         required_variables=["Ps_1", "Ps_2"],
     )),
+    # NOTE: originally one bundled entry ("thermally unstable, corrosive, or
+    # chemically reactive"). Split into three single-condition entries
+    # (2026-08-25) because the disjunctive condition string let a question
+    # that only established one disjunct (e.g. "corrosive") cause the LLM to
+    # treat the others (e.g. "thermally unstable") as also established,
+    # wrongly pulling in the bottoms-temperature-decomposition feasibility
+    # heuristic. This entry keeps its original list position/ID
+    # (heur_seed_seider_ch9_3) so re-seeding overwrites rather than orphans
+    # it; the other two splits are appended at the end of this list below.
     ("seider_ch9", Heuristic(
         category="separation_sequence_selection",
-        condition=(
-            "a feed contains thermally unstable, corrosive, "
-            "or chemically reactive components"
-        ),
+        condition="a feed contains a corrosive component",
         principle=(
-            "thermally unstable/heat-sensitive, corrosive, or chemically reactive "
-            "components should be removed early in the separation sequence"
+            "corrosive components should be removed early in the "
+            "separation sequence"
         ),
         design_implication=(
-            "prioritize separation steps that remove these components "
-            "before downstream operations"
+            "prioritize separation steps that remove the corrosive "
+            "component before downstream operations"
         ),
     )),
     # --- Seader ch. 9, sec. 9.4: sequencing/feasibility of ordinary
@@ -209,6 +215,32 @@ SEED_HEURISTICS = [
             "evaluate whether the expected pressure drop is acceptable for the "
             "proposed operation and pay particular attention to pressure-drop "
             "limitations in vacuum columns"
+        ),
+    )),
+    # --- remaining two splits of the original bundled corrosive/thermally
+    # unstable/reactive entry above (see note there) ---
+    ("seider_ch9", Heuristic(
+        category="separation_sequence_selection",
+        condition="a feed contains a thermally unstable or heat-sensitive component",
+        principle=(
+            "thermally unstable/heat-sensitive components should be removed "
+            "early in the separation sequence"
+        ),
+        design_implication=(
+            "prioritize separation steps that remove the thermally unstable "
+            "component before downstream operations"
+        ),
+    )),
+    ("seider_ch9", Heuristic(
+        category="separation_sequence_selection",
+        condition="a feed contains a chemically reactive component",
+        principle=(
+            "chemically reactive components should be removed early in the "
+            "separation sequence"
+        ),
+        design_implication=(
+            "prioritize separation steps that remove the reactive component "
+            "before downstream operations"
         ),
     )),
 ]

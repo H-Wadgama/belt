@@ -19,9 +19,12 @@ from separation_plots import (
     plot_reflux_sweep,
 )
 
-bst.settings.set_thermo(['Water', 'Methanol', 'Glycerol'], cache=True)
+# Binary feed only -- this toolkit currently rejects 3+ nonzero-flow
+# components (ternary/multicomponent support is planned but not
+# implemented yet; see tools/binary-distillation-context.md).
+bst.settings.set_thermo(['Water', 'Methanol'], cache=True)
 
-feed = bst.Stream('feed', flow=(80, 100, 25), units='kmol/hr')
+feed = bst.Stream('feed', flow=(80, 100), units='kmol/hr')
 feed.T = feed.bubble_point_at_P().T
 
 # k multipliers over minimum reflux, not absolute L/D values.

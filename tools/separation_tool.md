@@ -7,6 +7,15 @@ picking the cheapest one that actually hits the target. Each layer is a thin
 wrapper around the one below it — nothing here re-implements BioSTEAM's
 shortcut method; it only drives it and organizes the results.
 
+**Scope: strictly binary feeds only, for now.** Every entry point in this
+folder (`run_separation`, `sweep_reflux_ratio`, `optimize_reflux_ratio`,
+`optimize_separation`, and the merged `separation_rag_agent.py`) requires
+the feed to have exactly 2 components with nonzero flow —
+`separation_trial.check_binary_feed()` raises `ValueError` otherwise.
+Ternary/multicomponent feed support is planned as a later extension (see
+`tools/binary-distillation-context.md`, "Scope: Binary Feeds Only, For
+Now") but is not implemented yet.
+
 ## Hierarchy
 
 ```
@@ -66,7 +75,7 @@ in the `optimizer.py` section below.
 
 The runnable end-to-end example living outside this folder is
 `atj_saf/demo_separation.py`, which calls `optimize_reflux_ratio()` on a
-toy Water/Methanol/Glycerol feed and plots the resulting sweep.
+toy Water/Methanol feed and plots the resulting sweep.
 
 ## A note on imports within this folder
 
@@ -132,8 +141,8 @@ distinguishing the input multiplier from the two absolute values it produces.
 
 | Argument | Required? | Description |
 |---|---|---|
-| `feed` | Yes | A `bst.Stream` feed to the column. `bst.settings.set_thermo(...)` must already be called before building it. |
-| `LHK` | Yes | `(light_key, heavy_key)` — the two component IDs the column is designed around. |
+| `feed` | Yes | A `bst.Stream` feed to the column. `bst.settings.set_thermo(...)` must already be called before building it. Must have exactly 2 components with nonzero flow — `run_separation` raises `ValueError` (via `check_binary_feed`) for 3+ nonzero-flow components; see the "Scope" note above. |
+| `LHK` | Yes | `(light_key, heavy_key)` — the two component IDs the column is designed around (with a binary feed, this is just the feed's two components, in either order). |
 | `reflux_ratio_k` | Yes | `k` — see [A note on reflux ratio terminology](#a-note-on-reflux-ratio-terminology-k-vs-absolute-ld) above. **Not the absolute L/D itself** — that's reported back in the output as `actual_reflux_ratio_LD` and `minimum_reflux_ratio_LD`. |
 | `P` | No (default `101325`) | Column pressure in Pa. |
 | `spec` | No (default `'purity'`) | `'purity'` or `'recovery'` — which kind of target to check feasibility against. |
@@ -173,8 +182,8 @@ A single `results` dictionary:
 import biosteam as bst
 from separation_trial import run_separation
 
-bst.settings.set_thermo(['Water', 'Methanol', 'Glycerol'], cache=True)
-feed = bst.Stream('feed', flow=(80, 100, 25))
+bst.settings.set_thermo(['Water', 'Methanol'], cache=True)
+feed = bst.Stream('feed', flow=(80, 100))
 feed.T = feed.bubble_point_at_P().T
 
 results = run_separation(
@@ -207,7 +216,7 @@ The module exposes one function: `sweep_reflux_ratio(...)`.
 
 | Argument | Required? | Description |
 |---|---|---|
-| `feed` | Yes | A `bst.Stream` feed. A separate copy of this stream is made for every run in the sweep, so the original `feed` is never mutated or consumed. |
+| `feed` | Yes | A `bst.Stream` feed. A separate copy of this stream is made for every run in the sweep, so the original `feed` is never mutated or consumed. Must have exactly 2 nonzero-flow components — same `check_binary_feed` restriction as `run_separation`; see the "Scope" note above. |
 | `LHK` | Yes | `(light_key, heavy_key)` — same meaning as in `run_separation`. |
 | `reflux_ratios_k` | Yes | A sequence of `k` values — see [A note on reflux ratio terminology](#a-note-on-reflux-ratio-terminology-k-vs-absolute-ld) above. **Not** absolute L/D values. One column is built and simulated per value. |
 | `P`, `spec`, `target`, `y_top`, `x_bot`, `Lr`, `Hr`, `is_divided`, `tol` | No | Passed straight through to `run_separation` unchanged on every run in the sweep — see `run_separation` above for what each one means. Only `reflux_ratio_k` (and the per-run `feed` copy/unit `ID`) vary across rows; sweeping separation specs (e.g. varying `y_top` too) is a future extension, not handled here. |
@@ -244,8 +253,8 @@ A single `pandas.DataFrame`, one row per reflux ratio, with columns:
 import biosteam as bst
 from sweep_separation import sweep_reflux_ratio
 
-bst.settings.set_thermo(['Water', 'Methanol', 'Glycerol'], cache=True)
-feed = bst.Stream('feed', flow=(80, 100, 25), units='kmol/hr')
+bst.settings.set_thermo(['Water', 'Methanol'], cache=True)
+feed = bst.Stream('feed', flow=(80, 100), units='kmol/hr')
 feed.T = feed.bubble_point_at_P().T
 
 df = sweep_reflux_ratio(
@@ -392,7 +401,7 @@ The module exposes one function: `optimize_reflux_ratio(...)`.
 
 | Argument | Required? | Description |
 |---|---|---|
-| `feed` | Yes | Feed stream; a fresh copy is made per reflux ratio internally (via `sweep_reflux_ratio`) — `feed` itself is never mutated. |
+| `feed` | Yes | Feed stream; a fresh copy is made per reflux ratio internally (via `sweep_reflux_ratio`) — `feed` itself is never mutated. Must have exactly 2 nonzero-flow components — same `check_binary_feed` restriction as `run_separation`; see the "Scope" note above. |
 | `LHK` | Yes | `(light_key, heavy_key)` — same meaning as in `run_separation`. |
 | `reflux_ratios_k` | Yes | The `k` values to sweep — see [the reflux ratio terminology note](#a-note-on-reflux-ratio-terminology-k-vs-absolute-ld) above. |
 | `P` | No (default `101325`) | Column pressure in Pa. |
@@ -430,6 +439,18 @@ A single `result` dictionary:
 | `key_selection` | `dict` — output of `validate_key_selection(feed, LHK)`, run once before the sweep (see below). Present regardless of `found`/`n_feasible`; check `key_selection['warning']` before attributing an infeasible or unexpected result to reflux ratio. |
 
 ## `validate_key_selection()` — key-selection sanity check
+
+**Currently dormant in practice.** Since `check_binary_feed()` now rejects
+any feed with 3+ nonzero-flow components before `optimize_reflux_ratio()`
+ever reaches this check, `validate_key_selection()` will always see a feed
+with at most 2 nonzero-flow components in normal use — meaning
+`distributed_components` is always empty and `valid` is always `True`
+today. The function and its call site are kept as-is (rather than removed)
+because they are exactly what ternary/multicomponent support will need
+once that "Scope" restriction is lifted — see
+`tools/binary-distillation-context.md`. The description below documents
+what it does when given a genuinely ternary+ feed directly (i.e. called
+standalone, bypassing the pipeline's binary check).
 
 `optimize_reflux_ratio()` calls this automatically before sweeping reflux
 ratios: `validate_key_selection(feed, LHK)`. It exists because the shortcut
@@ -490,11 +511,12 @@ result['message']               # "Best feasible design: reflux_ratio_k=1.5 ..."
 ```
 
 Running `python optimizer.py` directly runs this exact example on the toy
-Water/Methanol/Glycerol feed and prints the feasibility count, summary
-message, `key_selection` result, and full best-design breakdown — then runs
-a second demo with `LHK=('Methanol', 'Glycerol')` on the same feed (skipping
-over Water) to show `validate_key_selection()` flagging the ambiguous key
-choice and the resulting sweep coming back with `n_feasible=0`.
+Water/Methanol feed and prints the feasibility count, summary message,
+`key_selection` result, and full best-design breakdown — then runs a
+second demo that calls `optimize_reflux_ratio()` on a Water/Methanol/
+Glycerol feed to show `check_binary_feed()` rejecting it up front with a
+clear "ternary/multicomponent feed support is planned for a future
+release" `ValueError`, caught and printed rather than propagated.
 
 ---
 
@@ -568,7 +590,7 @@ the tool; keep them accurate if the signature changes.
 
 | Argument | Meaning |
 |---|---|
-| `components` | `{component_name: flow}` dict, e.g. `{"Methanol": 80, "Water": 100}`. Keys must be valid chemical names in the `chemicals`/BioSTEAM database. |
+| `components` | `{component_name: flow}` dict, e.g. `{"Methanol": 80, "Water": 100}`. Keys must be valid chemical names in the `chemicals`/BioSTEAM database. Must have exactly 2 nonzero entries — see the top-level "Scope" note; a 3rd nonzero component raises `ValueError` (via `check_binary_feed`, surfaced through `optimize_reflux_ratio`). |
 | `light_key`, `heavy_key` | Same as `LHK` elsewhere in this folder. |
 | `units` | `'kmol/hr'` or `'kg/hr'` for the `components` values. |
 | `spec`, `target`, `purity_target`, `recovery_target`, `pressure_Pa` | Same meaning as the corresponding arguments in `optimize_reflux_ratio()` (`purity_target`/`recovery_target` use the same convenience-shorthand convention). |
@@ -625,33 +647,32 @@ that off via Ollama's chat API. This was switched off deliberately — it made
 the agent noticeably faster, since the model no longer spends tokens
 reasoning through each tool-call decision and each final summary.
 
-### Two safeguards against wrong light_key/heavy_key choices
+### Guarding against non-binary feeds (and the now-dormant key-selection safeguard)
 
-For feeds with 3+ components, `qwen3:8b` picking `light_key`/`heavy_key`
-that aren't adjacent in volatility (e.g. lightest + heaviest, skipping a
-middle-boiling component) produces an infeasible or nonsensical design that
-has nothing to do with reflux ratio — see
+Since the toolkit-wide binary-only restriction was added (see the
+top-level "Scope" note), a 3+ nonzero-component feed can no longer reach
+the shortcut method at all — `check_binary_feed()` rejects it with a
+`ValueError` before any column is built, independent of anything the model
+does. `SYSTEM_PROMPT` in `separation_agent.py` is written to cooperate
+with this: it instructs the model, when a user describes a feed with three
+or more components, *not* to work around the limit by calling the tool
+with only two of them and silently dropping the rest, but to tell the user
+ternary/multicomponent feed support isn't available yet and ask them to
+narrow the request to a true two-component feed.
+
+Before this restriction existed, the risk was different: `qwen3:8b`
+picking `light_key`/`heavy_key` that weren't adjacent in volatility (e.g.
+lightest + heaviest, skipping a middle-boiling component) would produce an
+infeasible or nonsensical design that had nothing to do with reflux ratio
+— see
 [`validate_key_selection()`](#validate_key_selection-key-selection-sanity-check)
-above for the mechanism. Two independent safeguards address this, layered
-on top of each other:
-
-1. **Prevention** — `SYSTEM_PROMPT` in `separation_agent.py` instructs the
-   model to order feed components by boiling point and choose
-   `light_key`/`heavy_key` as neighbors in that ordering *before* calling
-   the tool, rather than just picking the lightest and heaviest components
-   present.
-2. **Detection** — regardless of what the model chose, `optimize_separation`
-   always returns `key_selection` (see the `separation_tool.py` section
-   above). `SYSTEM_PROMPT` also instructs the model to check
-   `key_selection['warning']` after every tool call, *especially* on an
-   infeasible result, and to attribute the failure to the flagged
-   distributed component rather than to reflux ratio or the purity/recovery
-   target when a warning is present.
-
-Safeguard 2 is the backstop for when safeguard 1 doesn't work — the model
-can still call the tool with a bad `LHK` (as it did before either safeguard
-existed), but it now has the means to correctly diagnose why the sweep came
-back infeasible instead of guessing "reflux ratio might be too low."
+above for the mechanism, and its "currently dormant in practice" note.
+Two safeguards addressed that risk (prompt instructions to order
+components by boiling point before choosing keys, plus a `key_selection`
+field in every tool result for the model to check). Both remain in the
+code for when ternary support returns, but neither can currently be
+exercised through the normal pipeline, since `check_binary_feed()` now
+rejects the ternary feed outright before key selection is ever relevant.
 
 ### How to run it
 
@@ -675,11 +696,14 @@ python separation_agent.py "Separate 80 kmol/hr methanol and 100 kmol/hr water, 
   `requirements.txt`; it was added ad hoc via `pip install ollama` for
   this agent).
 
-**Getting good results:** state real chemical names (e.g. Water,
-Methanol, Ethanol, Glycerol) with explicit flow rates and units
-(kmol/hr or kg/hr), and an explicit purity or recovery target — the model
-will usually ask a follow-up rather than guess if these are missing,
-since the tool has no default feed composition to fall back on.
+**Getting good results:** state real chemical names for exactly **two**
+components (e.g. Water, Methanol, Ethanol, Glycerol — any two of these,
+not three or more) with explicit flow rates and units (kmol/hr or kg/hr),
+and an explicit purity or recovery target — the model will usually ask a
+follow-up rather than guess if these are missing, since the tool has no
+default feed composition to fall back on. A three-or-more-component feed
+is not supported yet (see the top-level "Scope" note); the model should
+say so rather than guessing which two components to keep.
 
 ---
 
@@ -904,6 +928,28 @@ heuristics (`heuristic_type='equation'`) are explicitly called out as
 non-evaluated reference text, same as `query.py` treats them today —
 building an evaluator for those is a separate, still-unstarted piece of
 future work.
+
+**Retrieved heuristics are filtered and tiered before being summarized, not
+just relayed.** Because `retrieve_separation_heuristics` returns up to
+`top_k` (default 8) nearest-neighbor hits out of a small (~12-entry) pool,
+most calls come back with several heuristics that aren't actually relevant to
+the question — `SYSTEM_PROMPT` explicitly instructs the model not to mention
+a heuristic merely because it was retrieved, and to ignore anything that
+doesn't help answer the specific question even if it ranked highly. For the
+heuristics that are kept, it classifies each into one of two tiers:
+**directly triggered** (the heuristic's `condition` is explicitly established
+by the facts given — state its `principle`/`design_implication` as an active
+finding) vs. **conditionally relevant** (the heuristic bears on the situation
+but its own `condition` hasn't been established yet — phrase it as a check
+still to be performed, not a conclusion already reached; e.g. a
+bottoms-temperature-decomposition heuristic surfaced by a heat-sensitivity
+question, when no bottoms temperature has actually been given or computed).
+A single question can trigger heuristics at multiple levels at once —
+technique/key selection, sequencing, feasibility — and the prompt explicitly
+tells the model to synthesize across all of them into one coherent answer
+rather than collapsing to a single "winning" heuristic. `chopperRAG/query.py`'s
+`ANSWER_PROMPT` carries the same filtering/tiering/synthesis instructions,
+independently, for standalone testing of the chopperRAG half.
 
 **Prerequisites** (all already present in the `pyfuel` conda env as of this
 writing): everything `chopper/separation_agent.py` needs (`biosteam`,

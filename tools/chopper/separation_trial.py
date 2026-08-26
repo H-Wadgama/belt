@@ -11,6 +11,30 @@ def _mass_flows_kg_hr(stream):
     }
 
 
+def check_binary_feed(feed):
+    """
+    Raise ValueError unless `feed` has exactly 2 components with nonzero
+    flow.
+
+    This toolkit currently only supports true binary-feed distillation.
+    Ternary/multicomponent feeds (3+ components with nonzero flow) are a
+    planned future extension -- see the "Scope" note in
+    `tools/binary-distillation-context.md` -- but are not implemented yet,
+    so they are rejected here rather than silently run through the
+    (LHK-based) shortcut method as if they were properly handled.
+    """
+    present = [ID for ID in feed.chemicals.IDs if feed.imol[ID] > 1e-9]
+    if len(present) > 2:
+        raise ValueError(
+            f"Feed '{feed.ID}' has {len(present)} components with nonzero "
+            f"flow ({', '.join(present)}), but this tool currently only "
+            f"supports strictly binary (2-component) feeds. "
+            f"Ternary/multicomponent feed support is planned for a future "
+            f"release -- see tools/binary-distillation-context.md -- but "
+            f"is not implemented yet."
+        )
+
+
 def run_separation(
     feed,
     LHK,
@@ -39,8 +63,14 @@ def run_separation(
     ----------
     feed : bst.Stream
         Feed to the column (thermo must already be set on `bst.settings`).
+        Must have exactly 2 components with nonzero flow -- this tool
+        currently only supports strictly binary feeds. A feed with 3+
+        nonzero-flow components raises ValueError (see
+        `check_binary_feed`); ternary/multicomponent support is planned
+        but not implemented yet.
     LHK : tuple[str, str]
-        (light_key, heavy_key) component IDs.
+        (light_key, heavy_key) component IDs -- with a binary feed, this
+        is just the feed's two components (in either order).
     reflux_ratio_k : float
         `k` in BioSTEAM's shortcut (Fenske-Underwood-Gilliland) method --
         NOT an absolute reflux ratio. `k` is the ratio of the actual
@@ -132,6 +162,7 @@ def run_separation(
         raise ValueError("spec must be 'purity' or 'recovery'")
     if target not in ('top', 'bottom'):
         raise ValueError("target must be 'top' or 'bottom'")
+    check_binary_feed(feed)
 
     light_key, heavy_key = LHK
 
@@ -254,9 +285,11 @@ def run_separation(
 
 
 if __name__ == '__main__':
-    bst.settings.set_thermo(['Water', 'Methanol', 'Glycerol'], cache=True)
+    # Binary feed only -- this tool currently rejects 3+ nonzero-flow
+    # components (see check_binary_feed above).
+    bst.settings.set_thermo(['Water', 'Methanol'], cache=True)
 
-    feed = bst.Stream('feed', flow=(80, 100, 25))
+    feed = bst.Stream('feed', flow=(80, 100))
     bp = feed.bubble_point_at_P()
     feed.T = bp.T  # Feed at bubble point T
 
@@ -281,7 +314,7 @@ if __name__ == '__main__':
     purity_results['unit'].show(T='degC', P='atm', composition=True)
 
     # Example 2: recovery spec, checking heavy-key (water) recovery to bottoms
-    feed2 = bst.Stream('feed2', flow=(80, 100, 25))
+    feed2 = bst.Stream('feed2', flow=(80, 100))
     feed2.T = feed2.bubble_point_at_P().T
     recovery_results = run_separation(
         feed2, LHK=('Methanol', 'Water'), reflux_ratio_k=1.5, P=101325,
