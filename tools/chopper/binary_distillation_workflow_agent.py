@@ -5,7 +5,7 @@ Qwen in a dedicated workflow-testing agent"), refactored per
 tools/binary-distillation-read-vs-append.md to split the single combined
 tool into separate READ and WRITE operations.
 
-This agent exposes THREE tools to the model:
+This agent exposes FOUR tools to the model:
   - `update_binary_distillation_problem` (WRITE) -- merges newly-stated
     engineering facts into the accumulated problem state, then returns the
     deterministic assessment of the full accumulated state. Call this only
@@ -16,15 +16,25 @@ This agent exposes THREE tools to the model:
     about information already supplied, derived, or still missing -- never
     resubmit an existing or derived value through the WRITE tool merely to
     answer a question about it.
+  - `calculate_current_binary_distillation_problem` (CALCULATION) -- takes
+    no arguments, reads the accumulated authoritative state directly, and --
+    only once it is `ready_for_calculation` -- runs the deterministic
+    BioSTEAM feed-phase calculation from `binary_distillation_calculation.py`.
+    See `tools/binary-distillation-connecting-feed-calculation.md`.
   - `reset_workflow_session` (housekeeping) -- clears all accumulated state.
 
-Both engineering tools wrap the same underlying deterministic checker,
-`binary_distillation_workflow.assess_binary_distillation_problem()`. This
-module deliberately does NOT import `separation_tool.py` / `case_design.py`
-/ `optimizer.py` (or BioSTEAM at all) -- this keeps the experiment clean,
-per the workflow doc: for this development phase, the workflow checker is
-the terminal engineering tool. No distillation calculation, sizing, or
-optimization can happen through this agent.
+Both engineering (READ/WRITE) tools wrap the same underlying deterministic
+checker, `binary_distillation_workflow.assess_binary_distillation_problem()`.
+This module deliberately does NOT import `separation_tool.py` /
+`case_design.py` / `optimizer.py` -- the sizing/optimization sweep layer is
+still out of scope here. It DOES import the deterministic feed-phase
+calculation layer (`binary_distillation_calculation.py`, which in turn
+imports BioSTEAM via `biosteam_feed.py`/`feed_phase.py`) for the CALCULATION
+tool above -- that layer is the sole place any BioSTEAM call happens; the
+LLM itself never infers feed phase, vapor fraction, or any other
+thermodynamic property from general knowledge. The calculation pipeline
+currently evaluates ONLY the feed phase -- no Wankat Case A-D sizing
+(reflux ratio, stage count, column diameter, etc.) is performed here yet.
 
 Run interactively:
     python binary_distillation_workflow_agent.py
@@ -38,6 +48,7 @@ import sys
 
 import ollama
 
+from binary_distillation_calculation import calculate_binary_distillation_problem
 from binary_distillation_workflow import assess_binary_distillation_problem
 from feed_state import apply_user_update, empty_feed_state
 
@@ -164,10 +175,10 @@ def update_binary_distillation_problem(
     Args:
         component_names: The FULL, current list of component names for this separation, e.g. ["Water", "Methanol"] -- use this when the user is stating (or restating) which components are in the feed, e.g. "Separate methanol and water" or "I want to separate water, methanol, and butanol." This REPLACES any previously-known component list AND clears any previously-known flows/total_flow/composition (they described the old, different feed). Do not populate this with invented numbers -- just the names.
         add_component_names: A component name (or names) to ADD to the already-established list, without touching any already-known flow/composition data -- use this specifically when the user is answering "please specify the second component" with just a bare name, e.g. the user previously named one component and now names one more. Do not use this to restate the whole feed; use `component_names` for that.
-        component_flows: Per-component flow rates actually stated by the user this turn, e.g. {"Methanol": 50} or {"Methanol": 40, "Water": 60} -- give only the component(s) whose flow the user actually stated. A single component's flow is NOT the total feed flow -- never infer or pass a value for the other component. Naming the flow of a component not yet in `component_names`/the accumulated state also establishes that component's identity.
-        component_flow_units: Units for `component_flows`, e.g. "kmol/hr".
+        component_flows: Per-component flow rates actually stated by the user this turn, e.g. {"Methanol": 50} or {"Methanol": 40, "Water": 60} -- give only the component(s) whose flow the user actually stated. A single component's flow is NOT the total feed flow -- never infer or pass a value for the other component. Naming the flow of a component not yet in `component_names`/the accumulated state also establishes that component's identity. FLOW-UNIT EXTRACTION RULE: whenever the user states a flow rate together with units in the same message (e.g. "50 kmol per hour methanol and 50 kmol per hour water"), pass BOTH `component_flows` AND `component_flow_units` in this same call -- never discard explicitly stated units, and never state a numeric flow without also passing its units when the user gave them.
+        component_flow_units: Units for `component_flows`, e.g. "kmol/hr". Required before a calculation can run once `component_flows` is how the feed quantity was given -- pass it as soon as the user states it, even if given in the same message as the flow rates themselves.
         total_flow: The TOTAL feed flow rate, ONLY if the user explicitly described it as the total feed (e.g. "100 kmol/hr total" or "100 kmol/hr, 40% methanol") -- never set this from a single component's stated flow rate.
-        total_flow_units: Units for `total_flow`.
+        total_flow_units: Units for `total_flow`, e.g. "kmol/hr". Required before a calculation can run once `total_flow` is how the feed quantity was given.
         composition: Mole or mass fraction(s) actually stated by the user this turn, e.g. {"Methanol": 0.4} or {"Methanol": 0.4, "Water": 0.6} -- give only what was actually stated; do not compute or guess the complementary fraction yourself, the checker derives it when the binary pair is established.
         composition_basis: "mole" or "mass", if the user specified which.
         pressure_Pa: Column pressure in Pascal. Never assume 1 atm -- only pass this if the user stated a pressure.
@@ -187,7 +198,7 @@ def update_binary_distillation_problem(
         use_optimum_feed_plate: Whether the design should use the optimum feed plate. This is common to ALL FOUR cases and is never itself evidence of which case applies -- ask for it separately, and never default it to True.
 
     Returns:
-        A dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'status', 'would_calculate', 'calculation_performed' (always False), 'message', 'provenance'. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value, and never claim a calculation was performed.
+        A dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'calculation_performed' (always False), 'message', 'provenance'. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed.
     """
     _merge_into_state(dict(
         component_names=component_names, add_component_names=add_component_names,
@@ -219,10 +230,31 @@ def get_binary_distillation_problem() -> dict:
     return assess_binary_distillation_problem(_effective_spec())
 
 
-TOOLS = [update_binary_distillation_problem, get_binary_distillation_problem, reset_workflow_session]
+def calculate_current_binary_distillation_problem() -> dict:
+    """CALCULATION operation: run the deterministic feed-phase calculation for the CURRENTLY accumulated binary-distillation problem. Reads the authoritative workflow state directly -- takes NO arguments, and must never be used to add, modify, guess, or restate any engineering input.
+
+    Call this to answer any question about feed phase, vapor fraction, liquid fraction, or other calculated thermodynamic property of the current problem (e.g. "What is the feed phase?", "Is the feed liquid or vapor?", "What is the vapor fraction?"). Do NOT call `get_binary_distillation_problem` first just to check readiness -- this tool already reads the same state and reports the workflow status alongside the calculation, so a separate READ beforehand is redundant.
+
+    The calculation only proceeds when the accumulated problem is `ready_for_calculation`; otherwise this returns `calculation_performed: False` and the same workflow assessment `get_binary_distillation_problem` would -- relay `missing_essential_inputs` / `case_candidates` / `message` from the returned `workflow` and explain what is still needed, rather than guessing the property yourself.
+
+    The calculation pipeline currently evaluates ONLY the feed phase (`checks['feed_phase']`): liquid / vapor / vapor_liquid classification, vapor/liquid fraction, and per-component vapor/liquid molar flows. It does NOT compute distillate/bottoms flow, reflux ratio, reboiler/condenser duty, theoretical stage count, feed stage, or column diameter for the identified Wankat case -- never describe any of those as calculated from this tool's result.
+
+    Returns:
+        {'calculation_performed': bool, 'workflow': <same assessment schema as get_binary_distillation_problem>, 'checks': {'feed_phase': {...}} if calculation_performed else {}}.
+    """
+    return calculate_binary_distillation_problem(_effective_spec())
+
+
+TOOLS = [
+    update_binary_distillation_problem,
+    get_binary_distillation_problem,
+    calculate_current_binary_distillation_problem,
+    reset_workflow_session,
+]
 TOOL_FUNCTIONS = {
     'update_binary_distillation_problem': update_binary_distillation_problem,
     'get_binary_distillation_problem': get_binary_distillation_problem,
+    'calculate_current_binary_distillation_problem': calculate_current_binary_distillation_problem,
     'reset_workflow_session': reset_workflow_session,
 }
 
@@ -259,12 +291,6 @@ _MAX_SHORT_REPLY_WORDS = 6
 # requests, not any sentence that happens to start with "yes".
 _PROCEED_PHRASES = {'yes', 'yes boss', 'go ahead', 'proceed', 'calculate it', 'do it', 'lets go'}
 
-READY_BOUNDARY_MESSAGE = (
-    "The problem is ready for calculation, but this workflow-only agent is "
-    "intentionally limited to problem specification. The calculation layer "
-    "is not enabled here."
-)
-
 
 def normalize_short_reply(text):
     """Lowercase, strip surrounding whitespace/punctuation noise (section 6) -- e.g. 'Ofcourse!@' -> 'ofcourse', 'YES!!!' -> 'yes', 'nope.' -> 'nope'. Keeps digits, '.', and '-' so numeric replies ('0.99', '-1.5') survive intact."""
@@ -272,6 +298,75 @@ def normalize_short_reply(text):
     text = re.sub(r"[^a-z0-9.\-\s]", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text.strip('. ')
+
+
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-flow-units.md Step 5 -- deterministic flow-unit
+# normalization. Unlike `normalize_short_reply`, this deliberately keeps
+# '/' (it's meaningful in a unit like 'kmol/hr'), and maps a small, FIXED
+# set of common phrasings to the canonical string BioSTEAM expects. Never
+# guesses or invents a unit -- an unrecognized phrasing returns None and is
+# left to normal model-driven routing rather than being forced through.
+# ---------------------------------------------------------------------------
+
+_FLOW_UNIT_ALIASES = {
+    'kmol/hr': 'kmol/hr',
+    'kmol/h': 'kmol/hr',
+    'kmol per hr': 'kmol/hr',
+    'kmol per hour': 'kmol/hr',
+    'kilomol/hr': 'kmol/hr',
+    'kilomole/hr': 'kmol/hr',
+    'kilomole per hour': 'kmol/hr',
+    'kilomoles per hour': 'kmol/hr',
+    'kilomoles/hr': 'kmol/hr',
+
+    'kg/hr': 'kg/hr',
+    'kg/h': 'kg/hr',
+    'kg per hr': 'kg/hr',
+    'kg per hour': 'kg/hr',
+    'kilogram per hour': 'kg/hr',
+    'kilograms per hour': 'kg/hr',
+    'kilograms/hr': 'kg/hr',
+}
+
+
+def normalize_units_reply(text):
+    """Map a flow-unit phrasing to BioSTEAM's canonical unit string via the fixed `_FLOW_UNIT_ALIASES` table (case/spacing-insensitive; e.g. 'KMOL/HR', 'kmol per hour', 'kilomoles per hour' all -> 'kmol/hr'), or None if it doesn't match a known alias. Never infers or defaults a unit."""
+    normalized = (text or '').strip().lower()
+    normalized = re.sub(r'[.!?]+$', '', normalized).strip()
+    normalized = re.sub(r'\s+', ' ', normalized)
+    return _FLOW_UNIT_ALIASES.get(normalized)
+
+
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-connecting-feed-calculation.md Steps 8-10 --
+# explicit feed-phase/vapor-fraction questions are calculation questions,
+# never something the model should answer from remembered chemical
+# knowledge or from the workflow state alone. This is deliberately a narrow
+# substring match against a small set of obvious phrasings -- it exists only
+# to catch clear-cut cases, not to reinterpret every user message.
+# ---------------------------------------------------------------------------
+
+_FEED_PHASE_QUESTION_PHRASES = (
+    'what is the feed phase',
+    'what phase is the feed',
+    'is the feed liquid',
+    'is the feed vapor',
+    'is the feed vapour',
+    'is the feed two phase',
+    'is the feed two-phase',
+    'what is the vapor fraction',
+    'what is the vapour fraction',
+    'how much of the feed is vapor',
+    'how much of the feed is vapour',
+    'how much of the feed is liquid',
+)
+
+
+def is_feed_phase_question(text):
+    """True if `text` explicitly asks about feed phase, vapor fraction, or liquid fraction -- a calculation question that must be routed to `calculate_current_binary_distillation_problem`, never inferred by the model from general chemical knowledge (e.g. remembered boiling points)."""
+    normalized = normalize_short_reply(text)
+    return any(phrase in normalized for phrase in _FEED_PHASE_QUESTION_PHRASES)
 
 
 def _matches_short_phrase(normalized, phrases):
@@ -321,6 +416,12 @@ def resolve_pending_reply(pending_request, user_text):
             return None
         return {field: float(n) for field, n in zip(fields, numbers)}
 
+    if request_type == 'flow_units':
+        # Use the RAW text here, not `normalized` above -- normalize_short_reply
+        # strips '/', which is meaningful in a unit like 'kmol/hr'.
+        unit = normalize_units_reply(user_text)
+        return None if unit is None else {pending_request['field']: unit}
+
     # 'string_choice' (e.g. reflux_condition) is intentionally not resolved
     # here -- a bare "yes" is ambiguous as to WHICH string was confirmed
     # whenever more than one value is ever allowed; leave it to normal
@@ -331,12 +432,20 @@ def resolve_pending_reply(pending_request, user_text):
 # Requirement for Qwen".
 SYSTEM_PROMPT = """You are not the binary-distillation decision engine.
 
-You have access to two engineering tools and one housekeeping tool:
+You have access to two engineering-state tools, one calculation tool, and \
+one housekeeping tool:
   - `update_binary_distillation_problem` (WRITE) -- use ONLY when the \
 current user message states NEW engineering information.
   - `get_binary_distillation_problem` (READ) -- use when the user asks a \
 question about information already supplied, derived, stored, or still \
 missing. Takes no arguments and never changes anything.
+  - `calculate_current_binary_distillation_problem` (CALCULATION) -- use \
+when the user asks for a calculated/derived thermodynamic result (feed \
+phase, vapor fraction, liquid fraction, etc.) about the CURRENT problem. \
+Takes no arguments -- it reads the accumulated state itself. Only runs the \
+actual calculation once the problem is `ready_for_calculation`; otherwise \
+it returns the same not-yet-ready assessment `get_binary_distillation_problem` \
+would.
   - `reset_workflow_session` (housekeeping) -- clears everything.
 
 ## Deciding which tool to call: classify every user turn
@@ -358,10 +467,44 @@ the new fact first, then answer the question directly from THAT call's \
 returned state -- it already reflects the merge, so a follow-up \
 `get_binary_distillation_problem` call is unnecessary.
 
-Each user turn permits at most one engineering-state operation. Both READ \
-and WRITE return the full authoritative state. After either operation, \
-answer the user from that result; never request another state tool during \
-the same turn -- the orchestrator will not run it anyway.
+Each user turn permits at most one operation from {WRITE, READ, \
+CALCULATION}. All three return a self-contained result. After any one of \
+them runs, answer the user from that result; never request another state \
+or calculation tool during the same turn -- the orchestrator will not run \
+it anyway.
+
+## CALCULATED ENGINEERING STATE RULE
+
+Thermodynamic properties and calculated engineering results are not \
+conversation facts. This includes, but is not limited to: feed phase, \
+vapor fraction, liquid fraction, bubble point, dew point, equilibrium \
+temperature, equilibrium phase compositions, and boiling behavior.
+
+Never infer, estimate, or state any of these from general chemical \
+knowledge, remembered boiling points, or conversation context -- e.g. \
+never reason "400 K is above methanol's boiling point, so the feed is \
+probably vapor." If the user asks for one of these values:
+
+1. If the current problem is `ready_for_calculation`, call \
+`calculate_current_binary_distillation_problem` and report exactly what \
+`checks['feed_phase']` says.
+2. If the problem is not yet `ready_for_calculation`, use the deterministic \
+workflow state (`missing_essential_inputs` / `case_candidates` / `message`) \
+to explain what is still missing -- do not guess the value anyway.
+3. If the calculation layer cannot determine the requested property (it \
+currently only evaluates feed phase -- nothing else), state that \
+explicitly rather than answering from general knowledge.
+
+## FEED-PHASE ROUTING RULE
+
+Questions such as "What is the feed phase?", "Is the feed liquid or \
+vapor?", "What is the vapor fraction?", "Is the feed two-phase?", "How \
+much of the feed is vapor?", or "How much is liquid?" are CALCULATION \
+questions. Do not answer them from the workflow state alone, and do not \
+call `get_binary_distillation_problem` first to "check" before \
+calculating -- `calculate_current_binary_distillation_problem` already \
+reads the same state. Call `calculate_current_binary_distillation_problem` \
+directly once the authoritative state is `ready_for_calculation`.
 
 ## State-truth rule (tools/binary-distillation-pending-truth.md)
 
@@ -427,11 +570,15 @@ flow rate -- pass it under `component_flows`, and never pass it as \
 what the current message actually states; do not reconstruct or guess \
 feed information the user has not (yet) given, even partially.
 
-Do NOT perform, describe performing, or claim to have performed any \
-distillation calculation, sizing, or optimization during this conversation \
--- these tools only check problem-definition completeness. There is no \
-calculation tool available to you right now, and `calculation_performed` \
-in every tool result is always False.
+Do NOT perform, describe performing, or claim to have performed any Wankat \
+Case A-D distillation sizing or optimization (distillate/bottoms flow, \
+reflux ratio, reboiler/condenser duty, theoretical stage count, feed \
+stage, column diameter) during this conversation -- `update_binary_distillation_problem` \
+and `get_binary_distillation_problem` only check problem-definition \
+completeness, and their `calculation_performed` is always False. \
+`calculate_current_binary_distillation_problem` is the one exception: it \
+performs ONLY the deterministic feed-phase calculation described above -- \
+never describe its result as anything more than that.
 
 Both engineering tools REMEMBER everything already given about the current \
 separation problem -- you do NOT need to repeat components, pressure, feed \
@@ -478,6 +625,21 @@ instead gives a total flow plus fractions/percentages (e.g. "100 kmol/hr, \
 gives a single mole/mass fraction for an established binary pair (e.g. "40% \
 methanol"), pass it under `composition` with just that one entry -- do not \
 compute or pass the complementary fraction yourself.
+
+## FLOW-UNIT EXTRACTION RULE
+
+Whenever the user states a flow rate together with its units in the same \
+message, preserve BOTH the numeric flow and the units in the SAME \
+`update_binary_distillation_problem` call -- never discard explicitly \
+stated units. For example, "50 kmol per hour methanol and 50 kmol per hour \
+water" must produce `component_flows={"Methanol": 50, "Water": 50}` AND \
+`component_flow_units="kmol/hr"` in one call, not just the flows. Likewise, \
+"100 kmol/hr total, 40% methanol" must produce `total_flow=100`, \
+`total_flow_units="kmol/hr"`, and `composition={"Methanol": 0.4}` together. \
+The deterministic checker still rejects the problem as \
+`need_calculation_inputs` if units end up missing regardless of what you \
+extract here -- but extracting them correctly the first time means you \
+won't have to ask for them separately afterward.
 
 ## When `status` is `need_essential_inputs`
 
@@ -528,19 +690,35 @@ an internal k were given, or both a recovery and a composition spec were \
 given). Relay the tool's `message` and ask the user to pick one basis. \
 Never silently resolve the conflict yourself.
 
+## When `status` is `need_calculation_inputs`
+
+The engineering problem definition (Wankat essentials + case + optimum-\
+feed-plate) is already complete, but the calculation layer still cannot \
+run because a flow-rate UNIT is missing -- `missing_calculation_inputs` \
+names exactly which one (`component_flow_units` or `total_flow_units`). \
+This is a calculation-adapter requirement, not a new Wankat Table 3-1 \
+field -- ask only for the field(s) listed in `missing_calculation_inputs`, \
+or follow `pending_request` when present (its `request_type` is \
+`flow_units`). Do NOT claim the problem is `ready_for_calculation` while \
+this status shows, and do not infer or default the missing unit -- e.g. \
+never assume "kmol/hr" just because that's the usual choice.
+
 ## When `status` is `ready_for_calculation`
 
 Tell the user their problem is fully specified as Wankat Case `case`, and \
-list exactly the quantities in `would_calculate` as what WOULD be \
-calculated if the calculation stage were enabled. Do not calculate them, \
-approximate them, or imply you have already found their values. This is the \
-stopping point -- end your response here, and do NOT invite the user to \
-proceed (never say anything like "Let me know if you'd like to proceed!") \
--- there is no calculation path this agent can hand off to. If the user \
-then asks to proceed/calculate/go ahead, tell them plainly that this \
-workflow-only agent stops at problem definition and does not perform the \
-calculation stage -- do not fall back to a generic "what can I help you \
-with?" response, and do not call any tool for this.
+list exactly the quantities in `would_calculate` as what a FULL Case `case` \
+design would compute. The calculation layer available to you does not \
+compute those yet -- it evaluates only the feed phase. Do not calculate, \
+approximate, or imply you have already found `would_calculate`'s values.
+
+If the user then asks to proceed/calculate/go ahead, or asks a feed-phase/ \
+vapor-fraction question, the calculation runs automatically before you see \
+the message and you will find a `calculate_current_binary_distillation_problem` \
+tool result already in the conversation -- describe exactly what its \
+`checks['feed_phase']` says, and explicitly note that this is the feed-phase \
+check only, not the full Case `case` design (`would_calculate`'s other \
+quantities are still not computed). Do not call any tool yourself for this \
+-- the orchestrator has already run it.
 
 ## external_reflux_ratio_LD vs reflux_ratio_multiplier_k
 
@@ -576,17 +754,19 @@ def _run_tool_call(call):
 MAX_TOOL_CALLS_PER_TURN = 2
 
 _ENGINEERING_TOOLS = ('update_binary_distillation_problem', 'get_binary_distillation_problem')
+_CALCULATION_TOOL = 'calculate_current_binary_distillation_problem'
 
 
 def _fingerprint(call):
     return (call.function.name, json.dumps(call.function.arguments, sort_keys=True))
 
 
-def _select_allowed_calls(tool_calls, reset_used, engineering_tool_used, fingerprints):
-    """Pick which of this response's requested tool calls may actually run this round, per the per-turn policy: RESET first if not yet used, else at most one engineering call (WRITE preferred over READ), skipping anything already run this turn (by fingerprint)."""
+def _select_allowed_calls(tool_calls, reset_used, engineering_tool_used, fingerprints, calculation_used=False):
+    """Pick which of this response's requested tool calls may actually run this round, per the per-turn policy: RESET first if not yet used, else at most one "primary operation" -- WRITE preferred over READ preferred over CALCULATION -- skipping anything already run this turn (by fingerprint). tools/binary-distillation-connecting-feed-calculation.md Step 5: CALCULATION is its own operation category, but still counts toward the same one-primary-operation-per-turn budget as the engineering READ/WRITE pair, so a model cannot loop READ -> CALCULATION -> READ -> CALCULATION -> ... within one turn."""
     reset_call = None
     write_call = None
     read_call = None
+    calculation_call = None
     for call in tool_calls:
         name = call.function.name
         if name == 'reset_workflow_session' and reset_call is None:
@@ -595,15 +775,21 @@ def _select_allowed_calls(tool_calls, reset_used, engineering_tool_used, fingerp
             write_call = call
         elif name == 'get_binary_distillation_problem' and read_call is None:
             read_call = call
+        elif name == _CALCULATION_TOOL and calculation_call is None:
+            calculation_call = call
+
+    primary_op_used = engineering_tool_used or calculation_used
 
     if reset_call is not None and not reset_used:
         candidates = [reset_call]
-    elif engineering_tool_used:
+    elif primary_op_used:
         candidates = []
     elif write_call is not None:
         candidates = [write_call]
     elif read_call is not None:
         candidates = [read_call]
+    elif calculation_call is not None:
+        candidates = [calculation_call]
     else:
         candidates = []
 
@@ -624,27 +810,56 @@ def _current_user_text(messages):
     return None
 
 
+def _run_calculation_and_finalize(client, messages):
+    """Run `calculate_current_binary_distillation_problem()` deterministically -- no model turn decides whether to call it -- append a synthetic assistant-tool-call/tool-result pair for conversation-history consistency (matching the pending-reply resolver's pattern below), then finalize with `_chat_without_tools` so the model can only explain the returned calculation, never call another tool this turn (tools/binary-distillation-connecting-feed-calculation.md Steps 10/13)."""
+    print(f"  [calling {_CALCULATION_TOOL}({{}})]")
+    result = calculate_current_binary_distillation_problem()
+    messages.append({
+        'role': 'assistant',
+        'content': None,
+        'tool_calls': [{'function': {'name': _CALCULATION_TOOL, 'arguments': {}}}],
+    })
+    messages.append({
+        'role': 'tool',
+        'tool_name': _CALCULATION_TOOL,
+        'content': json.dumps(result),
+    })
+    response = _chat_without_tools(client, messages)
+    messages.append(response.message)
+    return response.message.content
+
+
 def ask(client, messages):
     """Send `messages` to the model, resolving any tool calls under the bounded per-turn policy above, and return the final assistant message text.
 
-    Before doing so, tools/binary-distillation-pending-truth.md's
-    deterministic pending-request layer gets first refusal at the current
-    turn (section 4/17): it inspects the CURRENT authoritative state
-    (never conversation history) and, if the user's message plainly
-    resolves an outstanding `pending_request` or is a "proceed" request
-    while `status == 'ready_for_calculation'`, handles the turn directly
-    -- a real WRITE for the former, a fixed boundary response (no state
-    mutation) for the latter -- without ever asking the model to decide
-    what a short reply like "Of course!" means.
+    Before doing so, two deterministic layers get first refusal at the
+    current turn, in this order (tools/binary-distillation-pending-truth.md
+    section 4/17, tools/binary-distillation-connecting-feed-calculation.md
+    Step 12): it inspects the CURRENT authoritative state (never
+    conversation history) and --
+      1. if the user's message plainly resolves an outstanding
+         `pending_request`, converts it directly into a real WRITE;
+      2. else if `status == 'ready_for_calculation'` and the message is a
+         "proceed" request, runs the (currently feed-phase-only)
+         calculation layer and finalizes from its result;
+      3. else if the message explicitly asks a feed-phase/vapor-fraction
+         question (`is_feed_phase_question`) while `status ==
+         'ready_for_calculation'`, likewise runs the calculation layer
+         deterministically instead of letting the model decide whether to
+         answer from remembered chemical knowledge.
+    If none of these apply (including: a feed-phase question asked before
+    the problem is `ready_for_calculation`, which must not trigger a
+    BioSTEAM call), control falls through to normal model-driven tool
+    selection below.
     """
     user_text = _current_user_text(messages)
     if user_text is not None:
         current_state = get_binary_distillation_problem()
+        status = current_state.get('status')
 
-        if current_state.get('status') == 'ready_for_calculation':
+        if status == 'ready_for_calculation':
             if normalize_short_reply(user_text) in _PROCEED_PHRASES:
-                messages.append({'role': 'assistant', 'content': READY_BOUNDARY_MESSAGE})
-                return READY_BOUNDARY_MESSAGE
+                return _run_calculation_and_finalize(client, messages)
         else:
             resolved = resolve_pending_reply(current_state.get('pending_request'), user_text)
             if resolved is not None:
@@ -664,11 +879,15 @@ def ask(client, messages):
                 messages.append(response.message)
                 return response.message.content
 
+        if status == 'ready_for_calculation' and is_feed_phase_question(user_text):
+            return _run_calculation_and_finalize(client, messages)
+
     response = _chat_with_tools(client, messages)
     messages.append(response.message)
 
     reset_used = False
     engineering_tool_used = False
+    calculation_used = False
     fingerprints = set()
     calls_used = 0
 
@@ -678,6 +897,7 @@ def ask(client, messages):
             reset_used=reset_used,
             engineering_tool_used=engineering_tool_used,
             fingerprints=fingerprints,
+            calculation_used=calculation_used,
         )
 
         if not selected_calls:
@@ -702,10 +922,13 @@ def ask(client, messages):
                 reset_used = True
             elif call.function.name in _ENGINEERING_TOOLS:
                 engineering_tool_used = True
+            elif call.function.name == _CALCULATION_TOOL:
+                calculation_used = True
 
-        if engineering_tool_used:
-            # WRITE and READ both return the full authoritative state --
-            # force a prose answer instead of offering another tool call.
+        if engineering_tool_used or calculation_used:
+            # WRITE, READ, and CALCULATION all return a self-contained
+            # result -- force a prose answer instead of offering another
+            # tool call.
             response = _chat_without_tools(client, messages)
         else:
             # Only RESET ran so far; allow one more tool-enabled round so

@@ -72,6 +72,12 @@ in the `optimizer.py` section below.
 | `separation_plots.py` | `plot_purity_vs_reflux()`, `plot_utility_cost_vs_reflux()`, `plot_reflux_sweep()` — matplotlib plots of a sweep DataFrame (achieved-vs-target performance, utility cost) against `reflux_ratio_k`. |
 | `separation_tool.py` | `design_separation_case()` and `optimize_separation()` — JSON-in/JSON-out wrappers around `case_design.design_binary_distillation()` and `optimizer.optimize_reflux_ratio()` respectively, built to be handed to Ollama as tools. |
 | `separation_agent.py` | Natural-language chat front end (Ollama + `qwen3:8b`) that calls `design_separation_case()`/`optimize_separation()` on the model's behalf. |
+| `feed_state.py` | `apply_user_update()`, `normalize_feed_state()`, `assess_feed_state()` — feed identity/quantity state layer with provenance tracking; sits ahead of the binary-scope gate in `binary_distillation_workflow.py`. |
+| `binary_distillation_workflow.py` | `assess_binary_distillation_problem()` — deterministic, LLM-free workflow/case-routing checker; never performs a calculation. |
+| `binary_distillation_workflow_agent.py` | Ollama tool-calling front end exposing `assess_binary_distillation_problem()` (WRITE/READ) plus `calculate_current_binary_distillation_problem()` (CALCULATE); the latter can only ever perform the deterministic feed-phase check, never Wankat Case A-D sizing, by construction. |
+| `biosteam_feed.py` | `build_biosteam_feed()` — converts a `ready_for_calculation` workflow assessment into one canonical `bst.Stream`; no LLM involvement. |
+| `feed_phase.py` | `evaluate_feed_phase()` — deterministic VLE feed-phase evaluation (T/P, V/P, or H/P) and liquid/vapor/vapor_liquid classification. |
+| `binary_distillation_calculation.py` | `calculate_binary_distillation_problem()` — the calculation-layer entry point downstream of the workflow checker; chains `assess_binary_distillation_problem()` → `build_biosteam_feed()` → `evaluate_feed_phase()`. |
 | `sample_request.py` | Minimal standalone Ollama connectivity smoke test (`client.generate(...)`) — not part of the tool-calling pipeline; predates and is unrelated to `separation_agent.py`. |
 | `testing_caes.ipynb` | Scratch/interactive notebook for ad hoc testing — not a maintained module; nothing else in this folder imports it. |
 
@@ -689,7 +695,16 @@ inserts as a layer before everything else). One function:
    12): checked only once a single case is otherwise fully satisfied, and
    only after step 3 — it never influences case identification, since it's
    common to all four cases.
-5. **Ready for calculation**: once all of the above are satisfied,
+5. **Calculation-input readiness** (`check_calculation_inputs()`, added by
+   `tools/binary-distillation-flow-units.md` — see the dedicated subsection
+   right after this list): once Wankat's essentials + case + optimum-feed-
+   plate are all satisfied, a **separate** check verifies the flow-rate
+   units the downstream BioSTEAM feed adapter needs (`component_flow_units`
+   or `total_flow_units`) are actually present. If not,
+   `status='need_calculation_inputs'` — the engineering problem definition
+   ("workflow definition complete") is NOT automatically the same thing as
+   "calculation ready."
+6. **Ready for calculation**: only once step 5 also passes,
    `status='ready_for_calculation'` and `would_calculate` lists exactly
    what a designer would compute for that case (workflow doc section 8;
    Case C's list depends on which of `distillate_flow`/`bottoms_flow` and
@@ -698,12 +713,14 @@ inserts as a layer before everything else). One function:
    function never builds a feed stream or calls BioSTEAM.
 
 Return schema (workflow doc section 15, extended by
-`tools/binary-distillation-flow-rate-issue.md` section 8/10 and
-`tools/binary-distillation-pending-truth.md` section 2/18): `{'valid_binary_scope',
+`tools/binary-distillation-flow-rate-issue.md` section 8/10,
+`tools/binary-distillation-pending-truth.md` section 2/18, and
+`tools/binary-distillation-flow-units.md`): `{'valid_binary_scope',
 'component_count', 'components', 'feed_flow_complete',
 'feed_composition_complete', 'feed', 'essential_complete',
 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete',
-'missing_case_inputs', 'optimum_feed_plate_confirmed', 'status',
+'missing_case_inputs', 'optimum_feed_plate_confirmed',
+'calculation_inputs_complete', 'missing_calculation_inputs', 'status',
 'would_calculate', 'calculation_performed', 'message', 'provenance',
 'pending_request'}`.
 `feed` is the normalized `feed_state` dict (component flows/total flow/
@@ -712,11 +729,115 @@ scope gate passes, primarily for audit/debugging rather than for the
 caller to reproduce logic from. `status` can also be `'inconsistent_input'`
 when redundant feed information disagreed (e.g. component flows don't sum
 to an explicitly-given total flow). Never raises. Running `python
-binary_distillation_workflow.py` directly prints ten demo reports covering
+binary_distillation_workflow.py` directly prints demo reports covering
 the scope gate, component-names-only (no invented flows), a single
 component flow (not treated as the total), missing essentials, an
 inconsistent-input case, the no-case-signal state, boilup-ratio routing to
-Case D, and a complete Case D report.
+Case D, a complete Case D report blocked on missing calculation units, and
+the same report once units are supplied.
+
+### Calculation-input readiness — `check_calculation_inputs()` and `need_calculation_inputs`
+
+Implements `tools/binary-distillation-flow-units.md` in full: a small
+readiness layer that sits strictly AFTER Wankat completeness
+(`essential_complete`/`case_complete`/`optimum_feed_plate_confirmed`) and
+BEFORE `status='ready_for_calculation'` is ever returned. It fixes a real
+inconsistency: without it, the workflow could report
+`status == "ready_for_calculation"` while the downstream BioSTEAM
+calculation (`biosteam_feed.build_biosteam_feed()`) still cannot run,
+because it has no flow-rate units to build a `bst.Stream` with.
+
+```text
+workflow definition complete (essentials + case + optimum feed plate)
+        ↓
+calculation-specific inputs complete?      check_calculation_inputs()
+        ↓
+YES → ready_for_calculation
+NO  → need_calculation_inputs
+```
+
+`check_calculation_inputs(feed_state)` takes the already-normalized
+`feed_state` (the output of `feed_state.assess_feed_state()`, i.e. what
+ends up in `assessment['feed']`) and returns `{'complete': bool,
+'missing': list[str]}`. It never defaults a unit, never reads one from
+conversation history, and never re-derives Wankat Table 3-1 — this is
+purely a calculation-adapter requirement, checked separately so
+`essential_complete` keeps meaning exactly what it always meant.
+
+The subtlety it handles: `feed_state.normalize_feed_state()` derives
+`component_flows` for BOTH representations once the feed is complete —
+per-component flows given directly, or `total_flow` + `composition` given
+instead — so a plain "is `component_flows` non-empty?" check can't tell
+which representation the user actually used (it would basically always be
+true). `check_calculation_inputs()` looks at PROVENANCE instead: whichever
+of `component_flows`/`total_flow` carries `'user_explicit'` entries is the
+representation actually supplied, and that is the one whose units field
+(`component_flow_units` or `total_flow_units` respectively) is required.
+`biosteam_feed.build_biosteam_feed()` itself only ever needs ONE of the two
+units fields (it accepts either), so at most one field is ever reported
+missing.
+
+When incomplete, `assess_binary_distillation_problem()` returns
+`status='need_calculation_inputs'` instead of `'ready_for_calculation'`,
+with `calculation_inputs_complete=False` and `missing_calculation_inputs`
+naming the single missing field (e.g. `['component_flow_units']`). A
+matching `pending_request` (`{'field': ..., 'request_type': 'flow_units',
+'prompt': ...}`) is generated by `_calculation_pending_request()` whenever
+exactly one field is missing — the same never-guess-between-genuinely-
+ambiguous-fields discipline as `_case_pending_request()`/
+`_essential_pending_request()` above.
+
+**Deterministic unit normalization and WRITE resolution
+(`binary_distillation_workflow_agent.py`):** `normalize_units_reply()`
+maps a small, fixed set of common phrasings (case/spacing-insensitive) to
+the canonical unit string, e.g. `"KMOL/HR"`, `"kmol per hour"`,
+`"kilomoles per hour"` all → `"kmol/hr"`; `"kg per hour"`,
+`"kilograms per hour"` → `"kg/hr"` — via the `_FLOW_UNIT_ALIASES` table.
+Unlike `normalize_short_reply()` (used for boolean/numeric pending
+replies), it deliberately preserves `/`, since that's meaningful in a unit
+string. `resolve_pending_reply()` was extended with a
+`request_type == 'flow_units'` branch that calls it on the RAW reply text
+(not the slash-stripped `normalized` variable used by the other branches)
+and, on a match, returns `{field: normalized_unit}` — the same
+`ask()`-level pending-reply short-circuit described above then turns this
+directly into a real `update_binary_distillation_problem(...)` WRITE
+before the model ever sees the message, so a bare `"KMOL/HR"` reply to a
+live `component_flow_units` pending request is never misread as a request
+to just look up state (`get_binary_distillation_problem`) and never left
+for the model to (possibly) get right on its own. An unrecognized
+phrasing resolves to `None` and falls through to normal model-driven tool
+selection rather than being forced through with a guessed unit.
+
+`SYSTEM_PROMPT`'s FLOW-UNIT EXTRACTION RULE tells the model to preserve
+units in the SAME `update_binary_distillation_problem` call whenever the
+user states a flow rate together with its units (e.g. "50 kmol per hour
+methanol and 50 kmol per hour water" → `component_flows={...}` AND
+`component_flow_units="kmol/hr"` together) — this reduces how often the
+deterministic units fallback above is needed, but the workflow still
+rejects `ready_for_calculation` if the model fails to extract them; the
+`NEED_CALCULATION_INPUTS` prompt block tells the model never to claim
+`ready_for_calculation` while this status shows, and never to infer or
+default the missing unit (e.g. never assume `"kmol/hr"` just because it's
+the usual choice).
+
+`biosteam_feed.py` remains strict regardless: it never silently defaults
+or converts a unit (`units = units or "kmol/hr"` is exactly what this
+layer exists to make unreachable), so a `BiosteamFeedError` there stays a
+defensive backstop rather than the normal path.
+
+`tools/chopper/test_binary_distillation_workflow.py` covers
+`check_calculation_inputs()`/`need_calculation_inputs` directly (missing
+`component_flow_units` on the `component_flows` path, present → ready,
+missing `total_flow_units` on the `total_flow`+`composition` path, and
+that earlier statuses never surface a premature
+`need_calculation_inputs`). `tools/chopper/test_binary_distillation_pending_truth.py`
+covers the `pending_request`/`normalize_units_reply`/`resolve_pending_reply`
+side. `tools/chopper/test_binary_distillation_workflow_agent_calculation.py`
+covers the full agent-level replay: a complete Case D spec missing only
+`component_flow_units` reports `need_calculation_inputs`; a `"KMOL/HR"`
+reply performs a real WRITE (never a READ) and reaches
+`ready_for_calculation`; and a subsequent feed-phase question then runs the
+real calculation without asking for units again.
 
 ### `pending_request` — deterministic "what is being asked right now"
 
@@ -776,25 +897,33 @@ The isolated tool-calling agent from workflow doc section 18, Option C
 ("Expose only `assess_binary_distillation_problem()` to Qwen in a
 dedicated workflow-testing agent"), refactored per
 `tools/binary-distillation-read-vs-append.md` into separate READ and WRITE
-operations, and per `tools/binary-distillation-read-loop-fix-plan.md` to
+operations, per `tools/binary-distillation-read-loop-fix-plan.md` to
 enforce a bounded per-turn tool-call policy in Python rather than relying
-on the model to stop on its own. Deliberately does **not** import
-`separation_tool.py`, `case_design.py`, `optimizer.py`, or BioSTEAM at
-all — importing this module alone pulls in only `ollama` and
-`binary_distillation_workflow.py`, so no distillation calculation can
-happen through it, by construction rather than by convention.
+on the model to stop on its own, and per
+`tools/binary-distillation-connecting-feed-calculation.md` to connect the
+deterministic feed-phase calculation layer below as a fourth,
+CALCULATION-kind tool. It deliberately still does **not** import
+`separation_tool.py`, `case_design.py`, or `optimizer.py` — the sizing/
+optimization sweep layer remains out of scope here. It now **does** import
+`binary_distillation_calculation.py` (and, transitively, BioSTEAM via
+`biosteam_feed.py`/`feed_phase.py`) for that one CALCULATION tool — see
+"Four capabilities" below.
 
-Three tools are registered:
+Four tools are registered:
 
 | Tool | Kind | Does |
 |---|---|---|
 | `update_binary_distillation_problem` | WRITE | Merges newly-stated engineering facts into the accumulated state, then returns `assess_binary_distillation_problem()`'s full assessment of that state. Call only when the current turn states new information. |
 | `get_binary_distillation_problem` | READ | Takes no arguments, mutates nothing, and returns the identical assessment schema computed from whatever is already accumulated. Call when the user asks about existing/derived/missing state. |
+| `calculate_current_binary_distillation_problem` | CALCULATION | Takes no arguments; reads the accumulated state via the same `_effective_spec()` WRITE/READ use, and calls `binary_distillation_calculation.calculate_binary_distillation_problem()` on it — only actually running BioSTEAM once the state is `ready_for_calculation`. See "Four capabilities" below. |
 | `reset_workflow_session` | housekeeping | Clears accumulated state, same discipline as `reset_separation_session()` in `separation_tool.py`. |
 
-Both `update_binary_distillation_problem` and `get_binary_distillation_problem`
+`update_binary_distillation_problem` and `get_binary_distillation_problem`
 wrap the same underlying deterministic checker and return the same schema —
 WRITE returns it post-merge, READ returns it as-is.
+`calculate_current_binary_distillation_problem` wraps a second, downstream
+deterministic layer (the calculation pipeline below) and is documented in
+full in the "Four capabilities" subsection after the controller.
 
 ### The per-turn tool-call controller (loop fix)
 
@@ -805,16 +934,20 @@ offer next (see `tools/binary-distillation-read-loop-fix-plan.md` for the
 failure mode this caused). Termination is now enforced by Python, not the
 prompt, via a small per-turn policy:
 
-- At most **one engineering-state operation** (`update_binary_distillation_problem`
-  or `get_binary_distillation_problem`) runs per user turn. If a model
-  response requests both, WRITE is preferred and READ is suppressed
-  (WRITE's return value already reflects the merge, so a READ afterward
-  cannot add information).
-- `reset_workflow_session` may run once, before the one engineering
-  operation, permitting the sequence `RESET -> WRITE/READ`. RESET does not
-  itself count as "using" the turn's one engineering operation.
-- After the engineering operation (or the `RESET -> engineering` pair)
-  executes, the next model call is made **without exposing any tools**
+- At most **one "primary operation"** — `update_binary_distillation_problem`,
+  `get_binary_distillation_problem`, or (per
+  `tools/binary-distillation-connecting-feed-calculation.md` Step 5)
+  `calculate_current_binary_distillation_problem` — runs per user turn. If
+  a model response requests more than one, WRITE is preferred over READ,
+  and READ over CALCULATION (WRITE's/READ's return value already reflects
+  the full state, so a further op afterward cannot add information). This
+  is what prevents an uncontrolled `READ -> CALCULATION -> READ ->
+  CALCULATION -> ...` loop within one turn.
+- `reset_workflow_session` may run once, before the one primary operation,
+  permitting the sequence `RESET -> WRITE/READ/CALCULATION`. RESET does not
+  itself count as "using" the turn's one primary operation.
+- After the primary operation (or the `RESET -> primary` pair) executes,
+  the next model call is made **without exposing any tools**
   (`_chat_without_tools`), forcing a prose answer from the tool result
   instead of another tool call.
 - `MAX_TOOL_CALLS_PER_TURN = 2` is a hard ceiling on how many tool calls
@@ -836,6 +969,9 @@ requesting tool calls. No running Ollama server is required. Run with:
 ```bash
 pytest tools/chopper/test_binary_distillation_workflow_agent.py -v
 ```
+`tools/chopper/test_binary_distillation_workflow_agent_calculation.py`
+extends this coverage to the CALCULATION tool specifically — see "Four
+capabilities" below.
 
 ### Deterministic pending-request resolution and the state-truth rule
 
@@ -883,15 +1019,22 @@ doc):
    falls through unchanged to the per-turn controller described above.
 
 Separately, once `status == 'ready_for_calculation'` and the (normalized)
-message is an exact match against a small "proceed" phrase set (`yes`,
-`go ahead`, `proceed`, `calculate it`, `yes boss`, ...), `ask()` returns a
-fixed boundary message —
-`"The problem is ready for calculation, but this workflow-only agent is
-intentionally limited to problem specification. The calculation layer is
-not enabled here."` — **without calling the model at all**. This is what
-keeps a "go ahead" after the problem is fully specified from producing an
-unsupported invitation to calculate or falling back to a generic "what can
-I help you with?" (section 14/15 of the pending-truth doc).
+message is either an exact match against a small "proceed" phrase set
+(`yes`, `go ahead`, `proceed`, `calculate it`, `yes boss`, ...) or an
+explicit feed-phase/vapor-fraction question (`is_feed_phase_question` —
+see "Four capabilities" below), `ask()` now runs
+`calculate_current_binary_distillation_problem()` directly and finalizes
+from its result — **without ever giving the model a tool-selection turn**.
+This supersedes the pending-truth doc's original fixed-refusal boundary
+message (kept only as a historical note: before
+`tools/binary-distillation-connecting-feed-calculation.md` connected the
+calculation layer, this same "go ahead" trigger returned a fixed
+`"...the calculation layer is not enabled here."` string instead, since no
+calculation tool existed yet). The goal is unchanged — a "go ahead" (or an
+explicit phase question) after the problem is fully specified must never
+fall through to a generic "what can I help you with?" response or an
+unsupported invitation to calculate (section 14/15 of the pending-truth
+doc) — only the mechanics of what happens once that trigger fires changed.
 
 `SYSTEM_PROMPT` also carries this doc's **state-truth rule** verbatim in
 spirit: the deterministic tool state is the sole authority for engineering
@@ -909,9 +1052,11 @@ and "never guess across multiple case candidates" cases, essential-input
 agent's `normalize_short_reply`/`resolve_pending_reply`/`ask()` wiring
 (affirmative and noisy-affirmative confirmation, negative confirmation, a
 longer unrelated message that must NOT be hijacked, the numeric and
-ordered-group cases, and the ready-state boundary using a client that
-raises if `chat()` is ever called, proving the boundary response never
-touches the model). No running Ollama server is required. Run with:
+ordered-group cases, and the ready-state "go ahead" trigger — now
+asserted to run `calculate_current_binary_distillation_problem` and
+finalize with exactly one no-tools model call, per
+`tools/binary-distillation-connecting-feed-calculation.md` Step 13). No
+running Ollama server is required. Run with:
 ```bash
 pytest tools/chopper/test_binary_distillation_pending_truth.py -v
 ```
@@ -996,19 +1141,248 @@ on what you're trying to observe:
 
 | Agent | Performs a real BioSTEAM calculation? | Case A ever defaulted? | Needs |
 |---|---|---|---|
-| `binary_distillation_workflow_agent.py` (this section) | **Never** — both engineering tools' `calculation_performed` is always `False`. Use this to test problem-definition/case-routing behavior (scope gate, essential inputs, Case A-D identification, `would_calculate` reporting) in isolation. | No — never did, by design (workflow doc section 7/18). | Ollama + `qwen3:8b` only. Does **not** need `biosteam` importable. |
-| `separation_agent.py` | Yes, once `design_separation_case`/`optimize_separation` gets a complete spec. Use this to test the full calculation pipeline (or the same Case-A-default fix, without the RAG/Chroma overhead below). | No — `problem_spec.identify_case()` no longer defaults to Case A (fixed; previously it did). | Ollama + `qwen3:8b`, `biosteam`. |
+| `binary_distillation_workflow_agent.py` (this section) | **Only a feed-phase check**, and only via the one `calculate_current_binary_distillation_problem` CALCULATION tool once `ready_for_calculation` — `update_binary_distillation_problem`/`get_binary_distillation_problem`'s `calculation_performed` is always `False`; no Wankat Case A-D sizing (reflux ratio, stage count, column diameter, etc.) happens through this agent at all. Use this to test problem-definition/case-routing behavior (scope gate, essential inputs, Case A-D identification, `would_calculate` reporting) or the feed-phase calculation connection specifically, in isolation from the full sizing pipeline below. | No — never did, by design (workflow doc section 7/18). | Ollama + `qwen3:8b`, plus `biosteam` (now needed transitively, for the CALCULATION tool only — see `biosteam_feed.py`/`feed_phase.py` below). |
+| `separation_agent.py` | Yes, full Wankat-case sizing/costing, once `design_separation_case`/`optimize_separation` gets a complete spec. Use this to test the full calculation pipeline (or the same Case-A-default fix, without the RAG/Chroma overhead below). | No — `problem_spec.identify_case()` no longer defaults to Case A (fixed; previously it did). | Ollama + `qwen3:8b`, `biosteam`. |
 | `separation_rag_agent.py` | Yes, same pipeline as `separation_agent.py`, plus `retrieve_separation_heuristics`. Use this to test the calculation pipeline together with heuristic retrieval, or the merged agent specifically. | No — same fix as above (shared `problem_spec.py`). | Ollama + `qwen3:8b`, `biosteam`, `chromadb` + a seeded Chroma collection (`python tools/chopperRAG/seed_heuristics.py`). |
 | `chopperRAG/query.py` | No BioSTEAM at all — retrieval + heuristic Q&A only, unrelated to binary-distillation case logic. | N/A | Ollama + `qwen3:8b`, `chromadb` + seeded collection. |
 
 If you're specifically verifying "does it still silently pick Case A when
-nothing case-specific was said" or "does it stop before calculating and
-just report what it would calculate", use
+nothing case-specific was said" or "does it stop before sizing and just
+report what a full Case design would calculate", use
 `binary_distillation_workflow_agent.py` — it's the lightest to run and the
-only one of the four that can never perform a calculation, so there's no
-ambiguity about which behavior you're seeing. Use `separation_agent.py` or
-`separation_rag_agent.py` when you actually want the sized/costed column
-back.
+only one of the four that can never perform Wankat Case A-D sizing, so
+there's no ambiguity about which behavior you're seeing (its one
+CALCULATION tool is deliberately scoped to feed phase only — see "Four
+capabilities" below). Use `separation_agent.py` or `separation_rag_agent.py`
+when you actually want the sized/costed column back.
+
+---
+
+# `biosteam_feed.py` + `feed_phase.py` + `binary_distillation_calculation.py` — deterministic feed-phase calculation layer
+
+Implements `tools/binary-distillation-feed-phase-evaluation.md` in full:
+the first deterministic **calculation** layer downstream of the workflow-
+only checker above. It only ever runs once
+`assess_binary_distillation_problem()` reports
+`status == 'ready_for_calculation'` — the LLM never generates BioSTEAM
+code, invents a missing value, or decides the feed phase itself; every
+number that goes into the BioSTEAM stream and every branch of the VLE
+calculation comes from the already-normalized, already-validated workflow
+state.
+
+```text
+assess_binary_distillation_problem(spec)
+        │
+        ▼
+status != ready_for_calculation → no calculation (checks == {})
+status == ready_for_calculation
+        │
+        ▼
+build_biosteam_feed(spec, assessment)      biosteam_feed.py
+    canonical bst.Stream from the normalized feed state
+        │
+        ▼
+evaluate_feed_phase(feed, ...)             feed_phase.py
+    exactly one VLE branch (T/P, V/P, or H/P), deterministic
+    liquid / vapor / vapor_liquid classification
+        │
+        ▼
+calculate_binary_distillation_problem(spec)   binary_distillation_calculation.py
+    {'calculation_performed', 'workflow', 'checks': {'feed_phase': {...}}}
+```
+
+## `biosteam_feed.py`
+
+`build_biosteam_feed(spec, assessment, *, stream_id='feed')` — raises
+`BiosteamFeedError` unless `assessment['status'] == 'ready_for_calculation'`,
+the normalized `assessment['feed']['component_names']` has exactly 2
+entries, every one of those components has a known flow in
+`assessment['feed']['component_flows']`, flow units are available (from
+`component_flow_units` or `total_flow_units`), and `spec['pressure_Pa']` is
+present. On success it calls `bst.settings.set_thermo(component_names,
+cache=True)` and returns a `bst.Stream` built from the actual component
+flows — never inferring or inventing a value beyond what
+`feed_state.normalize_feed_state()` already derived upstream. It never sets
+`feed.T` or otherwise imposes a thermal condition (no silent default to
+bubble point) — thermal state is handled entirely by `feed_phase.py`.
+
+## `feed_phase.py`
+
+`evaluate_feed_phase(feed, *, pressure_Pa, feed_temperature_K=None,
+feed_quality=None, feed_enthalpy_kJ_per_hr=None, phase_tolerance=1e-6)` —
+requires exactly one of the three thermal-condition arguments (returns
+`valid=False, error='invalid_thermal_specification'` otherwise — it never
+guesses which one applies or defaults to bubble point), defensively
+re-checks the feed has exactly 2 nonzero-flow components
+(`error='unsupported_component_count'` if not — a backstop independent of
+the workflow's own binary-scope gate), then runs the one matching VLE call
+on a **copy** of `feed` (`feed.vle(T=..., P=...)`, `feed.vle(V=..., P=...)`,
+or `feed.vle(H=..., P=...)`) — the input stream is never mutated. The
+resulting `vapor_fraction` is classified in plain Python (never by the
+model): `liquid` if `V <= phase_tolerance`, `vapor` if
+`V >= 1 - phase_tolerance`, else `vapor_liquid`. Per-component vapor/liquid
+molar flows are read from `imol['g', ID]`/`imol['l', ID]` and returned
+alongside the classification. Any exception during the VLE calculation is
+caught and reported as `{'valid': False, 'error':
+'phase_calculation_failed', 'message': str(err)}` rather than left to
+propagate or reinterpreted by the model.
+
+**Output schema** (JSON-friendly; never returns the raw `bst.Stream`):
+
+```python
+{
+    'check': 'feed_phase', 'valid': True,
+    'phase': 'vapor_liquid',            # 'liquid' | 'vapor' | 'vapor_liquid'
+    'vapor_fraction': 0.37, 'liquid_fraction': 0.63,
+    'temperature_K': 405.0, 'pressure_Pa': 101325.0,
+    'components': ['Butane', 'Acetaldehyde'],
+    'vapor_mol': {'Butane': ..., 'Acetaldehyde': ...},
+    'liquid_mol': {'Butane': ..., 'Acetaldehyde': ...},
+    'calculation': {'type': 'VLE', 'specification': 'T_P'},  # or 'V_P' / 'H_P'
+    'message': 'Feed is a vapor-liquid mixture at the specified feed conditions.',
+}
+```
+
+`tools/chopper/test_feed_phase.py` covers all eight acceptance tests from
+the spec doc's Step 11 (TP binary feed, liquid/vapor/two-phase
+classification via bubble/dew-point-bracketed temperatures, quality-based
+state, invalid/missing thermal specification, defensive
+unsupported-component-count), plus an enthalpy-pressure (`H_P`) test. Run
+with:
+```bash
+pytest tools/chopper/test_feed_phase.py -v
+```
+
+## `binary_distillation_calculation.py`
+
+`calculate_binary_distillation_problem(spec)` — calls
+`assess_binary_distillation_problem(spec)`; if `status !=
+'ready_for_calculation'`, returns `{'calculation_performed': False,
+'workflow': assessment, 'checks': {}}` immediately (no BioSTEAM call at
+all). Otherwise builds the feed and evaluates its phase, returning
+`{'calculation_performed': True, 'workflow': assessment, 'checks':
+{'feed_phase': <result>}}` — a `BiosteamFeedError` from the feed-build step
+is caught and reported as `checks['feed_phase']` with
+`error='feed_build_failed'` rather than propagating. The `checks` dict is
+deliberately shaped to hold future deterministic checks alongside
+`feed_phase` (`relative_volatility`, `azeotrope`, `thermal_stability`,
+`condensability`, `critical_temperature_margin`, ...) without changing this
+function's return shape — none of those are implemented yet.
+
+`tools/chopper/test_binary_distillation_calculation.py` covers the
+incomplete-workflow → no-calculation and complete-workflow →
+feed-phase-calculation transitions, plus a ternary spec being rejected by
+the binary-scope gate before any BioSTEAM code runs. Run with:
+```bash
+pytest tools/chopper/test_binary_distillation_calculation.py -v
+```
+
+**One-directional boundary:** none of these three modules import `ollama`
+or `openai` — this calculation layer remains structurally incapable of LLM
+involvement, regardless of what imports it. The reverse is no longer true:
+`tools/binary-distillation-connecting-feed-calculation.md` connects
+`binary_distillation_workflow_agent.py` to this layer (see "Four
+capabilities" right below) via one narrow entry point,
+`calculate_current_binary_distillation_problem()` — the workflow agent
+still never imports `separation_tool.py`/`case_design.py`/`optimizer.py`,
+so no Wankat Case A-D sizing is reachable through it, only this one
+feed-phase check. RAG heuristic retrieval (`tools/chopperRAG/`) is not
+connected to either layer yet — see
+`tools/binary-distillation-feed-phase-evaluation.md` Step 16.
+
+## Four capabilities: connecting the calculation layer to the agent
+
+`tools/binary-distillation-connecting-feed-calculation.md` gives
+`binary_distillation_workflow_agent.py` a fourth conceptual capability
+alongside WRITE/READ/RESET:
+
+```text
+WRITE      update_binary_distillation_problem
+READ       get_binary_distillation_problem
+CALCULATE  calculate_current_binary_distillation_problem
+RESET      reset_workflow_session
+```
+
+`calculate_current_binary_distillation_problem()` is a **zero-argument**
+wrapper — Qwen cannot pass, restate, or otherwise influence any engineering
+value through it. It reads the same accumulated authoritative state as the
+WRITE/READ tools (`_effective_spec()`) and calls
+`binary_distillation_calculation.calculate_binary_distillation_problem()`
+on it directly:
+
+```python
+def calculate_current_binary_distillation_problem() -> dict:
+    return calculate_binary_distillation_problem(_effective_spec())
+```
+
+Two deterministic (non-model) routing layers decide when this tool runs
+without waiting for the model to choose it, in `ask()`, both gated on
+`status == 'ready_for_calculation'`:
+
+- **The existing "proceed" trigger** (`yes`, `go ahead`, `proceed`,
+  `calculate it`, ...) — previously a fixed refusal message (see the
+  pending-truth section above), now runs the calculation and finalizes
+  from its result instead.
+- **`is_feed_phase_question(text)`** — a narrow substring match against a
+  small, explicit set of phrasings ("what is the feed phase", "is the feed
+  vapor", "what is the vapor fraction", "how much of the feed is liquid",
+  ...). An explicit feed-phase/vapor-fraction question is a calculation
+  question, never something answered from the workflow state alone or from
+  the model's general chemical knowledge — the `CALCULATED ENGINEERING
+  STATE RULE` and `FEED-PHASE ROUTING RULE` blocks in `SYSTEM_PROMPT` state
+  this explicitly (e.g. forbidding reasoning like "400 K is above
+  methanol's boiling point, so the feed is probably vapor"), and this
+  deterministic router makes it structural rather than advisory whenever
+  the phrasing is unambiguous. A feed-phase question asked while the
+  problem is **not yet** `ready_for_calculation` deliberately does NOT
+  trigger this router — it falls through to normal model-driven tool
+  selection, where the tool itself (if the model calls it) reports
+  `calculation_performed: False` and the missing inputs, without ever
+  touching BioSTEAM.
+
+Both routes call a shared `_run_calculation_and_finalize()` helper: it runs
+the calculation, appends a synthetic assistant-tool-call/tool-result pair
+to `messages` (matching the pending-reply resolver's own pattern), then
+finalizes with `_chat_without_tools` so the model can only explain the
+already-fixed result, never call another tool that turn. When neither
+router fires, the model may still choose
+`calculate_current_binary_distillation_problem` itself through normal
+tool selection (e.g. "please calculate the feed phase" doesn't match the
+narrow phrase list) — it participates in the same per-turn controller as
+WRITE/READ described above, so it is still capped at one calculation per
+turn and still forces a no-tools finalization call afterward.
+
+**Scope stays explicit at every layer.** Because
+`calculate_binary_distillation_problem()` only ever populates
+`checks['feed_phase']`, `SYSTEM_PROMPT`'s `ready_for_calculation` guidance
+tells the model to report exactly that check and to explicitly note that
+`would_calculate`'s other quantities (distillate/bottoms flow, reflux
+ratio, reboiler/condenser duty, stage count, feed stage, column diameter)
+are still not computed — never implying the full Wankat Case design was
+performed.
+
+`tools/chopper/test_binary_distillation_workflow_agent_calculation.py` is
+the pytest suite for this connection (fakes/scripted clients throughout,
+except its final test, which is a real end-to-end BioSTEAM integration
+test): a ready problem's feed-phase/vapor-fraction/liquid-vapor questions
+routing to the calculation tool without an intervening
+`get_binary_distillation_problem` call; the calculation result standing
+already-fixed in `messages` before the model's finalization turn runs (so
+a model attempting qualitative boiling-point reasoning cannot make that the
+authoritative answer); an incomplete problem's calculation call reporting
+`calculation_performed: False` with the missing inputs, never touching
+BioSTEAM; a pending confirmation (e.g. "yes" answering an
+optimum-feed-plate prompt) still winning over calculation routing; the
+tool's zero-argument schema; no repeated calculation within one turn under
+a pathological client; and a real `calculate_current_binary_distillation_problem()`
+call against a complete Case D spec (Methanol/Water, 50/50 kmol/hr, 400 K,
+101325 Pa, saturated-liquid reflux, `boilup_ratio_VB=1.2`, `xD=0.95`,
+`xB=0.01`, optimum feed plate) asserting `calculation_performed is True`
+and `checks['feed_phase']['phase']` is one of `liquid`/`vapor`/
+`vapor_liquid`. Run with:
+```bash
+pytest tools/chopper/test_binary_distillation_workflow_agent_calculation.py -v
+```
 
 ---
 

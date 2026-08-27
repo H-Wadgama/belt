@@ -25,6 +25,7 @@ REFLUX = 'saturated_liquid'
 ESSENTIALS = {
     'component_names': ['Methanol', 'Water'],
     'component_flows': {'Methanol': 40, 'Water': 60},
+    'component_flow_units': 'kmol/hr',
     'pressure_Pa': PRESSURE,
     'feed_temperature_K': TEMP,
     'reflux_condition': REFLUX,
@@ -246,6 +247,74 @@ def test_problem_example_1_no_invented_flows_across_scope_replacement():
     assert two['feed']['component_flows'] == {}
     assert two['feed']['total_flow'] is None
     assert two['feed']['composition'] == {}
+
+
+# --- tools/binary-distillation-flow-units.md acceptance tests -----------
+
+
+def test_calc_inputs_missing_component_flow_units():
+    """Step 14 Test 1 -- complete Case D except component_flow_units: status=need_calculation_inputs, not ready_for_calculation."""
+    spec = {
+        'component_names': ['Methanol', 'Water'],
+        'component_flows': {'Methanol': 40, 'Water': 60},
+        'pressure_Pa': PRESSURE, 'feed_temperature_K': TEMP, 'reflux_condition': REFLUX,
+        'xD': 0.99, 'xB': 0.01, 'boilup_ratio_VB': 2.0, 'use_optimum_feed_plate': True,
+    }
+    result = assess_binary_distillation_problem(spec)
+    assert result['essential_complete'] is True
+    assert result['case_complete'] is True
+    assert result['calculation_inputs_complete'] is False
+    assert result['missing_calculation_inputs'] == ['component_flow_units']
+    assert result['status'] == 'need_calculation_inputs'
+
+
+def test_calc_inputs_present_ready_for_calculation():
+    """Step 14 Test 2 -- same problem with component_flow_units given: ready_for_calculation."""
+    spec = dict(ESSENTIALS, xD=0.99, xB=0.01, boilup_ratio_VB=2.0, use_optimum_feed_plate=True)
+    result = assess_binary_distillation_problem(spec)
+    assert result['calculation_inputs_complete'] is True
+    assert result['missing_calculation_inputs'] == []
+    assert result['status'] == 'ready_for_calculation'
+
+
+def test_calc_inputs_total_flow_form_missing_units():
+    """Step 14 Test 3 -- total_flow + composition form, no total_flow_units: status=need_calculation_inputs, and the missing field correctly names total_flow_units (not component_flow_units), since component_flows here is only ever DERIVED, never user_explicit."""
+    spec = {
+        'component_names': ['Methanol', 'Water'],
+        'total_flow': 100, 'composition': {'Methanol': 0.5, 'Water': 0.5},
+        'pressure_Pa': PRESSURE, 'feed_temperature_K': TEMP, 'reflux_condition': REFLUX,
+        'xD': 0.99, 'xB': 0.01, 'boilup_ratio_VB': 2.0, 'use_optimum_feed_plate': True,
+    }
+    result = assess_binary_distillation_problem(spec)
+    assert result['status'] == 'need_calculation_inputs'
+    assert result['missing_calculation_inputs'] == ['total_flow_units']
+
+
+def test_calc_inputs_total_flow_form_with_units_ready():
+    """The total_flow + composition form, with total_flow_units given, reaches ready_for_calculation."""
+    spec = {
+        'component_names': ['Methanol', 'Water'],
+        'total_flow': 100, 'total_flow_units': 'kmol/hr',
+        'composition': {'Methanol': 0.5, 'Water': 0.5},
+        'pressure_Pa': PRESSURE, 'feed_temperature_K': TEMP, 'reflux_condition': REFLUX,
+        'xD': 0.99, 'xB': 0.01, 'boilup_ratio_VB': 2.0, 'use_optimum_feed_plate': True,
+    }
+    result = assess_binary_distillation_problem(spec)
+    assert result['status'] == 'ready_for_calculation'
+    assert result['calculation_inputs_complete'] is True
+
+
+def test_calc_inputs_never_required_before_case_complete():
+    """calculation_inputs_complete/missing_calculation_inputs stay at their False/[] defaults for every earlier status -- this is a layer that only ever gates the final transition, not something checked prematurely."""
+    for spec in (
+        {},
+        {'component_names': ['Methanol']},
+        dict(ESSENTIALS),
+    ):
+        result = assess_binary_distillation_problem(spec)
+        assert result['status'] != 'need_calculation_inputs'
+        assert result['calculation_inputs_complete'] is False
+        assert result['missing_calculation_inputs'] == []
 
 
 def test_problem_example_2_single_component_flow_never_becomes_total():

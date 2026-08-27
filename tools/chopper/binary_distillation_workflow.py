@@ -153,6 +153,89 @@ _OPTIMUM_FEED_PLATE_PENDING_REQUEST = {
     'allowed_values': [True, False],
 }
 
+# tools/binary-distillation-flow-units.md -- calculation-specific inputs.
+# These are requirements of the downstream BioSTEAM feed adapter
+# (`biosteam_feed.build_biosteam_feed`), NOT new Wankat Table 3-1
+# essentials -- checked in a separate layer, after `essential_complete`,
+# so the two concepts stay conceptually distinct (Step 1).
+_CALCULATION_INPUT_FIELD_META = {
+    'component_flow_units': {'prompt': 'What units are the component flow rates in?'},
+    'total_flow_units': {'prompt': 'What units is the total feed flow rate in?'},
+}
+
+_CALCULATION_INPUT_MESSAGES = {
+    'component_flow_units': (
+        'The binary-distillation problem definition is complete, but '
+        'component flow-rate units are required before the BioSTEAM '
+        'calculation can run.'
+    ),
+    'total_flow_units': (
+        'The binary-distillation problem definition is complete, but the '
+        'total feed flow-rate units are required before the BioSTEAM '
+        'calculation can run.'
+    ),
+}
+
+
+def check_calculation_inputs(feed_state):
+    """
+    tools/binary-distillation-flow-units.md Step 2. Deterministically
+    checks whether the normalized `feed_state` (as returned by
+    `feed_state.assess_feed_state`) carries the flow-rate units the
+    downstream calculation adapter (`biosteam_feed.build_biosteam_feed`)
+    actually needs to construct a `bst.Stream` -- `component_flow_units`
+    if `component_flows`.
+
+    Because `feed_state.normalize_feed_state` derives `component_flows`
+    for BOTH representations once the feed is complete (per-component
+    flows given directly, or total_flow + composition given instead), a
+    plain presence check on `component_flows` can't tell which
+    representation the user actually supplied. This checks PROVENANCE
+    instead: whichever of `component_flows`/`total_flow` carries
+    'user_explicit' entries is the representation actually used, and
+    that is the one whose units field is required. `build_biosteam_feed`
+    itself only ever needs ONE of `component_flow_units`/`total_flow_units`
+    to be present (it accepts either), so this only ever reports at most
+    one missing field.
+
+    Never defaults a unit, never reads one from conversation history --
+    only what's already present in `feed_state` counts.
+
+    Returns
+    -------
+    dict with keys 'complete' (bool) and 'missing' (list[str], at most
+    one entry: 'component_flow_units' or 'total_flow_units').
+    """
+    missing = []
+    has_units = bool(feed_state.get('component_flow_units')) or bool(feed_state.get('total_flow_units'))
+    if not has_units:
+        used_component_flows = any(
+            prov == 'user_explicit'
+            for prov in (feed_state.get('component_flows_provenance') or {}).values()
+        )
+        used_total_flow_only = (
+            feed_state.get('total_flow_provenance') == 'user_explicit' and not used_component_flows
+        )
+        missing.append('total_flow_units' if used_total_flow_only else 'component_flow_units')
+    return {'complete': not missing, 'missing': missing}
+
+
+def _calculation_pending_request(missing_calculation_inputs):
+    """
+    Step 4: a deterministic pending_request for a missing calculation
+    input, ONLY when exactly one is missing -- `check_calculation_inputs`
+    never reports more than one, so this is really just a lookup, but the
+    length guard is kept for the same reason as `_case_pending_request`:
+    never guess between two genuinely ambiguous fields.
+    """
+    if len(missing_calculation_inputs) != 1:
+        return None
+    field = missing_calculation_inputs[0]
+    meta = _CALCULATION_INPUT_FIELD_META.get(field)
+    if meta is None:
+        return None
+    return {'field': field, 'request_type': 'flow_units', 'prompt': meta['prompt']}
+
 
 def check_binary_scope(component_names):
     """
@@ -226,6 +309,7 @@ def _would_calculate(case, spec):
 def _base_report(scope, essential_complete=False, missing_essential_inputs=None,
                   case=None, case_candidates=None, case_complete=False,
                   missing_case_inputs=None, optimum_feed_plate_confirmed=None,
+                  calculation_inputs_complete=False, missing_calculation_inputs=None,
                   status=None, would_calculate=None, message='', feed=None,
                   feed_flow_complete=False, feed_composition_complete=False,
                   pending_request=None):
@@ -243,6 +327,14 @@ def _base_report(scope, essential_complete=False, missing_essential_inputs=None,
         'case_complete': case_complete,
         'missing_case_inputs': missing_case_inputs or {},
         'optimum_feed_plate_confirmed': optimum_feed_plate_confirmed,
+        # tools/binary-distillation-flow-units.md -- calculation-adapter
+        # readiness, conceptually separate from Wankat `essential_complete`/
+        # `case_complete` above. False/[] by default at every earlier
+        # stage; only meaningful once essentials+case+optimum-feed-plate
+        # are otherwise fully satisfied (see the bottom of
+        # assess_binary_distillation_problem).
+        'calculation_inputs_complete': calculation_inputs_complete,
+        'missing_calculation_inputs': missing_calculation_inputs or [],
         'status': status,
         'would_calculate': would_calculate or [],
         'calculation_performed': False,
@@ -340,9 +432,17 @@ def assess_binary_distillation_problem(spec):
     field (`{'field', 'request_type', 'prompt', ...}`) or ordered field
     group (`{'fields', 'request_type': 'ordered_float_group', 'prompt'}`)
     this report is currently asking for, or None when nothing is
-    unambiguously pending (including whenever `status` is
-    'ready_for_calculation'). Never raises. `calculation_performed` is
-    always False.
+    unambiguously pending, plus 'calculation_inputs_complete' and
+    'missing_calculation_inputs' from
+    tools/binary-distillation-flow-units.md -- a calculation-adapter
+    readiness layer checked AFTER `essential_complete`/`case_complete`/
+    `optimum_feed_plate_confirmed` are all True, conceptually separate
+    from those Wankat Table 3-1/3-2 concepts. `status` is only ever
+    'ready_for_calculation' once `calculation_inputs_complete` is also
+    True; otherwise (missing `component_flow_units`/`total_flow_units`)
+    `status` is 'need_calculation_inputs' instead, with
+    `pending_request` naming the missing units field when exactly one is
+    missing. Never raises. `calculation_performed` is always False.
     """
     feed = apply_user_update(empty_feed_state(), spec)
     scope = check_binary_scope(feed['component_names'])
@@ -456,17 +556,32 @@ def assess_binary_distillation_problem(spec):
             pending_request=dict(_OPTIMUM_FEED_PLATE_PENDING_REQUEST),
         )
 
+    calc_check = check_calculation_inputs(feed)
+    if not calc_check['complete']:
+        return _base_report(
+            scope, essential_complete=True, case=case, case_candidates=[case],
+            case_complete=True, optimum_feed_plate_confirmed=bool(ofp),
+            calculation_inputs_complete=False,
+            missing_calculation_inputs=calc_check['missing'],
+            status='need_calculation_inputs',
+            message=_CALCULATION_INPUT_MESSAGES[calc_check['missing'][0]],
+            feed=feed, feed_flow_complete=True, feed_composition_complete=True,
+            pending_request=_calculation_pending_request(calc_check['missing']),
+        )
+
     would_calculate = _would_calculate(case, spec)
     return _base_report(
         scope, essential_complete=True, case=case, case_candidates=[case],
         case_complete=True, optimum_feed_plate_confirmed=bool(ofp),
+        calculation_inputs_complete=True, missing_calculation_inputs=[],
         status='ready_for_calculation', would_calculate=would_calculate,
         message=(
             f"Your binary-distillation problem is fully specified as Wankat "
-            f"Case {case}. If the calculation stage were enabled, the "
-            f"designer would calculate: {', '.join(would_calculate)}. "
-            f"This workflow-only agent stops at problem definition, so no "
-            f"distillation calculation is performed here."
+            f"Case {case}, and ready for the currently implemented "
+            f"calculation layer. The available calculation can evaluate "
+            f"feed phase. A full Case {case} design would also calculate: "
+            f"{', '.join(would_calculate)} -- these are not yet implemented "
+            f"in this pipeline."
         ),
         feed=feed, feed_flow_complete=True, feed_composition_complete=True,
     )
@@ -502,6 +617,10 @@ if __name__ == '__main__':
     ))
     demo('Optimum feed plate only (no case signal)', dict(ESSENTIALS))
     demo('Boilup ratio supplied -- routes to Case D', dict(ESSENTIALS, boilup_ratio_VB=2.0))
-    demo('Complete Case D', dict(
+    demo('Complete Case D except component_flow_units -- need_calculation_inputs', dict(
         ESSENTIALS, xD=0.99, xB=0.01, boilup_ratio_VB=2.0, use_optimum_feed_plate=True,
+    ))
+    demo('Complete Case D', dict(
+        ESSENTIALS, component_flow_units='kmol/hr',
+        xD=0.99, xB=0.01, boilup_ratio_VB=2.0, use_optimum_feed_plate=True,
     ))

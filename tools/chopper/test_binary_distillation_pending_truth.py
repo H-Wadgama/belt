@@ -25,6 +25,7 @@ REFLUX = 'saturated_liquid'
 ESSENTIALS = {
     'component_names': ['Methanol', 'Water'],
     'component_flows': {'Methanol': 40, 'Water': 60},
+    'component_flow_units': 'kmol/hr',
     'pressure_Pa': PRESSURE,
     'feed_temperature_K': TEMP,
     'reflux_condition': REFLUX,
@@ -118,7 +119,7 @@ def test_pending_request_none_at_ready_for_calculation():
     result = assess_binary_distillation_problem(spec)
     assert result['status'] == 'ready_for_calculation'
     assert result['pending_request'] is None
-    assert 'workflow-only agent stops at problem definition' in result['message']
+    assert 'not yet implemented' in result['message']
 
 
 def test_pending_request_cleared_after_resolution():
@@ -126,6 +127,23 @@ def test_pending_request_cleared_after_resolution():
     spec = dict(ESSENTIALS, xD=0.99, xB=0.01, boilup_ratio_VB=2.0, use_optimum_feed_plate=True)
     result = assess_binary_distillation_problem(spec)
     assert result['pending_request'] is None
+
+
+def test_pending_request_component_flow_units():
+    """tools/binary-distillation-flow-units.md Step 15 -- component_flow_units is the only missing calculation input."""
+    spec = {
+        'component_names': ['Methanol', 'Water'],
+        'component_flows': {'Methanol': 40, 'Water': 60},
+        'pressure_Pa': PRESSURE, 'feed_temperature_K': TEMP, 'reflux_condition': REFLUX,
+        'xD': 0.99, 'xB': 0.01, 'boilup_ratio_VB': 2.0, 'use_optimum_feed_plate': True,
+    }
+    result = assess_binary_distillation_problem(spec)
+    assert result['status'] == 'need_calculation_inputs'
+    assert result['pending_request'] == {
+        'field': 'component_flow_units',
+        'request_type': 'flow_units',
+        'prompt': 'What units are the component flow rates in?',
+    }
 
 
 def test_pending_request_invalidated_by_problem_replacement():
@@ -205,6 +223,56 @@ def test_resolve_none_when_ambiguous_count_mismatch():
 
 
 # ---------------------------------------------------------------------------
+# tools/binary-distillation-flow-units.md Step 5/15 -- normalize_units_reply
+# and resolve_pending_reply(request_type='flow_units').
+# ---------------------------------------------------------------------------
+
+COMPONENT_FLOW_UNITS_PENDING = {
+    'field': 'component_flow_units', 'request_type': 'flow_units',
+    'prompt': 'What units are the component flow rates in?',
+}
+TOTAL_FLOW_UNITS_PENDING = {
+    'field': 'total_flow_units', 'request_type': 'flow_units',
+    'prompt': 'What units is the total feed flow rate in?',
+}
+
+
+@pytest.mark.parametrize('raw', [
+    'KMOL/HR', 'kmol/hr', 'kmol per hour', 'KMOL PER HR', 'kilomoles per hour',
+    'kmol per hr', 'Kilomol/hr',
+])
+def test_normalize_units_reply_kmol_hr_variants(raw):
+    assert agent.normalize_units_reply(raw) == 'kmol/hr'
+
+
+@pytest.mark.parametrize('raw', [
+    'kg/hr', 'KG/HR', 'kg per hour', 'kilograms per hour', 'kg per hr',
+])
+def test_normalize_units_reply_kg_hr_variants(raw):
+    assert agent.normalize_units_reply(raw) == 'kg/hr'
+
+
+def test_normalize_units_reply_unknown_returns_none():
+    assert agent.normalize_units_reply('furlongs per fortnight') is None
+
+
+def test_resolve_flow_units_component_flow_units():
+    assert agent.resolve_pending_reply(COMPONENT_FLOW_UNITS_PENDING, 'KMOL/HR') == {
+        'component_flow_units': 'kmol/hr',
+    }
+
+
+def test_resolve_flow_units_total_flow_units():
+    assert agent.resolve_pending_reply(TOTAL_FLOW_UNITS_PENDING, 'kilograms per hour') == {
+        'total_flow_units': 'kg/hr',
+    }
+
+
+def test_resolve_flow_units_unrecognized_does_not_resolve():
+    assert agent.resolve_pending_reply(COMPONENT_FLOW_UNITS_PENDING, 'furlongs per fortnight') is None
+
+
+# ---------------------------------------------------------------------------
 # Agent-level: ask() wiring -- fakes, no live Ollama server required.
 # ---------------------------------------------------------------------------
 
@@ -247,13 +315,6 @@ class ScriptedClient:
         return self._responses.pop(0)
 
 
-class ExplodingClient:
-    """Used to prove ask() never even calls the model for the ready-state boundary case."""
-
-    def chat(self, model, messages, tools=None, think=False):
-        raise AssertionError('client.chat() should not have been called')
-
-
 def _tool_result_names(messages):
     return [m['tool_name'] for m in messages if isinstance(m, dict) and m.get('role') == 'tool']
 
@@ -273,6 +334,7 @@ def test_ask_resolves_pending_boolean_deterministically():
     """Test 1/4 -- 'Of course!' to a live use_optimum_feed_plate pending_request performs a REAL WRITE, visible in a subsequent READ, before any model prose."""
     agent.update_binary_distillation_problem(
         component_names=['Methanol', 'Water'], component_flows={'Methanol': 40, 'Water': 60},
+        component_flow_units='kmol/hr',
         pressure_Pa=PRESSURE, feed_temperature_K=TEMP, reflux_condition=REFLUX,
         xD=0.99, xB=0.01, boilup_ratio_VB=2.0,
     )
@@ -305,19 +367,24 @@ def test_ask_falls_through_to_model_when_nothing_pending():
     assert result == 'Please tell me the two components.'
 
 
-def test_ask_ready_state_proceed_is_fully_deterministic_no_model_call():
-    """Test 11/12 -- 'go ahead' after ready_for_calculation never touches the model or mutates state."""
+def test_ask_ready_state_proceed_runs_calculation_deterministically():
+    """tools/binary-distillation-connecting-feed-calculation.md Step 13 -- 'go ahead' after
+    ready_for_calculation no longer returns the old fixed refusal; it deterministically runs
+    calculate_current_binary_distillation_problem (never left to the model to decide whether
+    to call it) and finalizes with a single no-tools model call to explain the result."""
     agent.update_binary_distillation_problem(
         component_names=['Methanol', 'Water'], component_flows={'Methanol': 40, 'Water': 60},
+        component_flow_units='kmol/hr',
         pressure_Pa=PRESSURE, feed_temperature_K=TEMP, reflux_condition=REFLUX,
         xD=0.99, xB=0.01, boilup_ratio_VB=2.0, use_optimum_feed_plate=True,
     )
     assert agent.get_binary_distillation_problem()['status'] == 'ready_for_calculation'
 
-    client = ExplodingClient()
+    client = ScriptedClient([final('The feed-phase check is done -- see the result.')])
     messages = _base_messages() + [{'role': 'user', 'content': 'go ahead'}]
 
     result = agent.ask(client, messages)
 
-    assert result == agent.READY_BOUNDARY_MESSAGE
-    assert _tool_result_names(messages) == []
+    assert _tool_result_names(messages) == ['calculate_current_binary_distillation_problem']
+    assert client.calls == [False]  # finalization call has no tools exposed
+    assert result == 'The feed-phase check is done -- see the result.'
