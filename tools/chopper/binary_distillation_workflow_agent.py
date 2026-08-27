@@ -1,15 +1,29 @@
 """
 Isolated workflow-testing agent -- tools/binary-distillation-workflow.md
 section 18, Option C ("Expose only assess_binary_distillation_problem() to
-Qwen in a dedicated workflow-testing agent").
+Qwen in a dedicated workflow-testing agent"), refactored per
+tools/binary-distillation-read-vs-append.md to split the single combined
+tool into separate READ and WRITE operations.
 
-This agent exposes exactly ONE tool to the model,
-`assess_binary_distillation_problem`, wrapping
-`binary_distillation_workflow.assess_binary_distillation_problem()`. It
-deliberately does NOT import `separation_tool.py` / `case_design.py` /
-`optimizer.py` (or BioSTEAM at all) -- this keeps the experiment clean, per
-the workflow doc: for this development phase, the workflow checker is the
-terminal engineering tool. No distillation calculation, sizing, or
+This agent exposes THREE tools to the model:
+  - `update_binary_distillation_problem` (WRITE) -- merges newly-stated
+    engineering facts into the accumulated problem state, then returns the
+    deterministic assessment of the full accumulated state. Call this only
+    when the current user message provides new engineering information.
+  - `get_binary_distillation_problem` (READ) -- takes no engineering
+    arguments, never mutates state, and just returns the same deterministic
+    assessment of whatever is already known. Call this when the user asks
+    about information already supplied, derived, or still missing -- never
+    resubmit an existing or derived value through the WRITE tool merely to
+    answer a question about it.
+  - `reset_workflow_session` (housekeeping) -- clears all accumulated state.
+
+Both engineering tools wrap the same underlying deterministic checker,
+`binary_distillation_workflow.assess_binary_distillation_problem()`. This
+module deliberately does NOT import `separation_tool.py` / `case_design.py`
+/ `optimizer.py` (or BioSTEAM at all) -- this keeps the experiment clean,
+per the workflow doc: for this development phase, the workflow checker is
+the terminal engineering tool. No distillation calculation, sizing, or
 optimization can happen through this agent.
 
 Run interactively:
@@ -111,7 +125,7 @@ def _effective_spec():
     return spec
 
 
-def assess_binary_distillation(
+def update_binary_distillation_problem(
     component_names: list[str] | None = None,
     add_component_names: list[str] | None = None,
     component_flows: dict[str, float] | None = None,
@@ -136,11 +150,13 @@ def assess_binary_distillation(
     reflux_ratio_multiplier_k: float | None = None,
     use_optimum_feed_plate: bool | None = None,
 ) -> dict:
-    """Check a binary-distillation problem-definition request against Wankat Table 3-1/3-2 and report what's missing, which design case (A-D) it matches, and -- once fully specified -- what a designer WOULD calculate. Performs NO distillation calculation, sizing, or optimization; this is a problem-definition and workflow-routing check only.
+    """WRITE operation: merge newly-stated engineering facts into the binary-distillation problem state, then check the full accumulated state against Wankat Table 3-1/3-2 and report what's missing, which design case (A-D) it matches, and -- once fully specified -- what a designer WOULD calculate. Performs NO distillation calculation, sizing, or optimization; this is a problem-definition and workflow-routing check only.
+
+    Call this ONLY when the current user message states new engineering information. If the user is instead asking a question about information already supplied, derived, or still missing (e.g. "what is my feed composition?", "what pressure did I specify?", "what's still missing?"), call `get_binary_distillation_problem()` instead -- do NOT call this tool just to answer a question, and never resubmit a value that is already known or was only derived (not stated by the user) as if it were a new input.
 
     This tool REMEMBERS every field you've given it so far in this conversation about the current separation problem -- you do NOT need to repeat components, pressure, feed condition, or anything else from an earlier call. Just call this again with only whatever is new; it is merged with everything already known. Call `reset_workflow_session()` only when the user switches to a genuinely different, unrelated separation problem.
 
-    Never invent a value for any argument the user has not stated. In particular, never assume column pressure, feed thermal condition, reflux condition, product purity, recovery, reflux ratio, boilup ratio, product flow, or optimum-feed-plate use.
+    Never invent a value for any argument the user has not stated. In particular, never assume column pressure, feed thermal condition, reflux condition, product purity, recovery, reflux ratio, boilup ratio, product flow, or optimum-feed-plate use. Never pass a value here merely because it already appears in a prior tool result (whether 'user_explicit' or 'derived') -- only pass what the CURRENT message newly states.
 
     Component IDENTITY and component QUANTITY are separate concepts -- a component name never implies a flow rate, and a single component's flow is never the total feed flow unless the user says so explicitly. Only pass a numeric flow/total_flow/composition value the user actually stated.
 
@@ -191,9 +207,21 @@ def assess_binary_distillation(
     return assess_binary_distillation_problem(_effective_spec())
 
 
-TOOLS = [assess_binary_distillation, reset_workflow_session]
+def get_binary_distillation_problem() -> dict:
+    """READ operation: return the current binary-distillation problem state -- what has been supplied, what has been derived, which Wankat case (if any) it matches, and what is still missing -- WITHOUT changing anything.
+
+    Call this whenever the user asks about information already supplied, derived, or still missing, instead of guessing from earlier chat text or calling `update_binary_distillation_problem`. Examples: "What is my feed composition?", "What is the feed flow rate?", "What pressure did I specify?", "What information do you have so far?", "What is still missing?", "Which Wankat case am I in?", "What would be calculated?". Takes no arguments -- it is strictly read-only and never mutates the accumulated state, never derives anything beyond what the deterministic checker already derives, and never invents a value.
+
+    Returns:
+        The identical schema `update_binary_distillation_problem` returns (see that tool's docstring), computed from whatever has already been accumulated -- no new information is merged in by this call.
+    """
+    return assess_binary_distillation_problem(_effective_spec())
+
+
+TOOLS = [update_binary_distillation_problem, get_binary_distillation_problem, reset_workflow_session]
 TOOL_FUNCTIONS = {
-    'assess_binary_distillation': assess_binary_distillation,
+    'update_binary_distillation_problem': update_binary_distillation_problem,
+    'get_binary_distillation_problem': get_binary_distillation_problem,
     'reset_workflow_session': reset_workflow_session,
 }
 
@@ -201,16 +229,50 @@ TOOL_FUNCTIONS = {
 # Requirement for Qwen".
 SYSTEM_PROMPT = """You are not the binary-distillation decision engine.
 
-You have access to one engineering tool, `assess_binary_distillation`, and \
-one housekeeping tool, `reset_workflow_session`.
+You have access to two engineering tools and one housekeeping tool:
+  - `update_binary_distillation_problem` (WRITE) -- use ONLY when the \
+current user message states NEW engineering information.
+  - `get_binary_distillation_problem` (READ) -- use when the user asks a \
+question about information already supplied, derived, stored, or still \
+missing. Takes no arguments and never changes anything.
+  - `reset_workflow_session` (housekeeping) -- clears everything.
 
-Extract information from the user's message and pass it to \
-`assess_binary_distillation`, the deterministic binary-distillation \
-workflow checker. Never infer a Wankat design case (A, B, C, or D) \
-yourself when the checker has not identified one -- if `case` comes back \
-null and `case_candidates` lists more than one case, present those options \
-(or ask which kind of specification the user wants to give) rather than \
-guessing.
+## Deciding which tool to call: classify every user turn
+
+1. **New engineering information** (e.g. "Water flow rate is 90 kmol/hr.", \
+"Column pressure is 101325 Pa.", "Use xD = 0.98.", "Yes, use the optimum \
+feed plate."): call `update_binary_distillation_problem` with ONLY the new \
+field(s) from this turn.
+2. **A question about existing state** (e.g. "What is the feed \
+composition?", "What is my total feed flow?", "What values have I given \
+you?", "What is still missing?", "Which Wankat case does this match?", \
+"What pressure did I specify?"): call `get_binary_distillation_problem` \
+with no arguments. Do NOT call `update_binary_distillation_problem` for \
+these, even if you copy the answer's numbers into the call -- that would \
+fabricate a "new" input out of a value nobody just stated.
+3. **Both at once** (e.g. "Water flow is 90 kmol/hr. What is the resulting \
+feed composition?"): call `update_binary_distillation_problem` with just \
+the new fact first, then answer the question directly from THAT call's \
+returned state -- it already reflects the merge, so a follow-up \
+`get_binary_distillation_problem` call is unnecessary.
+
+**Reporting a value never makes it a new input.** If a value already exists \
+in state -- whether its provenance is `user_explicit` or `derived` -- \
+telling the user about it does not turn it into something the user just \
+supplied. Never pass an existing or derived value back through \
+`update_binary_distillation_problem`'s arguments merely because you are \
+about to state it or because the checker's message mentioned it. Only pass \
+values the CURRENT user message newly and explicitly states.
+
+**Do not reconstruct the state from conversation history.** When asked what \
+is currently known, missing, or derived, call `get_binary_distillation_problem` \
+rather than searching your own earlier replies for a remembered number -- \
+the deterministic state is always the source of truth, not your prior text.
+
+Never infer a Wankat design case (A, B, C, or D) yourself when the checker \
+has not identified one -- if `case` comes back null and `case_candidates` \
+lists more than one case, present those options (or ask which kind of \
+specification the user wants to give) rather than guessing.
 
 Never invent missing engineering specifications. Never assume pressure, \
 feed thermal condition, reflux thermal condition, product purity, \
@@ -228,18 +290,18 @@ feed information the user has not (yet) given, even partially.
 
 Do NOT perform, describe performing, or claim to have performed any \
 distillation calculation, sizing, or optimization during this conversation \
--- this tool only checks problem-definition completeness. There is no \
+-- these tools only check problem-definition completeness. There is no \
 calculation tool available to you right now, and `calculation_performed` \
 in every tool result is always False.
 
-`assess_binary_distillation` REMEMBERS everything already given about the \
-current separation problem -- you do NOT need to repeat components, \
-pressure, feed condition, or anything else from an earlier call. When the \
-user answers a question you asked, call the tool again with only the NEW \
-field(s) they just gave; never just restate their answer as text. Only call \
-`reset_workflow_session` when the user is clearly switching to a genuinely \
-different, unrelated separation problem, never between ordinary follow-up \
-turns.
+Both engineering tools REMEMBER everything already given about the current \
+separation problem -- you do NOT need to repeat components, pressure, feed \
+condition, or anything else from an earlier call. When the user answers a \
+question you asked, call `update_binary_distillation_problem` again with \
+only the NEW field(s) they just gave; never just restate their answer as \
+text. Only call `reset_workflow_session` when the user is clearly switching \
+to a genuinely different, unrelated separation problem, never between \
+ordinary follow-up turns.
 
 ## Binary scope only
 
