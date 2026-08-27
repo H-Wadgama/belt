@@ -170,7 +170,12 @@ def identify_case(spec):
         'candidates'           : list[str] -- case letters still consistent
                                  with the fields given so far (used when
                                  `case` is None and not ambiguous, i.e. the
-                                 spec is merely incomplete).
+                                 spec is merely incomplete). When nothing
+                                 case-distinguishing has been given at all,
+                                 this is every case (A-D) -- there is no
+                                 default to Case A (see
+                                 tools/binary-distillation-workflow.md
+                                 section 7).
         'missing_by_candidate' : dict[str, list[str]] -- for each candidate
                                  case, which of its fields are still absent.
     """
@@ -281,6 +286,15 @@ def identify_case(spec):
             missing.append('boilup_ratio_VB')
         candidates['D'] = missing
 
+    # No default to Case A. A user who has stated none of {xD/xB, Lr/Hr, a
+    # product flow, a boilup ratio} gets ALL still-consistent cases back as
+    # candidates (typically all four), not a narrowed-to-A guess -- per
+    # tools/binary-distillation-workflow.md section 7: "no distinguishing
+    # design specifications != Case A". As soon as the user states something
+    # that actually belongs to a specific case (a recovery, a product flow,
+    # a boilup ratio, or xD/xB alongside a reflux quantity), `have[...]`
+    # above reflects that and the candidate set narrows on its own to
+    # whichever case(s) that information actually matches.
     complete = [c for c, missing in candidates.items() if not missing]
 
     if len(complete) == 1:
@@ -388,7 +402,11 @@ def validate_problem(spec):
         'case_candidates'                : list[str] -- cases still
                                             possible given what was
                                             supplied (only populated when
-                                            incomplete, not ambiguous).
+                                            incomplete, not ambiguous). When
+                                            nothing case-distinguishing has
+                                            been given at all, this is every
+                                            case (A-D) -- no default to
+                                            Case A.
         'missing_essential_inputs'       : list[str].
         'missing_case_inputs_by_candidate' : dict[str, list[str]].
         'ambiguous'                      : bool.
@@ -468,4 +486,24 @@ if __name__ == '__main__':
         'pressure_Pa': 101325, 'components': {'Methanol': 100, 'Water': 80},
         'reflux_condition': 'saturated_liquid',
         'xD': 0.99, 'xB': 0.01, 'external_reflux_ratio_LD': 3.0,
+    })['message'])
+
+    print('\n--- Only 5 essentials + L0/D given -- candidates A/B/C (D excluded, D has no reflux ratio) ---')
+    print(validate_problem({
+        'pressure_Pa': 101325, 'components': {'Methanol': 100, 'Water': 80},
+        'feed_temperature_K': 350.0, 'reflux_condition': 'saturated_liquid',
+        'external_reflux_ratio_LD': 3.0,
+    })['message'])
+
+    print('\n--- Only 5 essentials, nothing else -- all four cases (A-D) are candidates ---')
+    print(validate_problem({
+        'pressure_Pa': 101325, 'components': {'Methanol': 100, 'Water': 80},
+        'feed_temperature_K': 350.0, 'reflux_condition': 'saturated_liquid',
+    })['message'])
+
+    print('\n--- Only Lr given -- narrows to Case B ---')
+    print(validate_problem({
+        'pressure_Pa': 101325, 'components': {'Methanol': 100, 'Water': 80},
+        'feed_temperature_K': 350.0, 'reflux_condition': 'saturated_liquid',
+        'Lr': 0.99,
     })['message'])

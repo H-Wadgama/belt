@@ -1,0 +1,410 @@
+"""
+Isolated workflow-testing agent -- tools/binary-distillation-workflow.md
+section 18, Option C ("Expose only assess_binary_distillation_problem() to
+Qwen in a dedicated workflow-testing agent").
+
+This agent exposes exactly ONE tool to the model,
+`assess_binary_distillation_problem`, wrapping
+`binary_distillation_workflow.assess_binary_distillation_problem()`. It
+deliberately does NOT import `separation_tool.py` / `case_design.py` /
+`optimizer.py` (or BioSTEAM at all) -- this keeps the experiment clean, per
+the workflow doc: for this development phase, the workflow checker is the
+terminal engineering tool. No distillation calculation, sizing, or
+optimization can happen through this agent.
+
+Run interactively:
+    python binary_distillation_workflow_agent.py
+
+Or one-shot:
+    python binary_distillation_workflow_agent.py "I want to separate methanol and water."
+"""
+import json
+import sys
+
+import ollama
+
+from binary_distillation_workflow import assess_binary_distillation_problem
+from feed_state import apply_user_update, empty_feed_state
+
+MODEL = 'qwen3:8b'
+
+# Accumulated problem state for the CURRENT separation problem, across
+# however many tool calls it takes to fully specify it -- the
+# "BinaryDistillationProblemState" of tools/binary-distillation-workflow.md
+# section 6. A tool-calling model cannot be relied on to restate every
+# already-known field on every follow-up call, so every call MERGES what
+# it's given into this dict and the checker is run against the accumulated
+# state, not just the current call's arguments.
+#
+# Feed identity/quantity (component_names, component_flows, total_flow,
+# composition, and their units/basis) live in a nested `feed_state`-shaped
+# dict under the 'feed' key, accumulated via `feed_state.apply_user_update`
+# -- see tools/binary-distillation-flow-rate-issue.md. Only EXPLICIT values
+# are ever recorded here; `assess_binary_distillation_problem` (via
+# `feed_state.normalize_feed_state`) is the sole place derivation happens,
+# so 'user_explicit' vs. 'derived' provenance always reflects true origin.
+# Every other field (pressure_Pa, thermal condition, xD, etc.) is merged
+# flat, same as before.
+_workflow_state = {'feed': empty_feed_state()}
+
+# Mutually exclusive within the accumulated state: supplying a new member
+# of a group clears any other member left over from an earlier call, so a
+# stale earlier choice can never linger and create a false "ambiguous"
+# conflict against a later, different choice.
+_THERMAL_FIELDS = ('feed_temperature_K', 'feed_quality', 'feed_enthalpy_kJ_per_hr')
+_REFLUX_QUANTITY_FIELDS = ('external_reflux_ratio_LD', 'reflux_ratio_multiplier_k')
+
+_FEED_UPDATE_FIELDS = (
+    'component_names', 'add_component_names', 'component_flows',
+    'component_flow_units', 'total_flow', 'total_flow_units',
+    'composition', 'composition_basis',
+)
+
+
+def _merge_into_state(new_fields):
+    _workflow_state['feed'] = apply_user_update(_workflow_state['feed'], new_fields)
+
+    for group in (_THERMAL_FIELDS, _REFLUX_QUANTITY_FIELDS):
+        given_in_group = [k for k in group if new_fields.get(k) is not None]
+        if len(given_in_group) == 1:
+            for other in group:
+                if other != given_in_group[0]:
+                    _workflow_state.pop(other, None)
+    for key, value in new_fields.items():
+        if key in _FEED_UPDATE_FIELDS:
+            continue
+        if value is not None:
+            _workflow_state[key] = value
+    return _workflow_state
+
+
+def reset_workflow_session() -> dict:
+    """Clear all previously-remembered inputs for the current binary-distillation problem-definition workflow, so the next call starts a fresh, unrelated problem from scratch.
+
+    Call this ONLY when the user is clearly switching to a different separation problem (different components, or they explicitly say to start over) -- not between follow-up turns that are still refining the same problem.
+
+    Returns:
+        {'reset': True, 'message': str} confirming the accumulated state was cleared.
+    """
+    _workflow_state.clear()
+    _workflow_state['feed'] = empty_feed_state()
+    return {'reset': True, 'message': 'All previously remembered problem-definition inputs have been cleared.'}
+
+
+def _effective_spec():
+    """Flatten the accumulated `feed_state` into the flat spec `assess_binary_distillation_problem` expects, passing along only EXPLICIT feed facts -- derivation happens exactly once, inside that call, so provenance always reflects true origin (never re-labels a derived value as explicit)."""
+    feed = _workflow_state['feed']
+    spec = {k: v for k, v in _workflow_state.items() if k != 'feed'}
+    spec['component_names'] = feed['component_names']
+    spec['component_flows'] = {
+        n: v for n, v in feed['component_flows'].items()
+        if feed['component_flows_provenance'].get(n) == 'user_explicit'
+    }
+    spec['component_flow_units'] = feed['component_flow_units']
+    spec['total_flow'] = feed['total_flow'] if feed['total_flow_provenance'] == 'user_explicit' else None
+    spec['total_flow_units'] = feed['total_flow_units']
+    spec['composition'] = {
+        n: v for n, v in feed['composition'].items()
+        if feed['composition_provenance'].get(n) == 'user_explicit'
+    }
+    spec['composition_basis'] = feed['composition_basis']
+    return spec
+
+
+def assess_binary_distillation(
+    component_names: list[str] | None = None,
+    add_component_names: list[str] | None = None,
+    component_flows: dict[str, float] | None = None,
+    component_flow_units: str | None = None,
+    total_flow: float | None = None,
+    total_flow_units: str | None = None,
+    composition: dict[str, float] | None = None,
+    composition_basis: str | None = None,
+    pressure_Pa: float | None = None,
+    feed_temperature_K: float | None = None,
+    feed_quality: float | None = None,
+    feed_enthalpy_kJ_per_hr: float | None = None,
+    reflux_condition: str | None = None,
+    xD: float | None = None,
+    xB: float | None = None,
+    Lr: float | None = None,
+    Hr: float | None = None,
+    distillate_flow: float | None = None,
+    bottoms_flow: float | None = None,
+    boilup_ratio_VB: float | None = None,
+    external_reflux_ratio_LD: float | None = None,
+    reflux_ratio_multiplier_k: float | None = None,
+    use_optimum_feed_plate: bool | None = None,
+) -> dict:
+    """Check a binary-distillation problem-definition request against Wankat Table 3-1/3-2 and report what's missing, which design case (A-D) it matches, and -- once fully specified -- what a designer WOULD calculate. Performs NO distillation calculation, sizing, or optimization; this is a problem-definition and workflow-routing check only.
+
+    This tool REMEMBERS every field you've given it so far in this conversation about the current separation problem -- you do NOT need to repeat components, pressure, feed condition, or anything else from an earlier call. Just call this again with only whatever is new; it is merged with everything already known. Call `reset_workflow_session()` only when the user switches to a genuinely different, unrelated separation problem.
+
+    Never invent a value for any argument the user has not stated. In particular, never assume column pressure, feed thermal condition, reflux condition, product purity, recovery, reflux ratio, boilup ratio, product flow, or optimum-feed-plate use.
+
+    Component IDENTITY and component QUANTITY are separate concepts -- a component name never implies a flow rate, and a single component's flow is never the total feed flow unless the user says so explicitly. Only pass a numeric flow/total_flow/composition value the user actually stated.
+
+    Args:
+        component_names: The FULL, current list of component names for this separation, e.g. ["Water", "Methanol"] -- use this when the user is stating (or restating) which components are in the feed, e.g. "Separate methanol and water" or "I want to separate water, methanol, and butanol." This REPLACES any previously-known component list AND clears any previously-known flows/total_flow/composition (they described the old, different feed). Do not populate this with invented numbers -- just the names.
+        add_component_names: A component name (or names) to ADD to the already-established list, without touching any already-known flow/composition data -- use this specifically when the user is answering "please specify the second component" with just a bare name, e.g. the user previously named one component and now names one more. Do not use this to restate the whole feed; use `component_names` for that.
+        component_flows: Per-component flow rates actually stated by the user this turn, e.g. {"Methanol": 50} or {"Methanol": 40, "Water": 60} -- give only the component(s) whose flow the user actually stated. A single component's flow is NOT the total feed flow -- never infer or pass a value for the other component. Naming the flow of a component not yet in `component_names`/the accumulated state also establishes that component's identity.
+        component_flow_units: Units for `component_flows`, e.g. "kmol/hr".
+        total_flow: The TOTAL feed flow rate, ONLY if the user explicitly described it as the total feed (e.g. "100 kmol/hr total" or "100 kmol/hr, 40% methanol") -- never set this from a single component's stated flow rate.
+        total_flow_units: Units for `total_flow`.
+        composition: Mole or mass fraction(s) actually stated by the user this turn, e.g. {"Methanol": 0.4} or {"Methanol": 0.4, "Water": 0.6} -- give only what was actually stated; do not compute or guess the complementary fraction yourself, the checker derives it when the binary pair is established.
+        composition_basis: "mole" or "mass", if the user specified which.
+        pressure_Pa: Column pressure in Pascal. Never assume 1 atm -- only pass this if the user stated a pressure.
+        feed_temperature_K: Feed temperature in Kelvin. Give at most one of feed_temperature_K/feed_quality/feed_enthalpy_kJ_per_hr -- never assume the feed is at its bubble point.
+        feed_quality: Feed vapor fraction/quality (0 = saturated liquid, 1 = saturated vapor). Alternative to feed_temperature_K.
+        feed_enthalpy_kJ_per_hr: Feed molar enthalpy. Alternative to feed_temperature_K.
+        reflux_condition: Reflux thermal condition. Today only the literal string "saturated_liquid" is recognized -- pass it only once the user has explicitly stated or confirmed saturated-liquid reflux; never assume it silently.
+        xD: Case A/D -- target light-key mole fraction in the distillate.
+        xB: Case A/D -- target light-key mole fraction in the bottoms.
+        Lr: Case B -- target fractional recovery of the light key to the distillate.
+        Hr: Case B -- target fractional recovery of the heavy key to the bottoms.
+        distillate_flow: Case C -- specified distillate flow rate. Give at most one of distillate_flow/bottoms_flow.
+        bottoms_flow: Case C -- specified bottoms flow rate.
+        boilup_ratio_VB: Case D -- specified boilup ratio V/B.
+        external_reflux_ratio_LD: Wankat's external/actual reflux ratio L0/D (Cases A-C) -- what a user normally means by "the reflux ratio". Do NOT confuse with reflux_ratio_multiplier_k; never convert one into the other yourself.
+        reflux_ratio_multiplier_k: An internal shortcut-method reflux multiplier (k = R/Rmin), only if the user explicitly speaks in "x times minimum reflux" terms. Distinct from external_reflux_ratio_LD -- never treat them as interchangeable.
+        use_optimum_feed_plate: Whether the design should use the optimum feed plate. This is common to ALL FOUR cases and is never itself evidence of which case applies -- ask for it separately, and never default it to True.
+
+    Returns:
+        A dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'status', 'would_calculate', 'calculation_performed' (always False), 'message', 'provenance'. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value, and never claim a calculation was performed.
+    """
+    _merge_into_state(dict(
+        component_names=component_names, add_component_names=add_component_names,
+        component_flows=component_flows, component_flow_units=component_flow_units,
+        total_flow=total_flow, total_flow_units=total_flow_units,
+        composition=composition, composition_basis=composition_basis,
+        pressure_Pa=pressure_Pa, feed_temperature_K=feed_temperature_K,
+        feed_quality=feed_quality, feed_enthalpy_kJ_per_hr=feed_enthalpy_kJ_per_hr,
+        reflux_condition=reflux_condition,
+        xD=xD, xB=xB, Lr=Lr, Hr=Hr,
+        distillate_flow=distillate_flow, bottoms_flow=bottoms_flow,
+        boilup_ratio_VB=boilup_ratio_VB,
+        external_reflux_ratio_LD=external_reflux_ratio_LD,
+        reflux_ratio_multiplier_k=reflux_ratio_multiplier_k,
+        use_optimum_feed_plate=use_optimum_feed_plate,
+    ))
+
+    return assess_binary_distillation_problem(_effective_spec())
+
+
+TOOLS = [assess_binary_distillation, reset_workflow_session]
+TOOL_FUNCTIONS = {
+    'assess_binary_distillation': assess_binary_distillation,
+    'reset_workflow_session': reset_workflow_session,
+}
+
+# tools/binary-distillation-workflow.md section 17 -- "Important Behavioral
+# Requirement for Qwen".
+SYSTEM_PROMPT = """You are not the binary-distillation decision engine.
+
+You have access to one engineering tool, `assess_binary_distillation`, and \
+one housekeeping tool, `reset_workflow_session`.
+
+Extract information from the user's message and pass it to \
+`assess_binary_distillation`, the deterministic binary-distillation \
+workflow checker. Never infer a Wankat design case (A, B, C, or D) \
+yourself when the checker has not identified one -- if `case` comes back \
+null and `case_candidates` lists more than one case, present those options \
+(or ask which kind of specification the user wants to give) rather than \
+guessing.
+
+Never invent missing engineering specifications. Never assume pressure, \
+feed thermal condition, reflux thermal condition, product purity, \
+recovery, reflux ratio, boilup ratio, product flow, or whether to use the \
+optimum feed plate -- these must come from the user's own words.
+
+Component identity and component amount are separate concepts. Naming a \
+component (e.g. "separate methanol and water") never implies a flow rate \
+for it -- pass ONLY `component_names` in that case, with no numbers. \
+Likewise, a single component's stated flow rate is never the total feed \
+flow rate -- pass it under `component_flows`, and never pass it as \
+`total_flow` unless the user explicitly says it is the total. Extract only \
+what the current message actually states; do not reconstruct or guess \
+feed information the user has not (yet) given, even partially.
+
+Do NOT perform, describe performing, or claim to have performed any \
+distillation calculation, sizing, or optimization during this conversation \
+-- this tool only checks problem-definition completeness. There is no \
+calculation tool available to you right now, and `calculation_performed` \
+in every tool result is always False.
+
+`assess_binary_distillation` REMEMBERS everything already given about the \
+current separation problem -- you do NOT need to repeat components, \
+pressure, feed condition, or anything else from an earlier call. When the \
+user answers a question you asked, call the tool again with only the NEW \
+field(s) they just gave; never just restate their answer as text. Only call \
+`reset_workflow_session` when the user is clearly switching to a genuinely \
+different, unrelated separation problem, never between ordinary follow-up \
+turns.
+
+## Binary scope only
+
+If `status` comes back `need_components`, ask for the missing component(s) \
+using the tool's own `message`. If `status` comes back \
+`unsupported_multicomponent`, tell the user plainly that only binary (exactly \
+two component) separations are supported right now and ask them to narrow \
+the request -- do NOT silently pick two of the three-or-more components \
+and drop the rest.
+
+## Naming components: `component_names` vs `add_component_names`
+
+Use `component_names` (the FULL list) when the user states or restates the \
+whole separation, e.g. "Separate methanol and water" or "I want to separate \
+water" -- this replaces whatever component list (and any flows/composition) \
+was known before, since it describes what the feed IS, not an addition to \
+it. Use `add_component_names` instead when the user is answering a question \
+you asked for a missing component with just a bare name (e.g. you asked \
+"please specify the second component" and they replied "Methanol") -- this \
+appends to the existing list without discarding any flow/composition data \
+already known. When in doubt (a full new sentence describing the \
+separation vs. a short answer to your own question), prefer `component_names` \
+for the former and `add_component_names` for the latter.
+
+## Feed quantity: `component_flows` vs `total_flow` + `composition`
+
+If the user gives one or more per-component flow rates (e.g. "40 kmol/hr \
+methanol" or "40 kmol/hr methanol, 60 kmol/hr water"), pass exactly what \
+they stated under `component_flows` -- give only the component(s) whose \
+flow was actually stated; never fill in a value for the other component \
+yourself, and never ask for a separate total flow rate if all component \
+flows are already known (the checker derives the total). If the user \
+instead gives a total flow plus fractions/percentages (e.g. "100 kmol/hr, \
+40% methanol"), pass `total_flow` and `composition` instead. If the user \
+gives a single mole/mass fraction for an established binary pair (e.g. "40% \
+methanol"), pass it under `composition` with just that one entry -- do not \
+compute or pass the complementary fraction yourself.
+
+## When `status` is `need_essential_inputs`
+
+`missing_essential_inputs` may include a feed-quantity item (the total feed \
+flow and/or composition are not yet fully determined) alongside pressure, \
+feed thermal condition, and/or reflux condition. Relay the tool's `message` \
+directly -- it already distinguishes "nothing about the feed quantity has \
+been given" from "some feed quantity was given (e.g. one component's flow), \
+but it's not enough to determine the total feed flow and composition yet." \
+Never tell the user their feed is fully defined when it isn't, and never \
+imply a partial quantity (e.g. one component's flow) is the total. Do not \
+discuss Wankat cases A-D yet unless the user has already volunteered \
+case-specific information -- essential inputs come first.
+
+## When `status` is `inconsistent_input`
+
+Redundant feed information was given and it does not agree (e.g. two \
+component flows don't sum to a separately-stated total flow, or a stated \
+mole fraction doesn't match what the component flows imply). Relay the \
+tool's `message`, which names the specific contradiction, and ask the user \
+to clarify which value is correct. Never silently pick one value over the \
+other yourself.
+
+## When `status` is `need_case_definition`
+
+None of the case-distinguishing fields (xD/xB, Lr/Hr, a product flow, or a \
+boilup ratio) have been given yet. Explain, in your own words, the four \
+valid specification sets from the tool's `message` (or `case_candidates` + \
+the general shape: A = compositions + reflux ratio; B = recoveries + \
+reflux ratio; C = one product flow + one composition + reflux ratio; D = \
+compositions + boilup ratio). The user does not need to say "Case A" -- \
+they can just give the engineering quantities and the next call will \
+identify the case automatically. Do NOT ask the user to name a case letter.
+
+## When `status` is `need_case_inputs`
+
+Either the case has narrowed to one or more candidates that are still \
+missing fields (report `missing_case_inputs` for each candidate in \
+`case_candidates`), or the case is fully identified but \
+`optimum_feed_plate_confirmed` is null -- in that situation, ask "Should the \
+design use the optimum feed plate?" Do not treat optimum-feed-plate use as \
+identifying a case; it applies to all four.
+
+## When `status` is `ambiguous`
+
+The given fields directly conflict (e.g. both an external reflux ratio and \
+an internal k were given, or both a recovery and a composition spec were \
+given). Relay the tool's `message` and ask the user to pick one basis. \
+Never silently resolve the conflict yourself.
+
+## When `status` is `ready_for_calculation`
+
+Tell the user their problem is fully specified as Wankat Case `case`, and \
+list exactly the quantities in `would_calculate` as what WOULD be \
+calculated if the calculation stage were enabled. Do not calculate them, \
+approximate them, or imply you have already found their values. This is the \
+stopping point -- end your response here.
+
+## external_reflux_ratio_LD vs reflux_ratio_multiplier_k
+
+If the user states an actual reflux ratio (what they'd normally call "the \
+reflux ratio" or "L/D"), pass it as `external_reflux_ratio_LD`. Only use \
+`reflux_ratio_multiplier_k` if the user explicitly speaks in "x times \
+minimum reflux" terms. Never convert one into the other yourself, and never \
+pass the same number for both.
+
+Never output a bare JSON object as your reply -- JSON only ever appears as \
+tool-call arguments, never as chat text.
+"""
+
+
+def _run_tool_call(call):
+    fn = TOOL_FUNCTIONS.get(call.function.name)
+    if fn is None:
+        return {'error': f'Unknown tool: {call.function.name}'}
+    try:
+        return fn(**call.function.arguments)
+    except Exception as e:
+        return {'error': f'{type(e).__name__}: {e}'}
+
+
+def ask(client, messages):
+    """Send `messages` to the model, resolving any tool calls, and return the final assistant message text."""
+    response = client.chat(model=MODEL, messages=messages, tools=TOOLS, think=False)
+    messages.append(response.message)
+
+    while response.message.tool_calls:
+        for call in response.message.tool_calls:
+            print(f"  [calling {call.function.name}({call.function.arguments})]")
+            result = _run_tool_call(call)
+            messages.append({
+                'role': 'tool',
+                'tool_name': call.function.name,
+                'content': json.dumps(result),
+            })
+        response = client.chat(model=MODEL, messages=messages, tools=TOOLS, think=False)
+        messages.append(response.message)
+
+    return response.message.content
+
+
+def run_repl():
+    client = ollama.Client()
+    messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+
+    print(f"Binary-distillation workflow agent ready (model: {MODEL}). Type 'exit' to quit.")
+    while True:
+        try:
+            user_input = input('\nYou: ').strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if user_input.lower() in ('exit', 'quit'):
+            break
+        if not user_input:
+            continue
+
+        messages.append({'role': 'user', 'content': user_input})
+        reply = ask(client, messages)
+        print(f"\nAssistant: {reply}")
+
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1:
+        client = ollama.Client()
+        messages = [
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': ' '.join(sys.argv[1:])},
+        ]
+        print(ask(client, messages))
+    else:
+        run_repl()

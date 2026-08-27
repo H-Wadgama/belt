@@ -210,7 +210,7 @@ Binary Distillation Problem
 
 ## 4. Important Distinction: User Specifications vs. Internal Model Parameters
 
-The user-facing engineering specification should remain distinct from parameters used internally by a particular simulator.
+The user-facing engineering specification should remain distinct from paramee\ters used internally by a particular simulator.
 
 For example, Wankat Table 3-2 specifies the **external reflux ratio L0/D** for Cases A–C.
 
@@ -356,3 +356,66 @@ Specifically:
 - **Table 3-2:** *Specifications and calculated variables for binary distillation for design problems*
 
 This provenance should be retained if the information is later incorporated into the separations knowledge base, decision engine, prompt context, or binary-distillation tool documentation.
+
+---
+
+## 10. Implementation Status
+
+The structured input-check procedure in section 6 above is implemented in
+`tools/chopper/problem_spec.py`:
+
+- **Step 1** (Table 3-1 essentials) → `check_essential_inputs()`. The feed
+  thermal condition and reflux condition are both required as explicit
+  fields (`feed_temperature_K`/`feed_quality`/`feed_enthalpy_kJ_per_hr`,
+  and `reflux_condition`) with no default value anywhere in the code path
+  — see `tools/chopper/separation_tool.py`, which no longer calls
+  `feed.bubble_point_at_P()` on the caller's behalf.
+- **Steps 2-3** (Table 3-2 case identification + completeness) →
+  `identify_case()`. When the caller has given none of Case A/B/C/D's
+  distinguishing fields (compositions, recoveries, a product flow, a
+  boilup ratio), `identify_case()` returns every case still consistent
+  (`case=None`, `candidates` = every case whose own fields aren't yet
+  contradicted — typically all four) rather than defaulting to Case A; see
+  `tools/binary-distillation-workflow.md` section 7. It narrows to
+  whichever case the caller's fields actually indicate as soon as
+  something case-specific is given.
+- **Step 4** (request missing information, never invent it) →
+  `validate_problem()`'s `message`/`missing_essential_inputs`/
+  `case_candidates`/`missing_case_inputs_by_candidate`/`ambiguous_reason`
+  fields, surfaced by `separation_tool.py`'s `design_separation_case()`
+  and `optimize_separation()` and relayed to the user via each agent's
+  `SYSTEM_PROMPT`. Because an LLM tool-calling loop (particularly a small
+  local model) cannot be relied on to restate the full problem on every
+  follow-up call, `separation_tool.py` also accumulates whatever fields
+  have been given across calls in a session-scoped `_spec_state` dict and
+  validates against that accumulated state, rather than requiring the
+  caller to resupply everything already established every time.
+- **Step 5** (pass to the deterministic engineering layer) →
+  `tools/chopper/case_design.py`'s `design_binary_distillation()`, which
+  also handles distinguishing external reflux ratio (L0/D) from the
+  internal shortcut-method multiplier `k` (section 4 above) by measuring
+  the column's actual minimum reflux ratio when L0/D is given. Only Cases
+  A and B are executable by the current BioSTEAM shortcut engineering
+  layer; Cases C and D are correctly identified but reported as
+  recognized-but-not-yet-implemented (see section 5 above), since the
+  shortcut column has no way to accept a direct product-flow-rate or
+  boilup-ratio specification as an input.
+
+See `tools/separation_tool.md` for the full function-level reference.
+
+**Workflow-only checker layer (`tools/binary-distillation-workflow.md`):**
+`tools/chopper/binary_distillation_workflow.py`'s
+`assess_binary_distillation_problem()` wraps `check_essential_inputs()` and
+`identify_case()` above with the component-count scope gate (section 2 of
+that doc), the optimum-feed-plate confirmation gate (section 12), and a
+`would_calculate` report — all without ever building a feed stream or
+calling BioSTEAM. `tools/chopper/binary_distillation_workflow_agent.py` is
+an isolated tool-calling agent (Option C, section 18) exposing only that
+one function to the model; it does not import `separation_tool.py`,
+`case_design.py`, `optimizer.py`, or BioSTEAM at all, so no distillation
+calculation can happen through it. **Test this agent, not
+`separation_agent.py`/`separation_rag_agent.py`, when checking
+problem-definition/case-routing behavior specifically** — the other two
+still perform real BioSTEAM sizing once a spec is complete. See
+`tools/separation_tool.md`'s "Which agent to test against" table for the
+full comparison.

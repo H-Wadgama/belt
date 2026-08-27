@@ -539,16 +539,19 @@ Three functions:
 | Function | Does |
 |---|---|
 | `check_essential_inputs(spec)` | Step 1: checks Wankat Table 3-1's "usual specified variables" are all present — `pressure_Pa`, `components` (feed flow + composition), a feed thermal condition (**exactly one** of `feed_temperature_K`, `feed_quality`, `feed_enthalpy_kJ_per_hr` — never defaulted, e.g. never silently set to bubble point), and `reflux_condition` (must be stated explicitly; today only the literal string `'saturated_liquid'` is supported, since that's the only condition the underlying shortcut column model implements). |
-| `identify_case(spec)` | Steps 2-3: deterministically matches whichever of `xD`/`xB`, `Lr`/`Hr`, `distillate_flow`/`bottoms_flow`, `boilup_ratio_VB`, `external_reflux_ratio_LD`, `reflux_ratio_multiplier_k` are present against Wankat's Cases A-D (see `tools/binary-distillation-context.md` section 2). Detects genuine conflicts (e.g. both `external_reflux_ratio_LD` *and* `reflux_ratio_multiplier_k` given — these are explicitly **not** the same quantity, see that doc's section 4) as `ambiguous`, and reports, for every case still consistent with what's given so far, exactly which of its fields remain missing. |
+| `identify_case(spec)` | Steps 2-3: deterministically matches whichever of `xD`/`xB`, `Lr`/`Hr`, `distillate_flow`/`bottoms_flow`, `boilup_ratio_VB`, `external_reflux_ratio_LD`, `reflux_ratio_multiplier_k` are present against Wankat's Cases A-D (see `tools/binary-distillation-context.md` section 2). Detects genuine conflicts (e.g. both `external_reflux_ratio_LD` *and* `reflux_ratio_multiplier_k` given — these are explicitly **not** the same quantity, see that doc's section 4) as `ambiguous`, and reports, for every case still consistent with what's given so far, exactly which of its fields remain missing. **No default to Case A** — per `tools/binary-distillation-workflow.md` section 7, when nothing case-distinguishing has been given yet (none of `xD`/`xB`, `Lr`/`Hr`, a product flow, or a boilup ratio), `case_candidates` lists every case still consistent (typically all four, A-D), each with its own missing fields, rather than narrowing to Case A. As soon as something case-specific is actually given (most commonly `Lr`/`Hr`), the candidate set narrows to whichever case that information matches instead. |
 | `validate_problem(spec)` | Runs both of the above and returns one report: `{'valid', 'case', 'case_candidates', 'missing_essential_inputs', 'missing_case_inputs_by_candidate', 'ambiguous', 'ambiguous_reason', 'message', 'provenance'}`. `provenance` always carries the Table 3-1/Table 3-2/full-citation strings (`TABLE_3_1_PROVENANCE`, `TABLE_3_2_PROVENANCE`, `FULL_CITATION` module constants), per that doc's section 9 ("this provenance should be retained ... in the ... binary-distillation tool documentation"). `valid` is `True` only when every Table 3-1 essential is present, unambiguous, and exactly one Case A-D is fully satisfied. |
 
 `validate_problem()` never raises and never picks a value on the caller's
 behalf — callers (`separation_tool.py`) are expected to check `valid`
 before building any feed stream or BioSTEAM unit, and to surface
 `message`/`missing_*`/`ambiguous_reason` back to the user/LLM instead of
-guessing. Running `python problem_spec.py` directly prints five demo
+guessing. Running `python problem_spec.py` directly prints eight demo
 reports (nothing given; a complete Case A; Case A missing `xB`; an
-ambiguous L0/D-and-k spec; a missing feed thermal condition).
+ambiguous L0/D-and-k spec; a missing feed thermal condition; essentials +
+L0/D only — candidates narrow to A/B/C, not D, since D has no reflux ratio;
+essentials only, nothing case-specific — all four cases A-D are candidates;
+only `Lr` given — narrows to Case B).
 
 ## `case_design.py`
 
@@ -592,6 +595,246 @@ The result's `'reflux'` dict always reports `external_reflux_ratio_LD`,
 `'user_specified_internal_k'`) so the two reflux quantities are never
 conflated in the output either. Running `python case_design.py` directly
 demos both conversion paths plus the Case C not-implemented message.
+
+---
+
+# `binary_distillation_workflow.py` + `binary_distillation_workflow_agent.py` — workflow-only checker
+
+Implements `tools/binary-distillation-workflow.md` in full: a binary-
+distillation **problem-definition and workflow-routing** layer that never
+performs a distillation calculation, sizing, or optimization. It is a
+separate, standalone alternative front end onto the same Wankat Table 3-1/
+3-2 logic in `problem_spec.py` above — `case_design.py`/`optimizer.py`
+(and BioSTEAM) are never imported or called from this pair of files.
+
+## `feed_state.py` — feed identity/quantity separation
+
+Implements `tools/binary-distillation-flow-rate-issue.md` in full: the
+feed-state layer `binary_distillation_workflow.py` runs *before* its
+binary-scope gate and Table 3-1/3-2 checks. No BioSTEAM or LLM calls.
+
+The root problem it fixes: an earlier version of the workflow schema used
+a single `components: dict[str, float]` field for both "which chemicals
+are present" and "how much of each" — which meant a tool-calling model
+either had to invent numbers just to name components, or risked treating
+one component's stated flow as the total feed flow. `feed_state.py`
+represents these as separate fields instead: `component_names` (identity,
+`list[str]`), `component_flows` (per-component quantities actually
+stated), `total_flow`, and `composition` — each quantity tagged with its
+own provenance, `'user_explicit'` or `'derived'` (never `'assumed_by_llm'`
+— there is no such state).
+
+| Function | Does |
+|---|---|
+| `empty_feed_state()` | A feed state with no identity and no quantity information. |
+| `apply_user_update(state, update)` | Non-destructive merge of a partial update into `state`. `component_names` in `update` REPLACES the feed's identity and clears any previously-known flows/total_flow/composition (a changed identity invalidates old quantities — e.g. naming a *different* separation after an unsupported 3-component request must not leave stale flows behind). `add_component_names` instead APPENDS to the existing identity without touching known quantities (e.g. answering "please specify the second component" with a bare name). `component_flows`/`composition` are merged key-by-key and marked `'user_explicit'`; naming a component's flow or composition also adds it to `component_names` if not already there — but never the reverse (naming a component never creates a flow). |
+| `normalize_feed_state(state)` | Deterministically derives `total_flow`/`component_flows`/`composition` entries that are mathematically FORCED by what's already `user_explicit` (e.g. both component flows known → total + composition derived; total + all-but-one flow known → the missing flow derived; one of two binary mole fractions known → the complement derived). Never invents a value beyond what the math requires. Also cross-checks redundant explicit values for contradictions (e.g. component flows that don't sum to an explicitly-given total) and returns `(new_state, conflicts)` — a non-empty `conflicts` list means the caller should treat the feed as `inconsistent_input` rather than proceed. |
+| `feed_completeness(state)` | `(feed_flow_complete, feed_composition_complete)` — `feed_flow_complete` is `total_flow is not None`; `feed_composition_complete` is a fraction known (explicit or derived) for every named component. |
+| `assess_feed_state(state)` | Normalize + validate + completeness in one call; also returns the canonical `components` dict (`name -> flow`) the Table 3-1/3-2 layer below expects, populated only once both completeness flags are `True`. |
+
+Running `python feed_state.py` directly prints seven demo reports covering
+component-names-only, a single component flow, both component flows,
+total-flow-plus-one-flow, a single mole fraction, and a deliberately
+inconsistent case (flows summing to 100 vs. an explicit total of 120).
+`tools/chopper/test_feed_state.py` is a pytest suite implementing all
+twelve acceptance tests from the issue doc's section 17, plus merge/
+replace/append and purity (non-mutation) checks. Run with:
+```bash
+pytest tools/chopper/test_feed_state.py -v
+```
+
+## `binary_distillation_workflow.py`
+
+No BioSTEAM or LLM calls — pure field-presence logic, same spirit as
+`problem_spec.py` (which it wraps and reuses `check_essential_inputs()`/
+`identify_case()` from directly) and `feed_state.py` above (which it
+inserts as a layer before everything else). One function:
+
+`assess_binary_distillation_problem(spec)` — runs, in order:
+
+0. **Feed-state normalization** (`feed_state.apply_user_update()` +
+   `feed_state.assess_feed_state()`): builds a feed state from `spec`'s
+   `component_names`/`add_component_names`/`component_flows`/
+   `component_flow_units`/`total_flow`/`total_flow_units`/`composition`/
+   `composition_basis` fields (see `feed_state.py` above), then derives
+   whatever is mathematically determined. If the redundant information
+   given conflicts, returns `status='inconsistent_input'` immediately,
+   naming the specific contradiction.
+1. **Binary-scope gate** (`check_binary_scope()`, workflow doc section 2,
+   updated for the identity/quantity split): counts entries in the
+   normalized state's `component_names` — identity alone, independent of
+   whether a flow is known for each — and returns
+   `status='need_components'` (0 or 1 named) or
+   `status='unsupported_multicomponent'` (3+ named) before checking
+   anything else. Never silently drops a component to force a feed into
+   scope.
+2. **Essential inputs**: the feed's `feed_flow_complete`/
+   `feed_composition_complete` flags (from step 0) are checked directly —
+   a component name is never enough on its own, and a single component's
+   flow is never read as the total. Table 3-1's other three essentials
+   (pressure, feed thermal condition, reflux condition) are still checked
+   via `problem_spec.check_essential_inputs()`. Any of the four missing
+   yields `status='need_essential_inputs'`; the message distinguishes
+   "nothing about the feed quantity has been given yet" from "some feed
+   quantity was given (e.g. one component's flow), but it's not enough" —
+   see `_feed_quantity_message()`.
+3. **Case identification** (`problem_spec.identify_case()`, Table 3-2):
+   `status='ambiguous'` on a genuine conflict; `status='need_case_definition'`
+   when nothing case-distinguishing has been given at all (`case_candidates`
+   lists every case still open, typically all four — **no default to Case
+   A**, workflow doc section 7); `status='need_case_inputs'` once the
+   candidate set has narrowed but a candidate (or the optimum-feed-plate
+   confirmation) is still incomplete.
+4. **Optimum feed plate** (`use_optimum_feed_plate`, workflow doc section
+   12): checked only once a single case is otherwise fully satisfied, and
+   only after step 3 — it never influences case identification, since it's
+   common to all four cases.
+5. **Ready for calculation**: once all of the above are satisfied,
+   `status='ready_for_calculation'` and `would_calculate` lists exactly
+   what a designer would compute for that case (workflow doc section 8;
+   Case C's list depends on which of `distillate_flow`/`bottoms_flow` and
+   `xD`/`xB` was actually given, since the other one is what gets
+   calculated). `calculation_performed` is **always `False`** — this
+   function never builds a feed stream or calls BioSTEAM.
+
+Return schema (workflow doc section 15, extended by
+`tools/binary-distillation-flow-rate-issue.md` section 8/10): `{'valid_binary_scope',
+'component_count', 'components', 'feed_flow_complete',
+'feed_composition_complete', 'feed', 'essential_complete',
+'missing_essential_inputs', 'case', 'case_candidates', 'case_complete',
+'missing_case_inputs', 'optimum_feed_plate_confirmed', 'status',
+'would_calculate', 'calculation_performed', 'message', 'provenance'}`.
+`feed` is the normalized `feed_state` dict (component flows/total flow/
+composition, each with its provenance) — present on every result once the
+scope gate passes, primarily for audit/debugging rather than for the
+caller to reproduce logic from. `status` can also be `'inconsistent_input'`
+when redundant feed information disagreed (e.g. component flows don't sum
+to an explicitly-given total flow). Never raises. Running `python
+binary_distillation_workflow.py` directly prints ten demo reports covering
+the scope gate, component-names-only (no invented flows), a single
+component flow (not treated as the total), missing essentials, an
+inconsistent-input case, the no-case-signal state, boilup-ratio routing to
+Case D, and a complete Case D report.
+
+`tools/chopper/test_binary_distillation_workflow.py` is a pytest suite
+implementing all twelve acceptance tests from the workflow doc's section
+19 (updated for the separated feed-identity/quantity fields), plus checks
+for no-default-to-Case-A, `calculation_performed` always `False`, the
+inconsistent-input/conflicting-composition cases, and the two worked
+examples from `tools/binary-distillation-flow-rate-issue.md` sections
+15-16. Run with:
+```bash
+pytest tools/chopper/test_binary_distillation_workflow.py -v
+```
+
+## `binary_distillation_workflow_agent.py`
+
+The isolated tool-calling agent from workflow doc section 18, Option C
+("Expose only `assess_binary_distillation_problem()` to Qwen in a
+dedicated workflow-testing agent"). Deliberately does **not** import
+`separation_tool.py`, `case_design.py`, `optimizer.py`, or BioSTEAM at
+all — importing this module alone pulls in only `ollama` and
+`binary_distillation_workflow.py`, so no distillation calculation can
+happen through it, by construction rather than by convention.
+
+Two tools are registered: `assess_binary_distillation` (the LLM-facing
+wrapper around `assess_binary_distillation_problem()`) and
+`reset_workflow_session` (clears accumulated state, same discipline as
+`reset_separation_session()` in `separation_tool.py`).
+
+**Cross-call accumulation** works the same way as `separation_tool.py`'s
+`_spec_state` (see that section above): every call merges its non-`None`
+arguments into a module-level `_workflow_state` dict, clearing a stale
+feed-thermal-condition or reflux-quantity field left over from an earlier
+call when a new one of that group is given this call. Simpler than
+`separation_tool.py`'s accumulator in one respect — it has no
+`_STABLE_FIELDS`/`ConflictingResend` check, since Option C's goal is a
+clean, isolated experiment rather than production hardening against a
+drifting feed across turns.
+
+Feed identity/quantity (`component_names`, `add_component_names`,
+`component_flows`, `component_flow_units`, `total_flow`,
+`total_flow_units`, `composition`, `composition_basis`) is accumulated
+separately, in a nested `feed_state`-shaped dict under
+`_workflow_state['feed']`, via `feed_state.apply_user_update()` (see the
+`feed_state.py` section above) rather than the flat non-`None` overwrite
+used for every other field — this is what gives `component_names` its
+REPLACE semantics and `add_component_names` its APPEND semantics (issue
+doc section 12). Only ever-`'user_explicit'` values are kept in this
+accumulator; `_effective_spec()` strips out anything already `'derived'`
+before building the flat spec passed to
+`assess_binary_distillation_problem()`, so that function — the sole place
+derivation actually happens — always sees fresh, correctly-provenanced
+explicit inputs, even though it's called once per turn on the full
+accumulated history.
+
+**No more collapsed `components: dict[str, float]`.** An earlier version
+of this tool accepted feed composition as either `components` (component
+→ flow rate directly) or `total_flow` + `composition` (component →
+mole/mass fraction), normalized by a Form 1/Form 2 helper. That collapsed
+schema is exactly what `tools/binary-distillation-flow-rate-issue.md`
+identifies as the root cause of two failure modes: a model forced to
+invent numbers just to name components (since the dict's values had to be
+numeric even for an identity-only statement), and a single component's
+stated flow silently read as the whole feed. `component_names` (identity)
+and `component_flows`/`total_flow`/`composition` (quantity) are now
+separate tool arguments — see `assess_binary_distillation`'s docstring —
+so naming components never requires a number, and a single component's
+flow is never conflated with the total (workflow doc section 19 Test 11
+still holds: giving both binary component flows is enough to derive the
+total and composition without the model asking for them separately —
+`feed_state.normalize_feed_state()` does this now, not a Form 1/2
+normalizer).
+
+`SYSTEM_PROMPT` implements workflow doc section 17 verbatim in spirit: it
+tells the model it is "not the binary-distillation decision engine",
+instructs it to extract information and pass it to the checker rather than
+inferring a case itself, to never invent pressure/feed condition/reflux
+condition/purity/recovery/reflux ratio/boilup ratio/product flow/optimum-
+feed-plate use, to never claim a calculation was performed (there is no
+calculation tool available to this agent), and to stop — reporting
+`would_calculate` — once `status` comes back `ready_for_calculation`.
+Separate guidance blocks cover each `status` value the checker can return
+(`need_components`/`unsupported_multicomponent`/`inconsistent_input`/
+`need_essential_inputs`/`need_case_definition`/`need_case_inputs`/
+`ambiguous`/`ready_for_calculation`), plus a block distinguishing
+`component_names` (full replace) from `add_component_names` (append) and
+one distinguishing `component_flows` from `total_flow`+`composition`.
+
+**Prerequisites:** same as `separation_agent.py` — a local Ollama server
+running `qwen3:8b` — but does **not** need `biosteam` to be importable, since
+this module never imports it.
+
+**Run it:**
+```bash
+conda activate pyfuel
+cd "tools/chopper"
+
+python binary_distillation_workflow_agent.py                 # interactive REPL
+python binary_distillation_workflow_agent.py "I want to separate methanol and water."   # one-shot
+```
+
+## Which agent to test against
+
+Four different chat entry points exist across this folder and
+`tools/separation_rag_agent.py`. They are not interchangeable — pick based
+on what you're trying to observe:
+
+| Agent | Performs a real BioSTEAM calculation? | Case A ever defaulted? | Needs |
+|---|---|---|---|
+| `binary_distillation_workflow_agent.py` (this section) | **Never** — `assess_binary_distillation`'s `calculation_performed` is always `False`. Use this to test problem-definition/case-routing behavior (scope gate, essential inputs, Case A-D identification, `would_calculate` reporting) in isolation. | No — never did, by design (workflow doc section 7/18). | Ollama + `qwen3:8b` only. Does **not** need `biosteam` importable. |
+| `separation_agent.py` | Yes, once `design_separation_case`/`optimize_separation` gets a complete spec. Use this to test the full calculation pipeline (or the same Case-A-default fix, without the RAG/Chroma overhead below). | No — `problem_spec.identify_case()` no longer defaults to Case A (fixed; previously it did). | Ollama + `qwen3:8b`, `biosteam`. |
+| `separation_rag_agent.py` | Yes, same pipeline as `separation_agent.py`, plus `retrieve_separation_heuristics`. Use this to test the calculation pipeline together with heuristic retrieval, or the merged agent specifically. | No — same fix as above (shared `problem_spec.py`). | Ollama + `qwen3:8b`, `biosteam`, `chromadb` + a seeded Chroma collection (`python tools/chopperRAG/seed_heuristics.py`). |
+| `chopperRAG/query.py` | No BioSTEAM at all — retrieval + heuristic Q&A only, unrelated to binary-distillation case logic. | N/A | Ollama + `qwen3:8b`, `chromadb` + seeded collection. |
+
+If you're specifically verifying "does it still silently pick Case A when
+nothing case-specific was said" or "does it stop before calculating and
+just report what it would calculate", use
+`binary_distillation_workflow_agent.py` — it's the lightest to run and the
+only one of the four that can never perform a calculation, so there's no
+ambiguity about which behavior you're seeing. Use `separation_agent.py` or
+`separation_rag_agent.py` when you actually want the sized/costed column
+back.
 
 ---
 
@@ -662,67 +905,148 @@ separation_agent.py           feeds the tool result back to the model,
 
 ## `separation_tool.py`
 
-Exposes two functions, `design_separation_case(...)` and
-`optimize_separation(...)`, both meant to be passed directly to Ollama's
-`tools=[...]` argument (not called by hand). Ollama's client introspects
-each function's type hints and Google-style docstring (via
-`convert_function_to_tool`) to build the JSON schema the model sees — so
-the signature and each `Args:` line *are* the model's documentation of the
-tool; keep them accurate if the signature changes. In both, `pressure_Pa`
-and `reflux_condition` are required arguments with no default, so Ollama's
-generated schema itself marks them required — the model cannot omit them
-from a call.
+Exposes three functions: `design_separation_case(...)`,
+`optimize_separation(...)`, and `reset_separation_session()`, all meant to
+be passed directly to Ollama's `tools=[...]` argument (not called by
+hand). Ollama's client introspects each function's type hints and
+Google-style docstring (via `convert_function_to_tool`) to build the JSON
+schema the model sees — so the signature and each `Args:` line *are* the
+model's documentation of the tool; keep them accurate if the signature
+changes.
+
+### Cross-call accumulation — why every argument is optional
+
+Every argument on `design_separation_case`/`optimize_separation` defaults
+to `None`. This is deliberate, not a relaxation of the "never assume"
+requirement: a tool-calling model (especially a small local one like
+`qwen3:8b`) cannot be relied on to restate the entire spec on every
+follow-up call — in practice, after being asked for a missing field, it
+will often call back with *only* that one new field. Making every
+argument required (as an earlier version of this tool did) doesn't fix
+that; it just means the follow-up call is either missing required
+arguments (a `TypeError`) or the model reaches for a plausible-sounding
+default to fill the gap itself, which is exactly the silent-assumption
+behavior this whole layer exists to prevent.
+
+Instead, both functions merge whatever they're given into a **module-level
+accumulator**, `_spec_state`, and validate the *accumulated* state, not
+just the current call's arguments:
+
+- `_merge_into_state(new_fields)` copies every non-`None` field from this
+  call into `_spec_state`. Two field groups are mutually exclusive
+  (`_THERMAL_FIELDS` = the three feed-thermal-condition fields;
+  `_REFLUX_QUANTITY_FIELDS` = `external_reflux_ratio_LD` /
+  `reflux_ratio_multiplier_k`): if exactly one member of a group is given
+  in *this* call, the merge clears any other member left over from an
+  *earlier* call first, so a stale choice from a previous turn can never
+  silently linger and create a false conflict against a new one. If more
+  than one member of a group is given in the *same* call, nothing is
+  cleared — both values are set, so `problem_spec.identify_case()`'s own
+  conflict detection (e.g. both `external_reflux_ratio_LD` and
+  `reflux_ratio_multiplier_k` present at once) still fires correctly.
+- `_STABLE_FIELDS` = `components`, `light_key`, `heavy_key` — these
+  identify *which* separation problem this is, not a parameter of it. If a
+  call resends one of these with a value that differs from what's already
+  in `_spec_state`, `_merge_into_state` raises `ConflictingResend` instead
+  of overwriting it; both `design_separation_case` and `optimize_separation`
+  catch this and return `{'valid': False, 'error': 'conflicting_resend',
+  'field', 'previous_value', 'attempted_value', 'message'}` telling the
+  caller to either omit the field (to keep the established feed) or call
+  `reset_separation_session()` first if the feed genuinely changed. This
+  guards against exactly the failure mode a small tool-calling model is
+  prone to: being asked only for a missing field (e.g. pressure) and, on
+  the very next call, fabricating a *different* feed composition instead of
+  omitting `components` — before this check, that silently clobbered the
+  correct accumulated feed with no indication anything had changed. A
+  resend with the *same* value (or omitting the field entirely) is not a
+  conflict and proceeds normally.
+- Both functions then call `problem_spec.validate_problem()` /
+  `check_essential_inputs()` on the full accumulated `_spec_state`, not on
+  the current call's raw arguments — so a call that supplies only a
+  `feed_temperature_K` the model was just asked for is validated against
+  everything given in earlier calls too, and can complete the design even
+  though this call's own arguments look completely partial in isolation.
+- `_missing_keys_check(state)` additionally checks `light_key`/`heavy_key`
+  are present (these identify which feed component is which for BioSTEAM,
+  but aren't Table 3-1/3-2 Wankat variables themselves, so `problem_spec`
+  doesn't check them) and folds any missing ones into the same
+  `missing_essential_inputs` list/message.
+- `reset_separation_session()` clears `_spec_state` entirely. Both
+  system prompts instruct the model to call this only when the user
+  switches to a genuinely different, unrelated separation problem — never
+  between ordinary follow-up turns — since calling it mid-problem would
+  discard information still needed.
+
+`_spec_state` lives for the life of the Python process (one REPL session,
+or one one-shot invocation) — it is not persisted to disk and is not
+shared across separate `python separation_agent.py` invocations.
 
 ### `design_separation_case(...)` — single deterministic Wankat-case design
 
 | Argument | Meaning |
 |---|---|
-| `components`, `light_key`, `heavy_key`, `units` | Same as below — feed composition/flow and key components. |
-| `pressure_Pa` | Column pressure (Pa). **Required, no default.** |
-| `reflux_condition` | Must be the literal string `'saturated_liquid'` — the only reflux thermal condition the engineering layer implements; must be stated explicitly rather than assumed. **Required, no default.** |
-| `feed_temperature_K`, `feed_quality`, `feed_enthalpy_kJ_per_hr` | The feed's thermal condition — give **exactly one**. Never defaulted (no bubble-point fallback); omitting all three is reported as a missing essential input, not silently resolved. |
+| `components`, `light_key`, `heavy_key`, `units` | Same as below — feed composition/flow and key components. Omit on a later call if already given in an earlier one this conversation — the accumulated value is reused. |
+| `pressure_Pa` | Column pressure (Pa). Never defaulted — reported as missing until given in some call. |
+| `reflux_condition` | Must be the literal string `'saturated_liquid'` — the only reflux thermal condition the engineering layer implements; must be stated explicitly rather than assumed. |
+| `feed_temperature_K`, `feed_quality`, `feed_enthalpy_kJ_per_hr` | The feed's thermal condition — give **exactly one** (across however many calls it takes). Never defaulted (no bubble-point fallback); omitting all three (in the accumulated state) is reported as a missing essential input, not silently resolved. |
 | `xD`, `xB` | Case A/D — distillate/bottoms light-key mole fractions. |
-| `Lr`, `Hr` | Case B — fractional recoveries of light key (distillate) and heavy key (bottoms). |
+| `Lr`, `Hr` | Case B — fractional recoveries of light key (distillate) and heavy key (bottoms). Giving either one narrows the accumulated case candidates to Case B. |
 | `distillate_flow`, `bottoms_flow` | Case C — give at most one. |
 | `boilup_ratio_VB` | Case D — boilup ratio V/B. |
-| `external_reflux_ratio_LD` | Wankat's external/actual reflux ratio L0/D (Cases A-C). **Not the same quantity as** `reflux_ratio_multiplier_k` — see `problem_spec.py`/`case_design.py` above; giving both is rejected as ambiguous. |
+| `external_reflux_ratio_LD` | Wankat's external/actual reflux ratio L0/D (Cases A-C). **Not the same quantity as** `reflux_ratio_multiplier_k` — see `problem_spec.py`/`case_design.py` above; giving both (in the accumulated state) is rejected as ambiguous. |
 | `reflux_ratio_multiplier_k` | The internal BioSTEAM shortcut parameter k = R/Rmin (Cases A-C, alternative to `external_reflux_ratio_LD`). |
 | `target` | `'top'` or `'bottom'` — which outlet is labeled `'product'`; doesn't affect case identification. |
 
-Internally: builds a `spec` dict from all the arguments and calls
-`problem_spec.validate_problem(spec)` **before** touching BioSTEAM at all.
-If `not valid`, the function returns that report directly (`{'valid':
-False, 'case', 'missing_essential_inputs', 'case_candidates',
-'missing_case_inputs_by_candidate', 'ambiguous', 'ambiguous_reason',
-'message', 'provenance'}`) — no flowsheet switch, no feed stream, no
-column. Only if valid does it switch to a fresh `bst.main_flowsheet`
-(`sep_agent_{n}`), build the feed with its stated thermal condition via
-`feed.vle(...)` (never `.bubble_point_at_P()`), and call
-`case_design.design_binary_distillation()`, merging that result with the
-`validate_problem()` report (so `case`/`provenance` are always present
+Internally: merges all given arguments into `_spec_state` (see above),
+then calls `problem_spec.validate_problem(_spec_state)` **before** touching
+BioSTEAM at all. If `not valid`, the function returns that report directly
+(`{'valid': False, 'case', 'missing_essential_inputs',
+'case_candidates', 'missing_case_inputs_by_candidate', 'ambiguous',
+'ambiguous_reason', 'message', 'provenance'}`) — no flowsheet switch, no
+feed stream, no column. Only if valid does it switch to a fresh
+`bst.main_flowsheet` (`sep_agent_{n}`), build the feed with its stated
+thermal condition via `feed.vle(...)` (never `.bubble_point_at_P()`), and
+call `case_design.design_binary_distillation()`, merging that result with
+the `validate_problem()` report (so `case`/`provenance` are always present
 alongside the design/`implemented`/`reflux` fields described in the
 `case_design.py` section above).
+
+**No default to Case A.** `problem_spec.identify_case()` (see above) never
+picks a case on its own — whenever nothing case-distinguishing has been
+given yet (no `xD`/`xB`, `Lr`/`Hr`, product flow, or boilup ratio), `case`
+is `null` and `case_candidates` lists every case still consistent
+(typically all four, A-D), each with its own `missing_case_inputs_by_candidate`
+entry. This means the tool (or the model consuming its output) must ask
+which kind of specification the user wants to give, rather than silently
+assuming Case A or asking the user to pick a case letter out of four. As
+soon as the accumulated state contains something case-specific — most
+commonly `Lr`/`Hr` — the candidate set narrows to whichever case that
+information actually matches (Case B for recoveries) instead.
 
 ### `optimize_separation(...)` — cost-optimized reflux sweep
 
 Same purpose as before (sweep `reflux_ratios_k` and return the cheapest
-feasible design), but now:
+feasible design), and shares the same cross-call accumulation, `_spec_state`,
+described above with `design_separation_case` (giving a pressure or feed
+condition to one carries over to the other):
 
 | Argument | Meaning |
 |---|---|
 | `components`, `light_key`, `heavy_key`, `units` | Same as `design_separation_case`. |
-| `pressure_Pa`, `reflux_condition` | **Required, no default** — same meaning as `design_separation_case`. |
-| `feed_temperature_K`, `feed_quality`, `feed_enthalpy_kJ_per_hr` | Feed thermal condition — give exactly one; never defaulted. Replaces the old hardcoded `feed.T = feed.bubble_point_at_P().T`. |
-| `spec`, `target`, `purity_target`, `recovery_target` | Unchanged — same meaning as `optimize_reflux_ratio()`. |
-| `reflux_ratios_k` | Unchanged; the **internal** multiplier sweep, explicitly documented in the docstring as not the external/actual reflux ratio. Defaults to `DEFAULT_REFLUX_RATIOS_K = [1.2, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5]` if omitted. |
+| `pressure_Pa`, `reflux_condition` | Never defaulted — same meaning as `design_separation_case`. |
+| `feed_temperature_K`, `feed_quality`, `feed_enthalpy_kJ_per_hr` | Feed thermal condition — give exactly one (across however many calls); never defaulted. Replaces the old hardcoded `feed.T = feed.bubble_point_at_P().T`. |
+| `spec`, `target`, `purity_target`, `recovery_target` | Unchanged — same meaning as `optimize_reflux_ratio()`. `spec`/`target` fall back to `'purity'`/`'top'` only if never given in any call. |
+| `reflux_ratios_k` | Unchanged; the **internal** multiplier sweep, explicitly documented in the docstring as not the external/actual reflux ratio. Defaults to `DEFAULT_REFLUX_RATIOS_K = [1.2, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5]` if omitted. Not accumulated across calls (always taken from the current call, since re-sweeping with the same list every time would be redundant). |
 
-Internally: calls `problem_spec.check_essential_inputs()` first (Table 3-1
+Internally: merges given arguments into `_spec_state`, then calls
+`problem_spec.check_essential_inputs()` on the accumulated state (Table 3-1
 only — this tool isn't organized around a single Wankat case, so
-`identify_case()` doesn't apply); if anything essential is missing or the
-feed thermal condition is ambiguous/the reflux condition unsupported,
-returns `{'valid': False, 'missing_essential_inputs', ..., 'message',
-'provenance'}` without building anything. Otherwise builds the feed (same
-`feed.vle(...)` pattern, no bubble-point default), calls
+`identify_case()` doesn't apply); also runs the same `light_key`/`heavy_key`
+presence check as `design_separation_case`. If anything essential is
+missing or the feed thermal condition is ambiguous/the reflux condition
+unsupported, returns `{'valid': False, 'missing_essential_inputs', ...,
+'message', 'provenance'}` without building anything. Otherwise builds the
+feed (same `feed.vle(...)` pattern, no bubble-point default), calls
 `optimize_reflux_ratio()`, and returns
 `{'valid': True, 'found', 'message', 'n_feasible', 'n_total', 'best_design', 'key_selection'}`,
 recursively converted from numpy/pandas scalars to plain Python types via
@@ -734,8 +1058,18 @@ docstring's `Returns:` line explicitly tells the model to check
 `key_selection['warning']` before attributing an infeasible result to
 reflux ratio or purity/recovery target.
 
-`TOOLS = [design_separation_case, optimize_separation]` and
-`TOOL_FUNCTIONS = {'design_separation_case': design_separation_case, 'optimize_separation': optimize_separation}`
+### `reset_separation_session()` — clear the accumulator
+
+Clears `_spec_state` entirely and returns `{'reset': True, 'message': ...}`.
+Both `SYSTEM_PROMPT`s instruct the model to call this only when the user
+is clearly switching to a different, unrelated separation problem, never
+between ordinary follow-up turns refining the same one — calling it
+mid-problem would discard fields still needed and reintroduce the exact
+restate-everything burden the accumulation above exists to remove.
+
+`TOOLS = [design_separation_case, optimize_separation, reset_separation_session]`
+and
+`TOOL_FUNCTIONS = {'design_separation_case': design_separation_case, 'optimize_separation': optimize_separation, 'reset_separation_session': reset_separation_session}`
 are the two names `separation_agent.py` imports — the former goes straight
 into Ollama's `tools=` argument, the latter is used to dispatch a tool
 call by name back to the actual Python function.
@@ -747,13 +1081,20 @@ The runnable chat agent. Talks to a **local Ollama server** running
 (both `design_separation_case` and `optimize_separation`) registered.
 `SYSTEM_PROMPT` tells the model: use `design_separation_case` when the
 user has stated (or has been asked for and given) a specific reflux
-ratio; use `optimize_separation` for a cost search; never assume
-pressure, feed thermal condition, or reflux condition — ask instead;
-treat `external_reflux_ratio_LD` and `reflux_ratio_multiplier_k` as
-different quantities and never convert one into the other itself; and
-read `missing_essential_inputs`/`case_candidates`/`ambiguous_reason` back
-to the user verbatim when a call returns `valid: false` rather than
-retrying with a guess. Two modes:
+ratio; use `optimize_separation` for a cost search; **once one of those two
+tools has been used for the current problem, keep calling that same tool on
+every follow-up turn — supplying a previously-missing field or tweaking a
+parameter is never itself a reason to switch tools; only switch when the
+user explicitly changes what kind of answer they want** (a specific design
+vs. a cost search); never assume pressure, feed thermal condition, or
+reflux condition — ask instead; treat `external_reflux_ratio_LD` and
+`reflux_ratio_multiplier_k` as different quantities and never convert one
+into the other itself; read `missing_essential_inputs`/`case_candidates`/
+`ambiguous_reason` back to the user verbatim when a call returns
+`valid: false` rather than retrying with a guess; and if a call returns
+`error: "conflicting_resend"` (see `_STABLE_FIELDS` above), don't retry
+with another guessed feed — either omit the conflicting field or call
+`reset_separation_session()` if the feed genuinely changed. Two modes:
 
 - **Interactive REPL** — `python separation_agent.py`, then type requests
   at the `You:` prompt; `exit`/`quit`/Ctrl+C to leave. Conversation
@@ -842,6 +1183,16 @@ silently assuming bubble point, 1 atm, or saturated-liquid reflux. A
 three-or-more-component feed is not supported yet (see the top-level
 "Scope" note); the model should say so rather than guessing which two
 components to keep.
+
+You do not need to repeat earlier answers when responding to a follow-up
+question — `separation_tool.py` remembers everything already given about
+the current separation problem (see "Cross-call accumulation" in the
+`separation_tool.py` section above), so answering just "350 K" to a
+feed-temperature question is enough; the tool merges it with the pressure,
+components, etc. already established. If you want to start a *different*
+separation problem in the same session, say so explicitly (e.g. "let's do
+a different separation") — the model is instructed to call
+`reset_separation_session()` in that case, but not on ordinary follow-ups.
 
 ---
 
@@ -1041,13 +1392,15 @@ retrieval precision at full-textbook scale, per the README's own
 
 The chopper↔chopperRAG wiring flagged as future work above (now built, in a
 first, prompt-guided form): one Ollama tool-calling agent, `TOOLS =
-[design_separation_case, optimize_separation, retrieve_separation_heuristics]`,
-that decides per turn which tool(s) to call. `design_separation_case` and
-`optimize_separation` are imported unchanged from `chopper/separation_tool.py`
-(see the `problem_spec.py`/`case_design.py` and `separation_tool.py`
-sections above — neither silently completes a missing pressure, feed
-thermal condition, or reflux condition, and neither conflates the external
-reflux ratio L0/D with the internal k = R/Rmin multiplier).
+[design_separation_case, optimize_separation, reset_separation_session, retrieve_separation_heuristics]`,
+that decides per turn which tool(s) to call. `design_separation_case`,
+`optimize_separation`, and `reset_separation_session` are imported
+unchanged from `chopper/separation_tool.py` (see the `problem_spec.py`/
+`case_design.py` and `separation_tool.py` sections above — neither sizing
+tool silently completes a missing pressure, feed thermal condition, or
+reflux condition, neither conflates the external reflux ratio L0/D with
+the internal k = R/Rmin multiplier, and both share the same cross-call
+`_spec_state` accumulator so a follow-up only needs to supply what's new).
 `retrieve_separation_heuristics` is new — a thin wrapper around
 `chopperRAG/query.py`'s `retrieve()` that returns raw matched heuristics +
 hydrated textbook chunks (not a pre-synthesized answer, to avoid a
@@ -1057,6 +1410,25 @@ gets a turn to read and summarize tool output).
 Neither `chopper/separation_agent.py` nor `chopperRAG/query.py` is changed
 or superseded — both remain independently runnable exactly as documented
 above, for standalone testing of each half.
+
+**Tool continuity, and rejecting a drifted feed.** Same as
+`chopper/separation_agent.py`'s `SYSTEM_PROMPT` (see above): once
+`optimize_separation` or `design_separation_case` has been used for the
+current problem, `SYSTEM_PROMPT` here instructs the model to keep calling
+that same tool on every follow-up turn — answering a question the model
+itself asked (a missing pressure, feed condition, etc.) is never grounds to
+switch tools; only an explicit user request to switch between "a specific
+design" and "a cost search" is. This was added after an observed failure
+where a follow-up turn that only supplied pressure and feed temperature
+caused the model to both switch from `optimize_separation` to
+`design_separation_case` *and* resend `components` with a fabricated flow
+rate different from the one established two turns earlier. The second half
+is now also caught in code, not just prompted against: `_STABLE_FIELDS`
+(`components`/`light_key`/`heavy_key`) in `separation_tool.py` reject a
+resend that conflicts with the accumulated value (`ConflictingResend` →
+`{'valid': False, 'error': 'conflicting_resend', ...}`) instead of silently
+overwriting it — see the `_merge_into_state` bullet in the
+`separation_tool.py` section above.
 
 **Heuristic checking is model-decided, not auto-triggered.** `SYSTEM_PROMPT`
 nudges the model to call `retrieve_separation_heuristics` before/alongside a
