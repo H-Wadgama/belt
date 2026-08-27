@@ -67,6 +67,92 @@ _CASE_SIGNAL_FIELDS = (
     'xD', 'xB', 'Lr', 'Hr', 'distillate_flow', 'bottoms_flow', 'boilup_ratio_VB',
 )
 
+# tools/binary-distillation-pending-truth.md -- deterministic pending-request
+# generation. `pending_request` is never stored as separate mutable state; it
+# is recomputed fresh on every call from whatever `spec` currently holds, so
+# it is automatically correct/absent whenever the accumulated problem changes
+# or is reset (section 10) with no extra invalidation logic needed. Fields
+# whose missing-ness is inherently a choice between two things (e.g. "xD or
+# xB", "external_reflux_ratio_LD (or reflux_ratio_multiplier_k)") are never
+# turned into a pending_request -- per section 8, don't guess which of two
+# equally unresolved fields a short reply is meant to answer.
+_PLAIN_CASE_FIELDS = {'xD', 'xB', 'Lr', 'Hr', 'distillate_flow', 'bottoms_flow', 'boilup_ratio_VB'}
+
+_CASE_FIELD_META = {
+    'xD': {'prompt': 'What is the target distillate light-key mole fraction, xD?',
+           'constraints': {'min': 0, 'max': 1}},
+    'xB': {'prompt': 'What is the target bottoms light-key mole fraction, xB?',
+           'constraints': {'min': 0, 'max': 1}},
+    'Lr': {'prompt': 'What is the target fractional recovery of the light key to the distillate, Lr?',
+           'constraints': {'min': 0, 'max': 1}},
+    'Hr': {'prompt': 'What is the target fractional recovery of the heavy key to the bottoms, Hr?',
+           'constraints': {'min': 0, 'max': 1}},
+    'distillate_flow': {'prompt': 'What is the specified distillate flow rate?'},
+    'bottoms_flow': {'prompt': 'What is the specified bottoms flow rate?'},
+    'boilup_ratio_VB': {'prompt': 'What is the specified boilup ratio, V/B?'},
+}
+
+_ESSENTIAL_FIELD_META = {
+    'pressure_Pa': {'prompt': 'What is the column pressure, in Pa?'},
+    'reflux_condition': {
+        'prompt': "Please confirm the reflux thermal condition (currently only 'saturated_liquid' is supported).",
+        'allowed_values': ['saturated_liquid'],
+    },
+}
+
+
+def _case_pending_request(case_candidates, missing_by_candidate):
+    """
+    Build a pending_request for the case-input stage (section 7/8/18),
+    but ONLY when exactly one case candidate remains and every field it
+    still needs is a plain, unambiguous field -- never when multiple
+    candidates remain (which field applies depends on which case the user
+    ultimately picks) or when a remaining item is an "X or Y" choice.
+    """
+    if len(case_candidates) != 1:
+        return None
+    missing = missing_by_candidate.get(case_candidates[0], [])
+    if not missing or any(m not in _PLAIN_CASE_FIELDS for m in missing):
+        return None
+    if len(missing) == 1:
+        field = missing[0]
+        request = {'field': field, 'request_type': 'float', 'prompt': _CASE_FIELD_META[field]['prompt']}
+        if 'constraints' in _CASE_FIELD_META[field]:
+            request['constraints'] = _CASE_FIELD_META[field]['constraints']
+        return request
+    return {
+        'fields': list(missing),
+        'request_type': 'ordered_float_group',
+        'prompt': 'Please provide ' + ', then '.join(missing) + '.',
+    }
+
+
+def _essential_pending_request(other_missing, feed_incomplete, ambiguous_thermal, invalid_reflux_condition):
+    """
+    Build a pending_request for a single missing Table 3-1 essential, but
+    ONLY for the two essentials that are unambiguous single values
+    (pressure_Pa, reflux_condition). The feed thermal condition is a
+    three-way choice and feed quantity is multi-field -- both are left to
+    the existing conversational follow-up rather than guessed at here.
+    """
+    if feed_incomplete or ambiguous_thermal or invalid_reflux_condition or len(other_missing) != 1:
+        return None
+    missing_item = other_missing[0]
+    if missing_item.startswith('pressure_Pa'):
+        return {'field': 'pressure_Pa', 'request_type': 'float', 'prompt': _ESSENTIAL_FIELD_META['pressure_Pa']['prompt']}
+    if missing_item.startswith('reflux_condition'):
+        meta = _ESSENTIAL_FIELD_META['reflux_condition']
+        return {'field': 'reflux_condition', 'request_type': 'string_choice', 'prompt': meta['prompt'], 'allowed_values': meta['allowed_values']}
+    return None
+
+
+_OPTIMUM_FEED_PLATE_PENDING_REQUEST = {
+    'field': 'use_optimum_feed_plate',
+    'request_type': 'boolean_confirmation',
+    'prompt': 'Should the design use the optimum feed plate?',
+    'allowed_values': [True, False],
+}
+
 
 def check_binary_scope(component_names):
     """
@@ -141,7 +227,8 @@ def _base_report(scope, essential_complete=False, missing_essential_inputs=None,
                   case=None, case_candidates=None, case_complete=False,
                   missing_case_inputs=None, optimum_feed_plate_confirmed=None,
                   status=None, would_calculate=None, message='', feed=None,
-                  feed_flow_complete=False, feed_composition_complete=False):
+                  feed_flow_complete=False, feed_composition_complete=False,
+                  pending_request=None):
     return {
         'valid_binary_scope': scope['valid_binary_scope'],
         'component_count': scope['component_count'],
@@ -161,6 +248,12 @@ def _base_report(scope, essential_complete=False, missing_essential_inputs=None,
         'calculation_performed': False,
         'message': message,
         'provenance': PROVENANCE,
+        # tools/binary-distillation-pending-truth.md -- deterministically
+        # identifies the ONE specific field (or ordered field group) this
+        # report is currently asking for, or None. Always recomputed fresh
+        # from `spec` (never separately stored/mutated), so it is
+        # automatically absent/correct after a reset or a problem change.
+        'pending_request': pending_request,
     }
 
 
@@ -241,8 +334,15 @@ def assess_binary_distillation_problem(spec):
     dict -- see module docstring / section 15 of the workflow doc, plus
     'feed_flow_complete', 'feed_composition_complete', and 'feed' (the
     normalized feed state, including per-quantity provenance) from
-    tools/binary-distillation-flow-rate-issue.md section 8/10. Never
-    raises. `calculation_performed` is always False.
+    tools/binary-distillation-flow-rate-issue.md section 8/10, plus
+    'pending_request' (dict or None) from
+    tools/binary-distillation-pending-truth.md section 2/18 -- the single
+    field (`{'field', 'request_type', 'prompt', ...}`) or ordered field
+    group (`{'fields', 'request_type': 'ordered_float_group', 'prompt'}`)
+    this report is currently asking for, or None when nothing is
+    unambiguously pending (including whenever `status` is
+    'ready_for_calculation'). Never raises. `calculation_performed` is
+    always False.
     """
     feed = apply_user_update(empty_feed_state(), spec)
     scope = check_binary_scope(feed['component_names'])
@@ -300,6 +400,10 @@ def assess_binary_distillation_problem(spec):
             status='need_essential_inputs', message=' '.join(parts),
             feed=feed, feed_flow_complete=assessed['feed_flow_complete'],
             feed_composition_complete=assessed['feed_composition_complete'],
+            pending_request=_essential_pending_request(
+                other_missing, feed_incomplete,
+                essential['ambiguous_thermal'], essential['invalid_reflux_condition'],
+            ),
         )
 
     case_info = identify_case(spec)
@@ -315,6 +419,7 @@ def assess_binary_distillation_problem(spec):
 
     if case_info['case'] is None:
         candidates = case_info['candidates']
+        pending_request = None
         if _no_case_signal_given(spec):
             message = (
                 'This does not yet identify a Wankat design case. Provide '
@@ -329,12 +434,14 @@ def assess_binary_distillation_problem(spec):
                 for c in candidates
             ) + '.'
             status = 'need_case_inputs'
+            pending_request = _case_pending_request(candidates, case_info['missing_by_candidate'])
         return _base_report(
             scope, essential_complete=True, case_candidates=candidates,
             missing_case_inputs=case_info['missing_by_candidate'],
             optimum_feed_plate_confirmed=spec.get('use_optimum_feed_plate'),
             status=status, message=message,
             feed=feed, feed_flow_complete=True, feed_composition_complete=True,
+            pending_request=pending_request,
         )
 
     case = case_info['case']
@@ -346,6 +453,7 @@ def assess_binary_distillation_problem(spec):
             status='need_case_inputs',
             message='Should the design use the optimum feed plate?',
             feed=feed, feed_flow_complete=True, feed_composition_complete=True,
+            pending_request=dict(_OPTIMUM_FEED_PLATE_PENDING_REQUEST),
         )
 
     would_calculate = _would_calculate(case, spec)
@@ -357,7 +465,8 @@ def assess_binary_distillation_problem(spec):
             f"Your binary-distillation problem is fully specified as Wankat "
             f"Case {case}. If the calculation stage were enabled, the "
             f"designer would calculate: {', '.join(would_calculate)}. "
-            f"No distillation calculations have been performed."
+            f"This workflow-only agent stops at problem definition, so no "
+            f"distillation calculation is performed here."
         ),
         feed=feed, feed_flow_complete=True, feed_composition_complete=True,
     )

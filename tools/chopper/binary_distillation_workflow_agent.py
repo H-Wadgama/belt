@@ -33,6 +33,7 @@ Or one-shot:
     python binary_distillation_workflow_agent.py "I want to separate methanol and water."
 """
 import json
+import re
 import sys
 
 import ollama
@@ -225,6 +226,107 @@ TOOL_FUNCTIONS = {
     'reset_workflow_session': reset_workflow_session,
 }
 
+
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-pending-truth.md -- deterministic pending-request
+# resolution. A short contextual reply ("Of course!", "0.99") is never
+# resolved by asking the LLM to decide what it means and trusting it to call
+# the WRITE tool correctly -- it is matched here, in Python, against the
+# `pending_request` the deterministic checker itself is currently asking
+# for, and converted straight into a real `update_binary_distillation_problem`
+# call before the model ever gets a turn to fabricate a claim that isn't
+# backed by an actual state change (section 1/4/11 of that doc).
+# ---------------------------------------------------------------------------
+
+_AFFIRMATIVE_PHRASES = {
+    'yes', 'yeah', 'yep', 'sure', 'okay', 'ok', 'of course', 'ofcourse',
+    'thats fine', 'do it', 'use it', 'absolutely', 'sounds good', 'confirmed',
+}
+_NEGATIVE_PHRASES = {
+    'no', 'nope', 'dont', 'do not', 'dont use it', 'not necessary', 'no thanks',
+}
+
+# A genuine short reply to a pending question is short. Capping the word
+# count keeps a longer, unrelated message (e.g. "No, actually let's start
+# over with ethanol and water" -- which happens to start with a negative
+# word) from being misread as an answer to the pending field; it falls
+# through to normal model-driven routing instead (section 6/8).
+_MAX_SHORT_REPLY_WORDS = 6
+
+# Recognized only as an EXACT match once `status == 'ready_for_calculation'`
+# -- section 15. Deliberately not prefix-matched like the boolean phrases
+# above, since these are meant to catch a small, specific set of "proceed"
+# requests, not any sentence that happens to start with "yes".
+_PROCEED_PHRASES = {'yes', 'yes boss', 'go ahead', 'proceed', 'calculate it', 'do it', 'lets go'}
+
+READY_BOUNDARY_MESSAGE = (
+    "The problem is ready for calculation, but this workflow-only agent is "
+    "intentionally limited to problem specification. The calculation layer "
+    "is not enabled here."
+)
+
+
+def normalize_short_reply(text):
+    """Lowercase, strip surrounding whitespace/punctuation noise (section 6) -- e.g. 'Ofcourse!@' -> 'ofcourse', 'YES!!!' -> 'yes', 'nope.' -> 'nope'. Keeps digits, '.', and '-' so numeric replies ('0.99', '-1.5') survive intact."""
+    text = (text or '').strip().lower()
+    text = re.sub(r"[^a-z0-9.\-\s]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.strip('. ')
+
+
+def _matches_short_phrase(normalized, phrases):
+    return normalized in phrases or any(normalized.startswith(p + ' ') for p in phrases)
+
+
+def _resolve_boolean_reply(normalized):
+    if _matches_short_phrase(normalized, _AFFIRMATIVE_PHRASES):
+        return True
+    if _matches_short_phrase(normalized, _NEGATIVE_PHRASES):
+        return False
+    return None
+
+
+def resolve_pending_reply(pending_request, user_text):
+    """
+    Deterministically interpret `user_text` as an answer to
+    `pending_request` (as returned by `assess_binary_distillation_problem`),
+    returning a dict of {field: value} to pass to
+    `update_binary_distillation_problem`, or None if it does not resolve
+    unambiguously. Never guesses -- see the word-count/exact-count guards
+    below, matching tools/binary-distillation-pending-truth.md sections
+    5-8.
+    """
+    if not pending_request:
+        return None
+    normalized = normalize_short_reply(user_text)
+    if not normalized or len(normalized.split()) > _MAX_SHORT_REPLY_WORDS:
+        return None
+
+    request_type = pending_request.get('request_type')
+
+    if request_type == 'boolean_confirmation':
+        value = _resolve_boolean_reply(normalized)
+        return None if value is None else {pending_request['field']: value}
+
+    if request_type == 'float':
+        try:
+            return {pending_request['field']: float(normalized)}
+        except ValueError:
+            return None
+
+    if request_type == 'ordered_float_group':
+        fields = pending_request.get('fields') or []
+        numbers = re.findall(r'-?\d+(?:\.\d+)?', normalized)
+        if not fields or len(numbers) != len(fields):
+            return None
+        return {field: float(n) for field, n in zip(fields, numbers)}
+
+    # 'string_choice' (e.g. reflux_condition) is intentionally not resolved
+    # here -- a bare "yes" is ambiguous as to WHICH string was confirmed
+    # whenever more than one value is ever allowed; leave it to normal
+    # model-driven routing to restate the exact string.
+    return None
+
 # tools/binary-distillation-workflow.md section 17 -- "Important Behavioral
 # Requirement for Qwen".
 SYSTEM_PROMPT = """You are not the binary-distillation decision engine.
@@ -255,6 +357,43 @@ feed composition?"): call `update_binary_distillation_problem` with just \
 the new fact first, then answer the question directly from THAT call's \
 returned state -- it already reflects the merge, so a follow-up \
 `get_binary_distillation_problem` call is unnecessary.
+
+Each user turn permits at most one engineering-state operation. Both READ \
+and WRITE return the full authoritative state. After either operation, \
+answer the user from that result; never request another state tool during \
+the same turn -- the orchestrator will not run it anyway.
+
+## State-truth rule (tools/binary-distillation-pending-truth.md)
+
+The deterministic tool state is the SOLE authority for engineering facts. \
+Never say a field was supplied, confirmed, changed, or derived unless the \
+LATEST tool result actually shows that value in the state -- conversation \
+context may help you understand what the user means, but it never itself \
+changes engineering state. If a user's message answers a pending question, \
+you must call `update_binary_distillation_problem` and see the change in \
+its returned state BEFORE describing it as confirmed, updated, or stored. \
+Never output "confirmed", "updated", "stored", "specified", or an \
+equivalent claim about a field whose value in the latest tool result \
+disagrees with (or is still null/None compared to) what you are about to \
+say.
+
+## `pending_request`: what the checker is currently asking for
+
+Every tool result includes a `pending_request` field: `None` when nothing \
+specific is outstanding, or a dict identifying the ONE field (or ordered \
+field group) the checker is currently waiting on -- e.g. `{'field': \
+'use_optimum_feed_plate', 'request_type': 'boolean_confirmation', \
+'prompt': ...}` or `{'fields': ['xD', 'xB'], 'request_type': \
+'ordered_float_group', ...}`. In most cases the orchestrator already \
+converts a short reply to a live `pending_request` into a \
+`update_binary_distillation_problem` call for you, deterministically, \
+before you see the message -- when that happens you will find the tool \
+result already reflects the new value; describe it from that result rather \
+than re-deriving it yourself. If you ever do see a user message that \
+plainly answers an active `pending_request` but no such WRITE has occurred \
+yet, call `update_binary_distillation_problem` with exactly that field set \
+before replying -- never describe the field as decided based on the user's \
+words alone.
 
 **Reporting a value never makes it a new input.** If a value already exists \
 in state -- whether its provenance is `user_explicit` or `derived` -- \
@@ -395,7 +534,13 @@ Tell the user their problem is fully specified as Wankat Case `case`, and \
 list exactly the quantities in `would_calculate` as what WOULD be \
 calculated if the calculation stage were enabled. Do not calculate them, \
 approximate them, or imply you have already found their values. This is the \
-stopping point -- end your response here.
+stopping point -- end your response here, and do NOT invite the user to \
+proceed (never say anything like "Let me know if you'd like to proceed!") \
+-- there is no calculation path this agent can hand off to. If the user \
+then asks to proceed/calculate/go ahead, tell them plainly that this \
+workflow-only agent stops at problem definition and does not perform the \
+calculation stage -- do not fall back to a generic "what can I help you \
+with?" response, and do not call any tool for this.
 
 ## external_reflux_ratio_LD vs reflux_ratio_multiplier_k
 
@@ -420,13 +565,130 @@ def _run_tool_call(call):
         return {'error': f'{type(e).__name__}: {e}'}
 
 
+# tools/binary-distillation-read-loop-fix-plan.md -- without a bounded
+# per-turn policy, the model can keep re-selecting `get_binary_distillation_problem`
+# (or any other tool) forever, since a READ result changes nothing about
+# which tools are on offer next. The controller below, not the prompt,
+# enforces termination: at most one engineering-state operation (READ or
+# WRITE) per user turn, optionally preceded by one RESET, then a
+# finalization call with no tools exposed so another tool call is
+# impossible.
+MAX_TOOL_CALLS_PER_TURN = 2
+
+_ENGINEERING_TOOLS = ('update_binary_distillation_problem', 'get_binary_distillation_problem')
+
+
+def _fingerprint(call):
+    return (call.function.name, json.dumps(call.function.arguments, sort_keys=True))
+
+
+def _select_allowed_calls(tool_calls, reset_used, engineering_tool_used, fingerprints):
+    """Pick which of this response's requested tool calls may actually run this round, per the per-turn policy: RESET first if not yet used, else at most one engineering call (WRITE preferred over READ), skipping anything already run this turn (by fingerprint)."""
+    reset_call = None
+    write_call = None
+    read_call = None
+    for call in tool_calls:
+        name = call.function.name
+        if name == 'reset_workflow_session' and reset_call is None:
+            reset_call = call
+        elif name == 'update_binary_distillation_problem' and write_call is None:
+            write_call = call
+        elif name == 'get_binary_distillation_problem' and read_call is None:
+            read_call = call
+
+    if reset_call is not None and not reset_used:
+        candidates = [reset_call]
+    elif engineering_tool_used:
+        candidates = []
+    elif write_call is not None:
+        candidates = [write_call]
+    elif read_call is not None:
+        candidates = [read_call]
+    else:
+        candidates = []
+
+    return [call for call in candidates if _fingerprint(call) not in fingerprints]
+
+
+def _chat_with_tools(client, messages):
+    return client.chat(model=MODEL, messages=messages, tools=TOOLS, think=False)
+
+
+def _chat_without_tools(client, messages):
+    return client.chat(model=MODEL, messages=messages, think=False)
+
+
+def _current_user_text(messages):
+    if messages and isinstance(messages[-1], dict) and messages[-1].get('role') == 'user':
+        return messages[-1].get('content')
+    return None
+
+
 def ask(client, messages):
-    """Send `messages` to the model, resolving any tool calls, and return the final assistant message text."""
-    response = client.chat(model=MODEL, messages=messages, tools=TOOLS, think=False)
+    """Send `messages` to the model, resolving any tool calls under the bounded per-turn policy above, and return the final assistant message text.
+
+    Before doing so, tools/binary-distillation-pending-truth.md's
+    deterministic pending-request layer gets first refusal at the current
+    turn (section 4/17): it inspects the CURRENT authoritative state
+    (never conversation history) and, if the user's message plainly
+    resolves an outstanding `pending_request` or is a "proceed" request
+    while `status == 'ready_for_calculation'`, handles the turn directly
+    -- a real WRITE for the former, a fixed boundary response (no state
+    mutation) for the latter -- without ever asking the model to decide
+    what a short reply like "Of course!" means.
+    """
+    user_text = _current_user_text(messages)
+    if user_text is not None:
+        current_state = get_binary_distillation_problem()
+
+        if current_state.get('status') == 'ready_for_calculation':
+            if normalize_short_reply(user_text) in _PROCEED_PHRASES:
+                messages.append({'role': 'assistant', 'content': READY_BOUNDARY_MESSAGE})
+                return READY_BOUNDARY_MESSAGE
+        else:
+            resolved = resolve_pending_reply(current_state.get('pending_request'), user_text)
+            if resolved is not None:
+                print(f"  [pending-request resolved -> calling update_binary_distillation_problem({resolved})]")
+                messages.append({
+                    'role': 'assistant',
+                    'content': None,
+                    'tool_calls': [{'function': {'name': 'update_binary_distillation_problem', 'arguments': resolved}}],
+                })
+                result = update_binary_distillation_problem(**resolved)
+                messages.append({
+                    'role': 'tool',
+                    'tool_name': 'update_binary_distillation_problem',
+                    'content': json.dumps(result),
+                })
+                response = _chat_without_tools(client, messages)
+                messages.append(response.message)
+                return response.message.content
+
+    response = _chat_with_tools(client, messages)
     messages.append(response.message)
 
-    while response.message.tool_calls:
-        for call in response.message.tool_calls:
+    reset_used = False
+    engineering_tool_used = False
+    fingerprints = set()
+    calls_used = 0
+
+    while response.message.tool_calls and calls_used < MAX_TOOL_CALLS_PER_TURN:
+        selected_calls = _select_allowed_calls(
+            response.message.tool_calls,
+            reset_used=reset_used,
+            engineering_tool_used=engineering_tool_used,
+            fingerprints=fingerprints,
+        )
+
+        if not selected_calls:
+            # Nothing left is allowed to run this turn -- finalize from
+            # what we already have instead of looping.
+            break
+
+        for call in selected_calls:
+            if calls_used >= MAX_TOOL_CALLS_PER_TURN:
+                break
+            fingerprints.add(_fingerprint(call))
             print(f"  [calling {call.function.name}({call.function.arguments})]")
             result = _run_tool_call(call)
             messages.append({
@@ -434,7 +696,27 @@ def ask(client, messages):
                 'tool_name': call.function.name,
                 'content': json.dumps(result),
             })
-        response = client.chat(model=MODEL, messages=messages, tools=TOOLS, think=False)
+            calls_used += 1
+
+            if call.function.name == 'reset_workflow_session':
+                reset_used = True
+            elif call.function.name in _ENGINEERING_TOOLS:
+                engineering_tool_used = True
+
+        if engineering_tool_used:
+            # WRITE and READ both return the full authoritative state --
+            # force a prose answer instead of offering another tool call.
+            response = _chat_without_tools(client, messages)
+        else:
+            # Only RESET ran so far; allow one more tool-enabled round so
+            # the model can submit the new problem via WRITE.
+            response = _chat_with_tools(client, messages)
+        messages.append(response.message)
+
+    if response.message.tool_calls:
+        # Hard-stop fallback: budget or policy exhausted but the model
+        # still wants to call something -- force a prose answer.
+        response = _chat_without_tools(client, messages)
         messages.append(response.message)
 
     return response.message.content
