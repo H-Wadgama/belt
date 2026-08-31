@@ -5,7 +5,7 @@ Qwen in a dedicated workflow-testing agent"), refactored per
 tools/binary-distillation-read-vs-append.md to split the single combined
 tool into separate READ and WRITE operations.
 
-This agent exposes FOUR tools to the model:
+This agent exposes FIVE tools to the model:
   - `update_binary_distillation_problem` (WRITE) -- merges newly-stated
     engineering facts into the accumulated problem state, then returns the
     deterministic assessment of the full accumulated state. Call this only
@@ -16,12 +16,18 @@ This agent exposes FOUR tools to the model:
     about information already supplied, derived, or still missing -- never
     resubmit an existing or derived value through the WRITE tool merely to
     answer a question about it.
-  - `calculate_current_binary_distillation_problem` (CALCULATION) -- takes
-    no arguments, reads the accumulated authoritative state directly, and --
-    only once it is `ready_for_calculation` -- runs the deterministic
+  - `calculate_current_binary_distillation_problem` (CALCULATION EXECUTE) --
+    takes no arguments, reads the accumulated authoritative state directly,
+    and -- only once it is `ready_for_calculation` -- runs the deterministic
     BioSTEAM feed-phase calculation from `binary_distillation_calculation.py`.
     See `tools/binary-distillation-connecting-feed-calculation.md`.
-  - `reset_workflow_session` (housekeeping) -- clears all accumulated state.
+  - `get_binary_distillation_calculation_status` (CALCULATION READ) -- takes
+    no arguments, never mutates anything, and never runs BioSTEAM. Reports
+    the most recent calculation result (if any) and its calculation-progress
+    state -- what has been completed, what is next, and what remains. See
+    `tools/binary-distillation-whats-next.md`.
+  - `reset_workflow_session` (housekeeping) -- clears all accumulated state,
+    including the most recent calculation result.
 
 Both engineering (READ/WRITE) tools wrap the same underlying deterministic
 checker, `binary_distillation_workflow.assess_binary_distillation_problem()`.
@@ -43,12 +49,13 @@ Or one-shot:
     python binary_distillation_workflow_agent.py "I want to separate methanol and water."
 """
 import json
+import pprint
 import re
 import sys
 
 import ollama
 
-from binary_distillation_calculation import calculate_binary_distillation_problem
+from binary_distillation_calculation import STEP_FEED_PHASE, calculate_binary_distillation_problem
 from binary_distillation_workflow import assess_binary_distillation_problem
 from feed_state import apply_user_update, empty_feed_state
 
@@ -72,6 +79,15 @@ MODEL = 'qwen3:8b'
 # Every other field (pressure_Pa, thermal condition, xD, etc.) is merged
 # flat, same as before.
 _workflow_state = {'feed': empty_feed_state()}
+
+# tools/binary-distillation-whats-next.md Step 8 -- the most recent
+# deterministic calculation result for the CURRENT problem, or None if no
+# calculation has run yet (or it was invalidated -- see Step 11 below).
+# This is calculation-progress TRUTH: never reconstructed from conversation
+# history, and never written to by anything other than
+# `calculate_current_binary_distillation_problem()`, `reset_workflow_session()`,
+# and the WRITE-invalidation logic in `update_binary_distillation_problem()`.
+_last_calculation_result = None
 
 # Mutually exclusive within the accumulated state: supplying a new member
 # of a group clears any other member left over from an earlier call, so a
@@ -112,8 +128,10 @@ def reset_workflow_session() -> dict:
     Returns:
         {'reset': True, 'message': str} confirming the accumulated state was cleared.
     """
+    global _last_calculation_result
     _workflow_state.clear()
     _workflow_state['feed'] = empty_feed_state()
+    _last_calculation_result = None
     return {'reset': True, 'message': 'All previously remembered problem-definition inputs have been cleared.'}
 
 
@@ -200,7 +218,9 @@ def update_binary_distillation_problem(
     Returns:
         A dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'calculation_performed' (always False), 'message', 'provenance'. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed.
     """
-    _merge_into_state(dict(
+    global _last_calculation_result
+
+    new_fields = dict(
         component_names=component_names, add_component_names=add_component_names,
         component_flows=component_flows, component_flow_units=component_flow_units,
         total_flow=total_flow, total_flow_units=total_flow_units,
@@ -214,7 +234,17 @@ def update_binary_distillation_problem(
         external_reflux_ratio_LD=external_reflux_ratio_LD,
         reflux_ratio_multiplier_k=reflux_ratio_multiplier_k,
         use_optimum_feed_plate=use_optimum_feed_plate,
-    ))
+    )
+
+    # tools/binary-distillation-whats-next.md Step 11 -- a calculation
+    # result already computed for the PREVIOUS engineering state must never
+    # remain authoritative once that state changes. The simplest safe rule:
+    # any successful non-empty engineering WRITE invalidates it, even if
+    # this occasionally invalidates more than strictly necessary.
+    if any(v is not None for v in new_fields.values()):
+        _last_calculation_result = None
+
+    _merge_into_state(new_fields)
 
     return assess_binary_distillation_problem(_effective_spec())
 
@@ -237,24 +267,92 @@ def calculate_current_binary_distillation_problem() -> dict:
 
     The calculation only proceeds when the accumulated problem is `ready_for_calculation`; otherwise this returns `calculation_performed: False` and the same workflow assessment `get_binary_distillation_problem` would -- relay `missing_essential_inputs` / `case_candidates` / `message` from the returned `workflow` and explain what is still needed, rather than guessing the property yourself.
 
-    The calculation pipeline currently evaluates ONLY the feed phase (`checks['feed_phase']`): liquid / vapor / vapor_liquid classification, vapor/liquid fraction, and per-component vapor/liquid molar flows. It does NOT compute distillate/bottoms flow, reflux ratio, reboiler/condenser duty, theoretical stage count, feed stage, or column diameter for the identified Wankat case -- never describe any of those as calculated from this tool's result.
+    The calculation pipeline evaluates the feed phase (`checks['feed_phase']`: liquid / vapor / vapor_liquid classification, vapor/liquid fraction, per-component vapor/liquid molar flows) and, deterministically from that result, a post-feed-phase routing decision (`checks['routing']`, plus `checks['vapor_condensation_screen']` for a vapor feed -- a rigorous BioSTEAM screen at 313.15 K). It does NOT compute distillate/bottoms flow, reflux ratio, reboiler/condenser duty, theoretical stage count, feed stage, or column diameter for the identified Wankat case, and it does NOT design or size any liquid- or vapor-phase separator -- never describe any of those as calculated from this tool's result. Which route applies is decided in Python, never by you.
 
     Returns:
-        {'calculation_performed': bool, 'workflow': <same assessment schema as get_binary_distillation_problem>, 'checks': {'feed_phase': {...}} if calculation_performed else {}}.
+        {'calculation_performed': bool, 'workflow': <same assessment schema as get_binary_distillation_problem>, 'checks': {'feed_phase': {...}, 'routing': {...}, 'vapor_condensation_screen': {...} (vapor feeds only)} if calculation_performed else {}, 'calculation_progress': {...}}.
     """
-    return calculate_binary_distillation_problem(_effective_spec())
+    global _last_calculation_result
+    result = calculate_binary_distillation_problem(_effective_spec())
+    _last_calculation_result = result
+    return result
+
+
+def get_binary_distillation_calculation_status() -> dict:
+    """CALCULATION READ operation: return the most recent deterministic calculation result and its calculation-progress state for the CURRENT binary-distillation problem, WITHOUT performing a new calculation. Takes no arguments and never runs BioSTEAM.
+
+    Call this to answer "what have we calculated?", "what next?", "continue", "what remains?", "where are we?" and similar calculation-PROGRESS questions -- as opposed to `calculate_current_binary_distillation_problem`, which actually runs the calculation, or `get_binary_distillation_problem`, which reports problem-DEFINITION state (inputs given/missing), not what has been calculated.
+
+    Returns:
+        If no calculation has been performed yet (or a prior result was invalidated by a later engineering WRITE or a reset): {'calculation_available': False, 'latest_calculation': None, 'message': str}.
+        Otherwise: {'calculation_available': True, 'latest_calculation': <the full calculate_current_binary_distillation_problem() result, including 'calculation_progress'>, 'message': str} -- 'message' echoes `latest_calculation['calculation_progress']['message']`.
+    """
+    if _last_calculation_result is None:
+        return {
+            'calculation_available': False,
+            'latest_calculation': None,
+            'message': (
+                'No deterministic calculation has been performed for the '
+                'current binary-distillation problem.'
+            ),
+        }
+    return {
+        'calculation_available': True,
+        'latest_calculation': _last_calculation_result,
+        'message': _last_calculation_result['calculation_progress']['message'],
+    }
+
+
+def get_precalculation_progress() -> dict:
+    """
+    Internal (not model-exposed) helper -- tools/binary-distillation-whats-next.md
+    Step 18. Gives "what next?"/"continue" deterministic meaning even BEFORE
+    the first calculation has run, by reading the authoritative workflow
+    state directly. Never mutates state and never runs BioSTEAM.
+    """
+    assessment = get_binary_distillation_problem()
+
+    if assessment['status'] == 'ready_for_calculation':
+        return {
+            'calculation_available': False,
+            'calculation_progress': {
+                'completed_steps': [],
+                'next_step': STEP_FEED_PHASE,
+                'next_step_available': True,
+                'remaining_steps': [STEP_FEED_PHASE],
+                'blocked_reason': None,
+                'message': (
+                    'The problem is ready. The next implemented calculation '
+                    'step is feed-phase evaluation.'
+                ),
+            },
+        }
+
+    return {
+        'calculation_available': False,
+        'calculation_progress': {
+            'completed_steps': [],
+            'next_step': None,
+            'next_step_available': False,
+            'remaining_steps': [],
+            'blocked_reason': 'workflow_not_ready',
+            'message': assessment['message'],
+        },
+    }
 
 
 TOOLS = [
     update_binary_distillation_problem,
     get_binary_distillation_problem,
     calculate_current_binary_distillation_problem,
+    get_binary_distillation_calculation_status,
     reset_workflow_session,
 ]
 TOOL_FUNCTIONS = {
     'update_binary_distillation_problem': update_binary_distillation_problem,
     'get_binary_distillation_problem': get_binary_distillation_problem,
     'calculate_current_binary_distillation_problem': calculate_current_binary_distillation_problem,
+    'get_binary_distillation_calculation_status': get_binary_distillation_calculation_status,
     'reset_workflow_session': reset_workflow_session,
 }
 
@@ -369,6 +467,39 @@ def is_feed_phase_question(text):
     return any(phrase in normalized for phrase in _FEED_PHASE_QUESTION_PHRASES)
 
 
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-whats-next.md Steps 15-16 -- deterministic
+# "what next?"/"continue"/"what remains?" recognition, routed to the
+# calculation-PROGRESS state (never generic LLM reasoning, never a re-ask of
+# already-known inputs). Multi-word phrases are matched by substring (same
+# convention as `_FEED_PHASE_QUESTION_PHRASES` above); the two bare
+# single-word phrases ('next', 'continue') are matched only as the ENTIRE
+# normalized message, so an unrelated sentence that merely contains the
+# word "next" (e.g. "what's the next component?") is not misrouted.
+# ---------------------------------------------------------------------------
+
+_PROGRESS_PHRASES = (
+    'what next', 'what is next', 'whats next',
+    'what do we do next', 'what should we do next',
+    'okay what next', 'ok what next',
+    'what is the next step', 'whats the next step',
+    'where are we',
+    'what remains', 'what is left',
+    'what have we calculated', 'what did we calculate',
+)
+_PROGRESS_PHRASES_EXACT = ('next', 'continue')
+
+
+def is_calculation_progress_question(text):
+    """True if `text` is asking about calculation PROGRESS ("what next?", "continue", "what remains?", "where are we?", "what have we calculated?", ...) -- routed to `get_binary_distillation_calculation_status`/`get_precalculation_progress`, never answered from conversation history or generic LLM reasoning. Deliberately narrow (section: 'Do not make this detector overly broad')."""
+    normalized = normalize_short_reply(text)
+    if not normalized:
+        return False
+    if any(phrase in normalized for phrase in _PROGRESS_PHRASES):
+        return True
+    return normalized in _PROGRESS_PHRASES_EXACT
+
+
 def _matches_short_phrase(normalized, phrases):
     return normalized in phrases or any(normalized.startswith(p + ' ') for p in phrases)
 
@@ -432,20 +563,28 @@ def resolve_pending_reply(pending_request, user_text):
 # Requirement for Qwen".
 SYSTEM_PROMPT = """You are not the binary-distillation decision engine.
 
-You have access to two engineering-state tools, one calculation tool, and \
+You have access to two engineering-state tools, two calculation tools, and \
 one housekeeping tool:
   - `update_binary_distillation_problem` (WRITE) -- use ONLY when the \
 current user message states NEW engineering information.
   - `get_binary_distillation_problem` (READ) -- use when the user asks a \
 question about information already supplied, derived, stored, or still \
 missing. Takes no arguments and never changes anything.
-  - `calculate_current_binary_distillation_problem` (CALCULATION) -- use \
-when the user asks for a calculated/derived thermodynamic result (feed \
+  - `calculate_current_binary_distillation_problem` (CALCULATION EXECUTE) -- \
+use when the user asks for a calculated/derived thermodynamic result (feed \
 phase, vapor fraction, liquid fraction, etc.) about the CURRENT problem. \
 Takes no arguments -- it reads the accumulated state itself. Only runs the \
 actual calculation once the problem is `ready_for_calculation`; otherwise \
 it returns the same not-yet-ready assessment `get_binary_distillation_problem` \
 would.
+  - `get_binary_distillation_calculation_status` (CALCULATION READ) -- use \
+when the user asks about calculation PROGRESS: "what have we calculated?", \
+"what next?", "continue", "what remains?", "where are we?". Takes no \
+arguments, never mutates anything, and never runs a new calculation -- it \
+only reports the most recent calculation result (if any) and what is still \
+unimplemented. In most cases the orchestrator already answers these \
+questions deterministically before you see the message; see the \
+CALCULATION-PROGRESS TRUTH RULE below.
   - `reset_workflow_session` (housekeeping) -- clears everything.
 
 ## Deciding which tool to call: classify every user turn
@@ -466,12 +605,19 @@ feed composition?"): call `update_binary_distillation_problem` with just \
 the new fact first, then answer the question directly from THAT call's \
 returned state -- it already reflects the merge, so a follow-up \
 `get_binary_distillation_problem` call is unnecessary.
+4. **A calculation-PROGRESS question** (e.g. "What next?", "Continue.", \
+"What have we calculated?", "What remains?", "Where are we?"): call \
+`get_binary_distillation_calculation_status` with no arguments. This is \
+NOT the same as category 2 -- it asks what has been CALCULATED, not what \
+inputs have been supplied. The orchestrator usually answers this \
+deterministically before you get a turn; see the CALCULATION-PROGRESS \
+TRUTH RULE below.
 
 Each user turn permits at most one operation from {WRITE, READ, \
-CALCULATION}. All three return a self-contained result. After any one of \
-them runs, answer the user from that result; never request another state \
-or calculation tool during the same turn -- the orchestrator will not run \
-it anyway.
+CALCULATION EXECUTE, CALCULATION READ}. All four return a self-contained \
+result. After any one of them runs, answer the user from that result; \
+never request another state or calculation tool during the same turn -- \
+the orchestrator will not run it anyway.
 
 ## CALCULATED ENGINEERING STATE RULE
 
@@ -505,6 +651,34 @@ call `get_binary_distillation_problem` first to "check" before \
 calculating -- `calculate_current_binary_distillation_problem` already \
 reads the same state. Call `calculate_current_binary_distillation_problem` \
 directly once the authoritative state is `ready_for_calculation`.
+
+## CALCULATION-PROGRESS TRUTH RULE (tools/binary-distillation-whats-next.md)
+
+The deterministic calculation state is the SOLE authority for:
+  - which engineering calculations have been completed
+  - which calculated values are available
+  - what calculation step is available next
+  - what calculation steps remain
+  - whether a remaining step is implemented
+  - whether calculation results are stale or unavailable
+
+Never infer calculation progress from conversation history. Never claim a \
+calculation was completed unless the latest deterministic calculation \
+result lists it in `calculation_progress['completed_steps']`. Never claim a \
+next calculation is available unless `calculation_progress['next_step_available']` \
+is true. Never ask the user to re-enter engineering information merely \
+because they ask "what next?", "continue", "what remains?", or similar --\
+for these, use the calculation-progress state (`get_binary_distillation_calculation_status`), \
+not the problem-definition state.
+
+## DO NOT RE-ASK STORED INPUTS
+
+If the authoritative workflow state already contains components, flows, \
+units, composition, thermal condition, pressure, case-defining variables, \
+reflux condition, and optimum-feed-plate confirmation, do not ask for them \
+again unless the deterministic checker reports that they are missing, \
+inconsistent, or have been invalidated. A question such as "what next?" \
+does not mean the user is starting a new separation problem.
 
 ## State-truth rule (tools/binary-distillation-pending-truth.md)
 
@@ -718,7 +892,46 @@ tool result already in the conversation -- describe exactly what its \
 `checks['feed_phase']` says, and explicitly note that this is the feed-phase \
 check only, not the full Case `case` design (`would_calculate`'s other \
 quantities are still not computed). Do not call any tool yourself for this \
--- the orchestrator has already run it.
+-- the orchestrator has already run it. After that, prefer a short answer \
+built directly from `checks['feed_phase']` and `calculation_progress` -- \
+do not re-open with the full problem-definition summary ("Your problem is \
+fully specified...") again unless the user actually asks about the \
+problem definition.
+
+### Post-feed-phase routing (tools/binary-distillation-feed-vapor-liquid.md)
+
+`checks['feed_phase']['phase']` deterministically decides what happens next \
+-- you never make this choice yourself, and the routing decision is always \
+already present in `checks['routing']` (and, for a vapor feed, also in \
+`checks['vapor_condensation_screen']`) by the time you see the result:
+
+- `phase == 'liquid'`: `checks['routing']['route']` is \
+  `liquid_phase_separation`. State that the feed is liquid and should \
+  proceed to a liquid-phase separation method, which is not implemented in \
+  this pipeline yet. No 313.15 K screen ever runs for a liquid feed.
+- `phase == 'vapor'`: a rigorous BioSTEAM screen at 313.15 K already ran -- \
+  `checks['vapor_condensation_screen']['liquid_percent']`/`vapor_percent` \
+  are the resulting split, and `route` is either \
+  `liquid_and_vapor_separation_future` (>= 50 mol% liquefies -- report BOTH \
+  a future liquid-phase and a future vapor-phase pathway, neither \
+  implemented) or `vapor_separation_advisable` (< 50 mol% liquefies -- a \
+  vapor-phase separation method is advisable, not implemented). State the \
+  percentages exactly as given; never recompute or round them yourself.
+- `phase == 'vapor_liquid'`: the feed was already two-phase at its stated \
+  conditions (no 313.15 K screen runs). Report `checks['routing']`'s \
+  `liquid_fraction`/`vapor_fraction` and state that routing an initially \
+  two-phase feed is not implemented yet.
+
+In every case, `checks['routing']['implemented']` is `False` -- never imply \
+a liquid- or vapor-phase separator was actually designed or sized.
+
+If the user then asks a calculation-PROGRESS question ("what next?", \
+"continue", "what remains?"), the orchestrator answers it deterministically \
+from `calculation_progress` before you see the message (see the \
+CALCULATION-PROGRESS TRUTH RULE above) -- describe exactly what it says \
+(e.g. "feed-phase evaluation is complete; the remaining Case `case` design \
+calculation is not yet implemented") and do not ask for any engineering \
+input again.
 
 ## external_reflux_ratio_LD vs reflux_ratio_multiplier_k
 
@@ -755,18 +968,21 @@ MAX_TOOL_CALLS_PER_TURN = 2
 
 _ENGINEERING_TOOLS = ('update_binary_distillation_problem', 'get_binary_distillation_problem')
 _CALCULATION_TOOL = 'calculate_current_binary_distillation_problem'
+_CALC_STATUS_TOOL = 'get_binary_distillation_calculation_status'
 
 
 def _fingerprint(call):
     return (call.function.name, json.dumps(call.function.arguments, sort_keys=True))
 
 
-def _select_allowed_calls(tool_calls, reset_used, engineering_tool_used, fingerprints, calculation_used=False):
-    """Pick which of this response's requested tool calls may actually run this round, per the per-turn policy: RESET first if not yet used, else at most one "primary operation" -- WRITE preferred over READ preferred over CALCULATION -- skipping anything already run this turn (by fingerprint). tools/binary-distillation-connecting-feed-calculation.md Step 5: CALCULATION is its own operation category, but still counts toward the same one-primary-operation-per-turn budget as the engineering READ/WRITE pair, so a model cannot loop READ -> CALCULATION -> READ -> CALCULATION -> ... within one turn."""
+def _select_allowed_calls(tool_calls, reset_used, engineering_tool_used, fingerprints,
+                           calculation_used=False, calc_status_used=False):
+    """Pick which of this response's requested tool calls may actually run this round, per the per-turn policy: RESET first if not yet used, else at most one "primary operation" -- WRITE preferred over CALCULATION EXECUTE preferred over CALCULATION READ preferred over (state) READ -- skipping anything already run this turn (by fingerprint). tools/binary-distillation-connecting-feed-calculation.md Step 5 / tools/binary-distillation-whats-next.md Step 14: CALCULATION EXECUTE and CALCULATION READ are their own operation categories, but both still count toward the same one-primary-operation-per-turn budget as the engineering READ/WRITE pair, so a model cannot loop READ -> CALCULATION -> READ -> CALCULATION -> ... within one turn."""
     reset_call = None
     write_call = None
     read_call = None
     calculation_call = None
+    calc_status_call = None
     for call in tool_calls:
         name = call.function.name
         if name == 'reset_workflow_session' and reset_call is None:
@@ -777,8 +993,10 @@ def _select_allowed_calls(tool_calls, reset_used, engineering_tool_used, fingerp
             read_call = call
         elif name == _CALCULATION_TOOL and calculation_call is None:
             calculation_call = call
+        elif name == _CALC_STATUS_TOOL and calc_status_call is None:
+            calc_status_call = call
 
-    primary_op_used = engineering_tool_used or calculation_used
+    primary_op_used = engineering_tool_used or calculation_used or calc_status_used
 
     if reset_call is not None and not reset_used:
         candidates = [reset_call]
@@ -786,10 +1004,12 @@ def _select_allowed_calls(tool_calls, reset_used, engineering_tool_used, fingerp
         candidates = []
     elif write_call is not None:
         candidates = [write_call]
-    elif read_call is not None:
-        candidates = [read_call]
     elif calculation_call is not None:
         candidates = [calculation_call]
+    elif calc_status_call is not None:
+        candidates = [calc_status_call]
+    elif read_call is not None:
+        candidates = [read_call]
     else:
         candidates = []
 
@@ -829,20 +1049,52 @@ def _run_calculation_and_finalize(client, messages):
     return response.message.content
 
 
+def _run_progress_query_and_finalize(client, messages):
+    """Deterministically answer a calculation-PROGRESS question ("what next?", "continue", "what remains?", ...) -- tools/binary-distillation-whats-next.md Steps 16-18. Never lets the model decide what has been completed: reads `_last_calculation_result` directly and calls `get_binary_distillation_calculation_status()` if a calculation has already run, or the internal `get_precalculation_progress()` helper otherwise (still zero-argument, still read-only, still no BioSTEAM call). Appends a synthetic assistant-tool-call/tool-result pair (same pattern as `_run_calculation_and_finalize`) so the model's finalization turn can only describe the already-fixed progress state."""
+    if _last_calculation_result is not None:
+        tool_name = _CALC_STATUS_TOOL
+        result = get_binary_distillation_calculation_status()
+    else:
+        tool_name = 'get_precalculation_progress'
+        result = get_precalculation_progress()
+
+    print(f"  [calling {tool_name}({{}})]")
+    messages.append({
+        'role': 'assistant',
+        'content': None,
+        'tool_calls': [{'function': {'name': tool_name, 'arguments': {}}}],
+    })
+    messages.append({
+        'role': 'tool',
+        'tool_name': tool_name,
+        'content': json.dumps(result),
+    })
+    response = _chat_without_tools(client, messages)
+    messages.append(response.message)
+    return response.message.content
+
+
 def ask(client, messages):
     """Send `messages` to the model, resolving any tool calls under the bounded per-turn policy above, and return the final assistant message text.
 
-    Before doing so, two deterministic layers get first refusal at the
-    current turn, in this order (tools/binary-distillation-pending-truth.md
-    section 4/17, tools/binary-distillation-connecting-feed-calculation.md
-    Step 12): it inspects the CURRENT authoritative state (never
-    conversation history) and --
+    Before doing so, deterministic layers get first refusal at the current
+    turn, in this order (tools/binary-distillation-pending-truth.md section
+    4/17, tools/binary-distillation-connecting-feed-calculation.md Step 12,
+    tools/binary-distillation-whats-next.md Step 16): it inspects the
+    CURRENT authoritative state (never conversation history) and --
       1. if the user's message plainly resolves an outstanding
          `pending_request`, converts it directly into a real WRITE;
       2. else if `status == 'ready_for_calculation'` and the message is a
          "proceed" request, runs the (currently feed-phase-only)
          calculation layer and finalizes from its result;
-      3. else if the message explicitly asks a feed-phase/vapor-fraction
+      3. else if the message is a calculation-PROGRESS question
+         (`is_calculation_progress_question` -- "what next?", "continue",
+         "what remains?", ...), answers it deterministically from
+         `get_binary_distillation_calculation_status()` (if a calculation
+         has already run) or `get_precalculation_progress()` (if not) --
+         never from conversation history or generic LLM reasoning, and
+         never by re-asking for engineering inputs already on file;
+      4. else if the message explicitly asks a feed-phase/vapor-fraction
          question (`is_feed_phase_question`) while `status ==
          'ready_for_calculation'`, likewise runs the calculation layer
          deterministically instead of letting the model decide whether to
@@ -879,6 +1131,9 @@ def ask(client, messages):
                 messages.append(response.message)
                 return response.message.content
 
+        if is_calculation_progress_question(user_text):
+            return _run_progress_query_and_finalize(client, messages)
+
         if status == 'ready_for_calculation' and is_feed_phase_question(user_text):
             return _run_calculation_and_finalize(client, messages)
 
@@ -888,6 +1143,7 @@ def ask(client, messages):
     reset_used = False
     engineering_tool_used = False
     calculation_used = False
+    calc_status_used = False
     fingerprints = set()
     calls_used = 0
 
@@ -898,6 +1154,7 @@ def ask(client, messages):
             engineering_tool_used=engineering_tool_used,
             fingerprints=fingerprints,
             calculation_used=calculation_used,
+            calc_status_used=calc_status_used,
         )
 
         if not selected_calls:
@@ -911,6 +1168,9 @@ def ask(client, messages):
             fingerprints.add(_fingerprint(call))
             print(f"  [calling {call.function.name}({call.function.arguments})]")
             result = _run_tool_call(call)
+            print("\n========== RAW TOOL RESULT ==========")
+            pprint.pprint(result, width=100)
+            print("=====================================\n")
             messages.append({
                 'role': 'tool',
                 'tool_name': call.function.name,
@@ -924,11 +1184,13 @@ def ask(client, messages):
                 engineering_tool_used = True
             elif call.function.name == _CALCULATION_TOOL:
                 calculation_used = True
+            elif call.function.name == _CALC_STATUS_TOOL:
+                calc_status_used = True
 
-        if engineering_tool_used or calculation_used:
-            # WRITE, READ, and CALCULATION all return a self-contained
-            # result -- force a prose answer instead of offering another
-            # tool call.
+        if engineering_tool_used or calculation_used or calc_status_used:
+            # WRITE, READ, CALCULATION, and CALCULATION READ all return a
+            # self-contained result -- force a prose answer instead of
+            # offering another tool call.
             response = _chat_without_tools(client, messages)
         else:
             # Only RESET ran so far; allow one more tool-enabled round so

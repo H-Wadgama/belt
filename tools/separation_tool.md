@@ -973,6 +973,29 @@ pytest tools/chopper/test_binary_distillation_workflow_agent.py -v
 extends this coverage to the CALCULATION tool specifically — see "Four
 capabilities" below.
 
+### Raw tool result debug printing (diagnostic only)
+
+Per `tools/chopper/binary-distillation-debugging-prints.md`, the tool-call
+loop inside `ask()` prints the complete raw result of every tool call to
+the terminal, immediately after `_run_tool_call(call)` returns and before
+that result is JSON-serialized into `messages` for Qwen — the exact point
+between steps 3 and 4 of "receive the tool call → invoke the tool → receive
+the return value → pass it back to Qwen." Implemented at
+`binary_distillation_workflow_agent.py:1170-1173`:
+
+```python
+result = _run_tool_call(call)
+print("\n========== RAW TOOL RESULT ==========")
+pprint.pprint(result, width=100)
+print("=====================================\n")
+```
+
+`pprint` is imported at the top of the file (`binary_distillation_workflow_agent.py:52`).
+This is temporary diagnostic logging only — it doesn't touch workflow
+state, tool schemas, prompts, calculation behavior, case-selection logic,
+or the model's own behavior; it only makes the literal dict/JSON a tool
+returns visible in the terminal before it's stringified for Qwen.
+
 ### Deterministic pending-request resolution and the state-truth rule
 
 `tools/binary-distillation-pending-truth.md` fixes an observed failure
@@ -1258,16 +1281,19 @@ pytest tools/chopper/test_feed_phase.py -v
 `calculate_binary_distillation_problem(spec)` — calls
 `assess_binary_distillation_problem(spec)`; if `status !=
 'ready_for_calculation'`, returns `{'calculation_performed': False,
-'workflow': assessment, 'checks': {}}` immediately (no BioSTEAM call at
-all). Otherwise builds the feed and evaluates its phase, returning
-`{'calculation_performed': True, 'workflow': assessment, 'checks':
-{'feed_phase': <result>}}` — a `BiosteamFeedError` from the feed-build step
-is caught and reported as `checks['feed_phase']` with
-`error='feed_build_failed'` rather than propagating. The `checks` dict is
-deliberately shaped to hold future deterministic checks alongside
-`feed_phase` (`relative_volatility`, `azeotrope`, `thermal_stability`,
-`condensability`, `critical_temperature_margin`, ...) without changing this
-function's return shape — none of those are implemented yet.
+'workflow': assessment, 'checks': {}, 'calculation_progress': {...}}`
+immediately (no BioSTEAM call at all). Otherwise builds the feed and
+evaluates its phase, returning `{'calculation_performed': True, 'workflow':
+assessment, 'checks': {'feed_phase': <result>}, 'calculation_progress':
+{...}}` — a `BiosteamFeedError` from the feed-build step is caught and
+reported as `checks['feed_phase']` with `error='feed_build_failed'` rather
+than propagating (still with a populated `calculation_progress`). The
+`checks` dict is deliberately shaped to hold future deterministic checks
+alongside `feed_phase` (`relative_volatility`, `azeotrope`,
+`thermal_stability`, `condensability`, `critical_temperature_margin`, ...)
+without changing this function's return shape — none of those are
+implemented yet. See "Calculation-progress state" below for
+`calculation_progress` itself.
 
 `tools/chopper/test_binary_distillation_calculation.py` covers the
 incomplete-workflow → no-calculation and complete-workflow →
@@ -1294,13 +1320,16 @@ connected to either layer yet — see
 
 `tools/binary-distillation-connecting-feed-calculation.md` gives
 `binary_distillation_workflow_agent.py` a fourth conceptual capability
-alongside WRITE/READ/RESET:
+alongside WRITE/READ/RESET, and
+`tools/binary-distillation-whats-next.md` adds a fifth (see
+"Calculation-progress state" below):
 
 ```text
-WRITE      update_binary_distillation_problem
-READ       get_binary_distillation_problem
-CALCULATE  calculate_current_binary_distillation_problem
-RESET      reset_workflow_session
+WRITE              update_binary_distillation_problem
+READ               get_binary_distillation_problem
+CALCULATE          calculate_current_binary_distillation_problem
+CALCULATION READ   get_binary_distillation_calculation_status
+RESET              reset_workflow_session
 ```
 
 `calculate_current_binary_distillation_problem()` is a **zero-argument**
@@ -1382,6 +1411,157 @@ and `checks['feed_phase']['phase']` is one of `liquid`/`vapor`/
 `vapor_liquid`. Run with:
 ```bash
 pytest tools/chopper/test_binary_distillation_workflow_agent_calculation.py -v
+```
+
+## Calculation-progress state: `calculation_progress`, `_last_calculation_result`, and `get_binary_distillation_calculation_status`
+
+`tools/binary-distillation-whats-next.md` adds a distinct third kind of
+truth, on top of the two the sections above already establish:
+
+```text
+Problem state       = what inputs are known                (assess_binary_distillation_problem)
+Calculation state    = what deterministic calculations have
+                        actually been performed              (calculate_binary_distillation_problem)
+Calculation progress = what is complete, what is next, and
+                        what remains                          (calculation_progress / this section)
+```
+
+Without this layer, a question like "what next?" or "continue" had no
+deterministic answer — it either fell through to generic LLM reasoning (which
+could invent a completed step, or re-ask for inputs already on file) or was
+answered by re-deriving problem-definition state, which does not know
+whether a calculation has actually run. This layer exists so those questions
+are answered the same way engineering facts already are: from Python state,
+never from conversation history.
+
+**`calculation_progress` (`binary_distillation_calculation.py`).** Every
+`calculate_binary_distillation_problem()` result — success, feed-build
+failure, or workflow-not-ready — now includes a `calculation_progress` dict:
+
+| Key | Contents |
+|---|---|
+| `completed_steps` | `list[str]` of stable step IDs that actually completed, derived only from `checks` — e.g. `['feed_phase']` once `checks['feed_phase']['valid'] is True`. Never includes a step whose check is missing or `valid: False`. |
+| `next_step` / `next_step_available` | The next EXECUTABLE step, or `None`/`False`. Always `None`/`False` today — no Case A-D design step is implemented yet (see `STEP_CASE_A_DESIGN`..`STEP_CASE_D_DESIGN` below); reserved for when one ships. |
+| `remaining_steps` | `[STEP_CASE_<case>_DESIGN]` once the workflow has identified a Wankat case, else `[]`. |
+| `remaining_outputs` | The workflow's own `would_calculate` list, echoed here (not duplicated/re-derived) whenever `remaining_steps` is non-empty. |
+| `blocked_reason` | `None` once nothing remains; `'not_implemented'` once feed-phase succeeded but the case design step hasn't shipped; `'calculation_failed'` if the feed-phase check itself errored (e.g. `feed_build_failed`) despite the workflow being ready — **never** reported as a missing-input situation; `'workflow_not_ready'` when `calculate_binary_distillation_problem` never even reached the calculation layer. |
+| `message` | Human-readable summary matching whichever branch above applies. |
+
+Stable step IDs (module-level constants in `binary_distillation_calculation.py`):
+`STEP_FEED_PHASE` (the only one actually executable today),
+`STEP_CASE_A_DESIGN`, `STEP_CASE_B_DESIGN`, `STEP_CASE_C_DESIGN`,
+`STEP_CASE_D_DESIGN` (recognized future steps, not yet implemented).
+`build_calculation_progress(*, assessment, checks)` derives all of this
+purely from the already-computed `assessment`/`checks` — it is never asked
+of the LLM.
+
+**`_last_calculation_result` (`binary_distillation_workflow_agent.py`).**
+A module-level variable holding the most recent
+`calculate_current_binary_distillation_problem()` result for the CURRENT
+problem, or `None`. It is written to in exactly three places:
+
+- `calculate_current_binary_distillation_problem()` — sets it to whatever it
+  computed and returns, every time it runs.
+- `reset_workflow_session()` — clears it back to `None`, alongside the rest
+  of the accumulated state.
+- `update_binary_distillation_problem()` — clears it back to `None`
+  whenever the call actually writes something (any non-`None` argument),
+  since a calculation result computed against the OLD engineering state must
+  never remain authoritative once that state changes. This is deliberately
+  the simplest safe rule ("any successful non-empty engineering WRITE
+  invalidates it") rather than a narrower field-by-field dependency check —
+  it can invalidate more than strictly necessary, but it can never leave a
+  stale result standing.
+
+Conversation history is never consulted for any of this — `_last_calculation_result`
+is calculation-progress TRUTH the same way `_workflow_state` is
+problem-definition TRUTH.
+
+**`get_binary_distillation_calculation_status()`** — the CALCULATION READ
+tool (fifth capability in the table above). Takes no arguments, never
+mutates anything, never runs BioSTEAM:
+
+```python
+# No calculation yet (or invalidated by reset/WRITE):
+{'calculation_available': False, 'latest_calculation': None, 'message': '...'}
+
+# A calculation has run:
+{'calculation_available': True, 'latest_calculation': <full calculate_current_binary_distillation_problem() result>, 'message': <its calculation_progress['message']>}
+```
+
+**`get_precalculation_progress()`** — an internal helper, not registered as
+an Ollama tool, used only by the deterministic "what next?" router below to
+give that question a meaningful answer even BEFORE the first calculation has
+run: if the workflow is already `ready_for_calculation`, it reports
+`next_step='feed_phase'`/`next_step_available=True` directly from the
+workflow assessment (no BioSTEAM call); otherwise it reports
+`blocked_reason='workflow_not_ready'` with the workflow's own `message`.
+
+**Deterministic "what next?"/"continue"/"what remains?" routing.**
+`is_calculation_progress_question(text)` matches a small, fixed phrase set
+(`normalize_short_reply`'d first, same normalization the pending-reply
+resolver uses) — multi-word phrases like `"what remains"`/`"where are we"`
+by substring, and the two bare single-word phrases `"next"`/`"continue"`
+only as the ENTIRE normalized message (so "what's the next component?" is
+not misrouted). In `ask()`, this check runs after pending-reply resolution
+and the "proceed" trigger, before feed-phase-question routing and before any
+model-driven tool selection:
+
+```text
+is_calculation_progress_question(user_text)
+        │
+        ▼
+_last_calculation_result is not None?
+    YES → get_binary_distillation_calculation_status()
+    NO  → get_precalculation_progress()
+        │
+        ▼
+synthetic assistant-tool-call/tool-result pair appended to `messages`
+        │
+        ▼
+_chat_without_tools()  -- model can only explain the fixed result
+```
+
+This reuses the same synthetic-message pattern as
+`_run_calculation_and_finalize`/the pending-reply resolver — the model never
+gets a tool-selection turn for a progress question, so it cannot invent a
+completed step or re-ask for stored inputs.
+
+**Controller precedence (`_select_allowed_calls`).** The per-turn policy
+described above now orders model-selected primary operations as
+`WRITE > CALCULATION EXECUTE > CALCULATION READ > (state) READ` (RESET
+still runs first, once, if requested), and `get_binary_distillation_calculation_status`
+counts toward the same one-primary-operation-per-turn budget as
+WRITE/READ/CALCULATE — so a model cannot loop READ ↔ CALCULATION READ
+within one turn any more than it could loop READ ↔ CALCULATE before.
+
+**`SYSTEM_PROMPT` additions.** A `CALCULATION-PROGRESS TRUTH RULE` block
+states that the deterministic calculation state is the sole authority for
+completed steps, available next steps, and remaining steps — the model must
+never infer any of this from conversation history. A `DO NOT RE-ASK STORED
+INPUTS` block states that a question like "what next?" is never itself
+evidence the user is starting a new problem, and stored inputs must not be
+re-requested unless the deterministic checker actually reports them
+missing/inconsistent/invalidated.
+
+`tools/chopper/test_binary_distillation_calculation_progress.py` covers all
+of this: `calculation_progress` schema correctness (feed-phase completed,
+Case D's `next_step_available=False`/`blocked_reason='not_implemented'`, a
+not-ready workflow's `blocked_reason='workflow_not_ready'`,
+`remaining_outputs` matching `would_calculate`), the
+`get_binary_distillation_calculation_status` READ before/after a
+calculation, reset and WRITE invalidation, and the exact worked
+regression from that doc (complete Case D → "yes" runs the calculation →
+"okay what next" routes to `get_binary_distillation_calculation_status`
+without any `update_binary_distillation_problem` call, never re-asking for
+components/flow/temperature/pressure/xD/xB/boilup ratio/reflux
+condition/optimum feed plate) — plus a "what next?" asked BEFORE any
+calculation has run (routes to `get_precalculation_progress`, reporting
+`next_step='feed_phase'`) and a post-calculation "continue" (reporting
+`next_step_available=False`, never silently performing Case D design). Run
+with:
+```bash
+pytest tools/chopper/test_binary_distillation_calculation_progress.py -v
 ```
 
 ---
