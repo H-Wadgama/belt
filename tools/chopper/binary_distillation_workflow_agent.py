@@ -200,7 +200,7 @@ def update_binary_distillation_problem(
         composition: Mole or mass fraction(s) actually stated by the user this turn, e.g. {"Methanol": 0.4} or {"Methanol": 0.4, "Water": 0.6} -- give only what was actually stated; do not compute or guess the complementary fraction yourself, the checker derives it when the binary pair is established.
         composition_basis: "mole" or "mass", if the user specified which.
         pressure_Pa: Column pressure in Pascal. Never assume 1 atm -- only pass this if the user stated a pressure.
-        feed_temperature_K: Feed temperature in Kelvin. Give at most one of feed_temperature_K/feed_quality/feed_enthalpy_kJ_per_hr -- never assume the feed is at its bubble point.
+        feed_temperature_K: Feed temperature in Kelvin. Give at most one of feed_temperature_K/feed_quality/feed_enthalpy_kJ_per_hr -- never assume the feed is at its bubble point. Whenever the user explicitly states a feed temperature in Kelvin, include it in the SAME call as every other explicit fact from that message -- never omit it merely because pressure, composition, or reflux condition are also present. Examples: "feed temperature is 355 K" -> feed_temperature_K=355; "at 355 K and 101325 Pa" -> feed_temperature_K=355 AND pressure_Pa=101325 together; "the feed enters at 400 K" -> feed_temperature_K=400. Never infer a temperature from an unrelated number (a reflux ratio, xD/xB, a pressure in Pa, or a condenser/reboiler/bottoms temperature) -- only a value the user explicitly ties to the FEED's thermal condition.
         feed_quality: Feed vapor fraction/quality (0 = saturated liquid, 1 = saturated vapor). Alternative to feed_temperature_K.
         feed_enthalpy_kJ_per_hr: Feed molar enthalpy. Alternative to feed_temperature_K.
         reflux_condition: Reflux thermal condition. Today only the literal string "saturated_liquid" is recognized -- pass it only once the user has explicitly stated or confirmed saturated-liquid reflux; never assume it silently.
@@ -437,6 +437,84 @@ def normalize_units_reply(text):
 
 
 # ---------------------------------------------------------------------------
+# tools/binary-distillation-temperature-issue.md -- deterministic explicit
+# feed-temperature extraction. An explicitly Kelvin-suffixed number (e.g.
+# '355 K') is an unambiguous signal for `feed_temperature_K` -- never a
+# quality (0-1, unitless) or an enthalpy -- so it is safe to resolve
+# deterministically without guessing between the three thermal fields.
+# ---------------------------------------------------------------------------
+
+_TEMPERATURE_K_PATTERN = re.compile(r'(-?\d+(?:\.\d+)?)\s*k\b', re.IGNORECASE)
+
+# A short, fixed set of unambiguous phrasings naming the FEED's thermal
+# condition specifically -- deliberately narrow, same convention as
+# `_FEED_PHASE_QUESTION_PHRASES` below. A bare 'NNN K' with none of these
+# phrases is only ever resolved via a live `pending_request` (see
+# `resolve_pending_reply`'s 'temperature_K' branch), never standalone.
+_EXPLICIT_FEED_TEMPERATURE_PHRASES = (
+    'feed temperature', 'feed temp', 'feed is at', 'the feed is at',
+    'feed enters at', 'the feed enters at',
+)
+
+# Step 6 negative examples ("the condenser operates at 355 K", "the bottoms
+# temperature is 355 K") -- a Kelvin value named alongside one of these
+# apparatus words is never assumed to be the FEED thermal condition, even
+# when a feed-thermal-condition pending_request is currently live.
+_NON_FEED_TEMPERATURE_CONTEXT_PHRASES = (
+    'condenser', 'reboiler', 'bottoms', 'distillate', 'overhead', 'column',
+)
+
+# Caps `extract_explicit_feed_temperature_K` to short, standalone
+# restatements ("feed temperature is 355 K", "I think I specified the feed
+# temperature as 355 K") so it never fires on the rich, multi-fact initial
+# problem statement (Step 8/9) -- that one must still be extracted in full
+# by the model in a single WRITE, not shortcut down to temperature alone.
+_MAX_EXPLICIT_TEMPERATURE_WORDS = 12
+
+
+def _extract_temperature_K_value(text):
+    """Find an explicit Kelvin-suffixed number in `text` (e.g. '355 K', '355K', '-40 K') and return it as a float, or None if no such number is present."""
+    match = _TEMPERATURE_K_PATTERN.search(text or '')
+    return None if match is None else float(match.group(1))
+
+
+def _names_non_feed_apparatus(lowered_text):
+    return any(phrase in lowered_text for phrase in _NON_FEED_TEMPERATURE_CONTEXT_PHRASES)
+
+
+def extract_explicit_feed_temperature_K(user_text):
+    """Deterministically recognize a short, standalone statement that explicitly names the FEED thermal condition together with an explicit Kelvin value (tools/binary-distillation-temperature-issue.md Step 6, case 2) -- e.g. 'feed temperature is 355 K', 'the feed enters at 400 K'. Returns the float value, or None if `user_text` does not unambiguously state it.
+
+    Requires one of `_EXPLICIT_FEED_TEMPERATURE_PHRASES` -- a bare 'NNN K'
+    with no feed-temperature wording is never resolved here; that case is
+    only ever handled via a live `pending_request` (see
+    `resolve_pending_reply`). Excludes messages that name a different
+    apparatus (condenser, reboiler, bottoms, distillate, overhead, column --
+    Step 6's negative examples) and is capped at
+    `_MAX_EXPLICIT_TEMPERATURE_WORDS` words so it only catches a short
+    restatement, never the long multi-fact initial problem statement.
+    """
+    if not user_text:
+        return None
+    lowered = user_text.lower()
+    if len(lowered.split()) > _MAX_EXPLICIT_TEMPERATURE_WORDS:
+        return None
+    if not any(phrase in lowered for phrase in _EXPLICIT_FEED_TEMPERATURE_PHRASES):
+        return None
+    if _names_non_feed_apparatus(lowered):
+        return None
+    return _extract_temperature_K_value(user_text)
+
+
+def _feed_thermal_condition_missing(state):
+    """True if the deterministic assessment currently reports the feed thermal condition (feed_temperature_K/feed_quality/feed_enthalpy_kJ_per_hr) as not yet given -- regardless of whether other essentials are also missing. Used to gate `extract_explicit_feed_temperature_K`'s standalone (no-pending-request) resolution to only when the field is genuinely still open."""
+    return any(
+        item.startswith('feed thermal condition')
+        for item in (state.get('missing_essential_inputs') or [])
+    )
+
+
+# ---------------------------------------------------------------------------
 # tools/binary-distillation-connecting-feed-calculation.md Steps 8-10 --
 # explicit feed-phase/vapor-fraction questions are calculation questions,
 # never something the model should answer from remembered chemical
@@ -524,11 +602,26 @@ def resolve_pending_reply(pending_request, user_text):
     """
     if not pending_request:
         return None
+
+    request_type = pending_request.get('request_type')
+
+    # Checked on the RAW text, before the general short-reply word cap
+    # below: a corrective restatement ("I think I specified the feed
+    # temperature as 355 K") legitimately runs longer than a bare
+    # confirmation, and the 'K' suffix is itself an unambiguous signal --
+    # never a quality (0-1) or an enthalpy -- so it is safe to resolve
+    # regardless of message length. Still excludes a value explicitly tied
+    # to a different apparatus (tools/binary-distillation-temperature-issue.md
+    # Step 6).
+    if request_type == 'temperature_K':
+        if _names_non_feed_apparatus((user_text or '').lower()):
+            return None
+        value = _extract_temperature_K_value(user_text)
+        return None if value is None else {pending_request['field']: value}
+
     normalized = normalize_short_reply(user_text)
     if not normalized or len(normalized.split()) > _MAX_SHORT_REPLY_WORDS:
         return None
-
-    request_type = pending_request.get('request_type')
 
     if request_type == 'boolean_confirmation':
         value = _resolve_boolean_reply(normalized)
@@ -815,6 +908,34 @@ The deterministic checker still rejects the problem as \
 extract here -- but extracting them correctly the first time means you \
 won't have to ask for them separately afterward.
 
+## FEED TEMPERATURE EXTRACTION RULE
+
+Whenever the user explicitly states a feed temperature in Kelvin -- alone \
+or together with other facts in the same message (e.g. "Separate water \
+and ethanol at 355 K and 101325 Pa pressure, ..." or "the feed is 50 \
+kmol/hr ethanol and 50 kmol/hr water at 355 K and 101325 Pa") -- include \
+`feed_temperature_K` in the SAME `update_binary_distillation_problem` call \
+as every other explicit fact from that message. Do not drop it merely \
+because pressure, composition, or reflux condition are also present in the \
+same sentence: "at 355 K and 101325 Pa" must produce BOTH \
+`feed_temperature_K=355` and `pressure_Pa=101325` together, not just one of \
+the two. Give at most one of feed_temperature_K/feed_quality/ \
+feed_enthalpy_kJ_per_hr -- never assume or default the feed's thermal \
+condition, and never infer a temperature from an unrelated number (a \
+reflux ratio, xD/xB, or a pressure in Pa).
+
+If the user later restates or corrects the feed temperature (e.g. "I think \
+I specified the feed temperature as 355 K", "It was 355 K", "355 K"), that \
+is new engineering information supplying a currently missing or corrected \
+field -- call `update_binary_distillation_problem` with `feed_temperature_K` \
+set, never `get_binary_distillation_problem`. In most cases the \
+orchestrator already recognizes this deterministically and performs the \
+WRITE for you before you see the message (see `pending_request` below); if \
+it hasn't, do it yourself rather than looking the value up. A READ is only \
+for a genuine question about what is currently stored (e.g. "What feed \
+temperature do you currently have on file?"), never for a statement that \
+supplies or restates a value.
+
 ## When `status` is `need_essential_inputs`
 
 `missing_essential_inputs` may include a feed-quantity item (the total feed \
@@ -1084,10 +1205,19 @@ def ask(client, messages):
     Before doing so, deterministic layers get first refusal at the current
     turn, in this order (tools/binary-distillation-pending-truth.md section
     4/17, tools/binary-distillation-connecting-feed-calculation.md Step 12,
-    tools/binary-distillation-whats-next.md Step 16): it inspects the
-    CURRENT authoritative state (never conversation history) and --
+    tools/binary-distillation-whats-next.md Step 16,
+    tools/binary-distillation-temperature-issue.md Steps 5-7): it inspects
+    the CURRENT authoritative state (never conversation history) and --
       1. if the user's message plainly resolves an outstanding
-         `pending_request`, converts it directly into a real WRITE;
+         `pending_request`, converts it directly into a real WRITE (this
+         includes an explicit Kelvin-suffixed reply, e.g. '355 K', when the
+         live pending field is the feed thermal condition);
+      1b. else, if the feed thermal condition is still missing (whether or
+         not anything else is currently pending) and the message explicitly
+         and unambiguously names the FEED's temperature in Kelvin (e.g.
+         'feed temperature is 355 K') -- as opposed to a bare number, or a
+         value tied to a different apparatus like a condenser or reboiler --
+         likewise converts it directly into a real WRITE;
       2. else if `status == 'ready_for_calculation'` and the message is a
          "proceed" request, runs the (currently feed-phase-only)
          calculation layer and finalizes from its result;
@@ -1118,6 +1248,10 @@ def ask(client, messages):
                 return _run_calculation_and_finalize(client, messages)
         else:
             resolved = resolve_pending_reply(current_state.get('pending_request'), user_text)
+            if resolved is None and _feed_thermal_condition_missing(current_state):
+                temperature_value = extract_explicit_feed_temperature_K(user_text)
+                if temperature_value is not None:
+                    resolved = {'feed_temperature_K': temperature_value}
             if resolved is not None:
                 print(f"  [pending-request resolved -> calling update_binary_distillation_problem({resolved})]")
                 messages.append({

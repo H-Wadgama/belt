@@ -129,11 +129,18 @@ def _case_pending_request(case_candidates, missing_by_candidate):
 
 def _essential_pending_request(other_missing, feed_incomplete, ambiguous_thermal, invalid_reflux_condition):
     """
-    Build a pending_request for a single missing Table 3-1 essential, but
-    ONLY for the two essentials that are unambiguous single values
-    (pressure_Pa, reflux_condition). The feed thermal condition is a
-    three-way choice and feed quantity is multi-field -- both are left to
-    the existing conversational follow-up rather than guessed at here.
+    Build a pending_request for a single missing Table 3-1 essential.
+    Feed quantity is multi-field and is left to the existing conversational
+    follow-up rather than guessed at here. The feed thermal condition is a
+    three-way choice (feed_temperature_K/feed_quality/feed_enthalpy_kJ_per_hr)
+    -- this function still does not guess WHICH of the three a bare short
+    reply answers, so it never generates a 'boolean_confirmation'-style
+    pending_request for it. It DOES report the field as
+    `request_type: 'temperature_K'` (tools/binary-distillation-temperature-issue.md
+    Step 5) -- the resolver for that type only ever resolves an unambiguous,
+    explicitly Kelvin-suffixed reply (e.g. '355 K'), never a bare number,
+    so a reply naming feed_quality or feed_enthalpy instead is still left
+    to normal model-driven routing rather than being forced through.
     """
     if feed_incomplete or ambiguous_thermal or invalid_reflux_condition or len(other_missing) != 1:
         return None
@@ -143,6 +150,16 @@ def _essential_pending_request(other_missing, feed_incomplete, ambiguous_thermal
     if missing_item.startswith('reflux_condition'):
         meta = _ESSENTIAL_FIELD_META['reflux_condition']
         return {'field': 'reflux_condition', 'request_type': 'string_choice', 'prompt': meta['prompt'], 'allowed_values': meta['allowed_values']}
+    if missing_item.startswith('feed thermal condition'):
+        return {
+            'field': 'feed_temperature_K',
+            'request_type': 'temperature_K',
+            'prompt': (
+                'What is the feed thermal condition? If you know the feed '
+                'temperature, give it in Kelvin (e.g. "355 K") -- otherwise '
+                'state the feed quality (0-1) or feed enthalpy instead.'
+            ),
+        }
     return None
 
 
