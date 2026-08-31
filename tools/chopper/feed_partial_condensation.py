@@ -1,15 +1,19 @@
 """
-Deterministic vapor-feed reference-temperature partial-condensation screen.
+Deterministic reference-temperature partial-condensation screen.
 
-See `tools/binary-distillation-feed-vapor-liquid.md` Steps 2-8. Once a feed
-has already been classified as fully vapor by `feed_phase.evaluate_feed_phase`,
-this module answers the next deterministic question: does cooling (or
-heating) that feed to a fixed reference temperature (313.15 K / ~40 C, a
-common heat-exchanger utility-water screening point) cause it to partially
-condense? BioSTEAM's `HXutility` with `rigorous=True` is the sole source of
-the resulting vapor/liquid split -- this module never estimates or infers
-that split itself, only reads it back out of the simulated outlet stream and
-classifies it against a fixed threshold.
+See `tools/binary-distillation-feed-vapor-liquid.md` Steps 2-8 and
+`tools/binary-distillation-vapor-liquid-dead-end.md`. Once a feed has already
+been classified by `feed_phase.evaluate_feed_phase` as containing a vapor
+fraction -- entirely vapor, or already a vapor-liquid mixture -- this module
+answers the next deterministic question: what is the overall feed's
+equilibrium liquid/vapor split after conditioning it to a fixed reference
+temperature (313.15 K / ~40 C, a common heat-exchanger utility-water
+screening point)? BioSTEAM's `HXutility` with `rigorous=True` is the sole
+source of the resulting vapor/liquid split -- this module never estimates or
+infers that split itself, only reads it back out of the simulated outlet
+stream and classifies it against a fixed threshold. The overall feed
+(whatever its initial vapor/liquid split) is conditioned as a whole -- the
+initial vapor portion is never carved out and conditioned on its own.
 
 No LLM calls -- this module must never import `ollama` or `openai`.
 """
@@ -27,8 +31,9 @@ def evaluate_vapor_feed_at_reference_temperature(
     reference_temperature_K=REFERENCE_TEMPERATURE_K,
 ):
     """
-    Cool/heat a copy of `feed` -- already known to be entirely vapor at
-    `initial_temperature_K`/`pressure_Pa` (from `evaluate_feed_phase`) -- to
+    Condition a copy of the overall `feed` -- already known (from
+    `evaluate_feed_phase`) to be entirely vapor, or already a vapor-liquid
+    mixture, at `initial_temperature_K`/`pressure_Pa` -- to
     `reference_temperature_K` via a rigorous BioSTEAM `HXutility` VLE flash,
     and deterministically route based on the resulting liquid fraction.
 
@@ -37,7 +42,10 @@ def evaluate_vapor_feed_at_reference_temperature(
     feed : bst.Stream
         The canonical 2-component feed (e.g. from
         `biosteam_feed.build_biosteam_feed`). Never mutated -- a copy is
-        forced into the known vapor state and passed through the exchanger.
+        brought to its known equilibrium state at `initial_temperature_K`/
+        `pressure_Pa` (whether that is entirely vapor or a vapor-liquid
+        mixture) and passed through the exchanger as a whole; the initial
+        vapor portion is never extracted and conditioned on its own.
     pressure_Pa : float
         Feed/column pressure, Pa. Held constant through the exchanger.
     initial_temperature_K : float
@@ -82,12 +90,15 @@ def evaluate_vapor_feed_at_reference_temperature(
         else:
             operation = 'none'
 
-        # Never mutate the canonical feed -- copy first, then force the copy
-        # into the already-known vapor state before the exchanger runs.
+        # Never mutate the canonical feed -- copy first, then bring the copy
+        # to its actual equilibrium state at the initial conditions (a
+        # rigorous BioSTEAM VLE flash, not an assumption). For a feed already
+        # known to be entirely vapor this reproduces that vapor state; for a
+        # feed already known to be a vapor-liquid mixture this reproduces the
+        # overall mixed-phase state -- either way the whole feed goes into
+        # the exchanger, never only its vapor portion.
         feed_copy = feed.copy()
-        feed_copy.phase = 'g'
-        feed_copy.T = initial_temperature_K
-        feed_copy.P = pressure_Pa
+        feed_copy.vle(T=initial_temperature_K, P=pressure_Pa)
 
         heatex = bst.units.HXutility(ins=feed_copy, T=reference_temperature_K, rigorous=True)
         heatex.simulate()

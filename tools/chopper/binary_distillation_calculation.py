@@ -29,15 +29,16 @@ from feed_phase import evaluate_feed_phase
 # they're implemented.
 STEP_FEED_PHASE = 'feed_phase'
 
-# tools/binary-distillation-feed-vapor-liquid.md Step 12 -- deterministic
+# tools/binary-distillation-feed-vapor-liquid.md Step 12, updated by
+# tools/binary-distillation-vapor-liquid-dead-end.md -- deterministic
 # post-feed-phase routing steps. STEP_VAPOR_CONDENSATION_SCREEN is the only
-# one of these that actually runs BioSTEAM; the separation-pathway steps are
-# recognized-but-not-implemented endpoints this pipeline intentionally stops
-# at (see that doc's "Expected architecture after this change").
+# one of these that actually runs BioSTEAM, and now runs for a feed that
+# starts out entirely vapor OR already a vapor-liquid mixture; the
+# separation-pathway steps are recognized-but-not-implemented endpoints this
+# pipeline intentionally stops at (see that doc's "Target architecture").
 STEP_VAPOR_CONDENSATION_SCREEN = 'vapor_condensation_screen'
 STEP_LIQUID_PHASE_SEPARATION = 'liquid_phase_separation'
 STEP_VAPOR_PHASE_SEPARATION = 'vapor_phase_separation'
-STEP_TWO_PHASE_ROUTING = 'two_phase_feed_routing'
 
 # Reserved for once a Wankat Case A-D design step (case_design.py) is wired
 # into this pipeline -- not reachable today, since post-feed-phase routing
@@ -107,11 +108,15 @@ def build_calculation_progress(*, assessment, checks):
             'message': message,
         }
 
-    # tools/binary-distillation-feed-vapor-liquid.md Step 12 -- once
-    # feed-phase evaluation itself succeeded, deterministic routing (not the
-    # old case-design assumption) determines what remains. Every branch here
-    # is an intentionally unimplemented downstream pathway -- see that doc's
-    # "Expected architecture after this change".
+    # tools/binary-distillation-feed-vapor-liquid.md Step 12, updated by
+    # tools/binary-distillation-vapor-liquid-dead-end.md -- once feed-phase
+    # evaluation itself succeeded, deterministic routing (not the old
+    # case-design assumption) determines what remains. Every branch here is
+    # an intentionally unimplemented downstream pathway -- see that second
+    # doc's "Target architecture after this task". A feed that starts out
+    # entirely vapor and one that starts out already a vapor-liquid mixture
+    # both run the same reference-temperature conditioning screen and are
+    # routed identically from its result.
     phase = feed_phase['phase']
     routing = checks.get('routing')
 
@@ -119,7 +124,7 @@ def build_calculation_progress(*, assessment, checks):
         remaining_steps = [STEP_LIQUID_PHASE_SEPARATION]
         blocked_reason = 'not_implemented'
         message = (routing or {}).get('message') or 'Feed-phase evaluation is complete.'
-    elif phase == 'vapor':
+    elif phase in ('vapor', 'vapor_liquid'):
         screen = checks.get('vapor_condensation_screen')
         if isinstance(screen, dict) and screen.get('valid'):
             completed_steps.append(STEP_VAPOR_CONDENSATION_SCREEN)
@@ -137,10 +142,6 @@ def build_calculation_progress(*, assessment, checks):
             blocked_reason = 'calculation_failed'
             error_detail = (screen or {}).get('message') or (screen or {}).get('error') or 'unknown error'
             message = f'The reference-temperature vapor-condensation screen did not complete: {error_detail}'
-    elif phase == 'vapor_liquid':
-        remaining_steps = [STEP_TWO_PHASE_ROUTING]
-        blocked_reason = 'not_implemented'
-        message = (routing or {}).get('message') or 'Feed-phase evaluation is complete.'
     else:
         # Defensive -- evaluate_feed_phase only ever returns one of the
         # three phases above when valid=True.
@@ -176,25 +177,6 @@ def _liquid_phase_routing_result():
             'The feed is liquid at the specified feed conditions. It should '
             'proceed to the liquid-phase separation pathway. Liquid-phase '
             'separation calculations are not implemented in this pipeline yet.'
-        ),
-    }
-
-
-def _two_phase_routing_result(phase_result):
-    """tools/binary-distillation-feed-vapor-liquid.md Step 11 -- an initially
-    two-phase feed is reported with its already-known liquid/vapor fractions,
-    but is not routed further."""
-    return {
-        'valid': True,
-        'check': 'routing',
-        'route': 'two_phase_feed',
-        'implemented': False,
-        'liquid_fraction': phase_result['liquid_fraction'],
-        'vapor_fraction': phase_result['vapor_fraction'],
-        'message': (
-            'The feed is already a vapor-liquid mixture at the specified '
-            'feed conditions. Routing of an initially two-phase feed is not '
-            'implemented yet.'
         ),
     }
 
@@ -278,7 +260,14 @@ def calculate_binary_distillation_problem(spec):
         if phase == 'liquid':
             checks['routing'] = _liquid_phase_routing_result()
 
-        elif phase == 'vapor':
+        elif phase in ('vapor', 'vapor_liquid'):
+            # tools/binary-distillation-vapor-liquid-dead-end.md -- any feed
+            # containing a vapor fraction (entirely vapor, or already a
+            # vapor-liquid mixture) proceeds through the same rigorous
+            # reference-temperature conditioning; the overall feed is
+            # conditioned, not only its initial vapor portion. The original
+            # feed-phase result above (`checks['feed_phase']`) is untouched
+            # and remains inspectable alongside this conditioned result.
             screen_result = evaluate_vapor_feed_at_reference_temperature(
                 feed,
                 pressure_Pa=spec['pressure_Pa'],
@@ -298,9 +287,6 @@ def calculate_binary_distillation_problem(spec):
                     'vapor_percent': screen_result['vapor_percent'],
                     'message': screen_result['message'],
                 }
-
-        elif phase == 'vapor_liquid':
-            checks['routing'] = _two_phase_routing_result(phase_result)
 
     return {
         'calculation_performed': True,
@@ -336,4 +322,27 @@ if __name__ == '__main__':
     result = calculate_binary_distillation_problem(COMPLETE_SPEC)
     print(f"calculation_performed: {result['calculation_performed']}")
     print(json.dumps(result['checks']['feed_phase'], indent=2))
+    print(json.dumps(result['calculation_progress'], indent=2))
+
+    # tools/binary-distillation-vapor-liquid-dead-end.md Step 17 -- the
+    # Water/Ethanol feed that evaluates as an initially two-phase
+    # ('vapor_liquid') feed at 355 K/101325 Pa, used here as a manual
+    # integration regression check for the reference-temperature conditioning
+    # routing added by that doc.
+    TWO_PHASE_SPEC = {
+        'component_names': ['Water', 'Ethanol'],
+        'component_flows': {'Water': 50, 'Ethanol': 50},
+        'component_flow_units': 'kmol/hr',
+        'pressure_Pa': 101325,
+        'feed_temperature_K': 355.0,
+        'reflux_condition': 'saturated_liquid',
+        'Lr': 0.99, 'Hr': 0.99,
+        'external_reflux_ratio_LD': 5.0,
+        'use_optimum_feed_plate': True,
+    }
+    print()
+    print('--- Initially two-phase spec (Water/Ethanol, 355 K) ---')
+    result = calculate_binary_distillation_problem(TWO_PHASE_SPEC)
+    print(f"feed phase: {result['checks']['feed_phase']['phase']}")
+    print(json.dumps(result['checks']['vapor_condensation_screen'], indent=2))
     print(json.dumps(result['calculation_progress'], indent=2))

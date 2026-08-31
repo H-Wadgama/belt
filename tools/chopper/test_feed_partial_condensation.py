@@ -1,7 +1,8 @@
 """
 Tests for `feed_partial_condensation.py` -- see
-`tools/binary-distillation-feed-vapor-liquid.md` Step 16, Tests B-J
-(module-level HX-screen behavior; Tests A/G/K are pipeline-level and live in
+`tools/binary-distillation-feed-vapor-liquid.md` Step 16, Tests B-J, and
+`tools/binary-distillation-vapor-liquid-dead-end.md` Step 16 (module-level
+HX-screen behavior; pipeline-level two-phase routing tests live in
 `test_binary_distillation_feed_vapor_liquid.py`).
 """
 import biosteam as bst
@@ -23,6 +24,16 @@ def feed():
     condensation (Butane stays vapor, Water condenses)."""
     bst.settings.set_thermo(['Butane', 'Water'], cache=True)
     return bst.Stream('feed', Butane=50, Water=50, units='kmol/hr', P=101325)
+
+
+@pytest.fixture
+def two_phase_feed():
+    """Water (Tb ~373.1 K) / Ethanol (Tb ~351.4 K) at 355 K, 1 atm --
+    tools/binary-distillation-vapor-liquid-dead-end.md Step 17's worked
+    example. Genuinely vapor_liquid (not fully vapor) at these initial feed
+    conditions (~25.5 mol% liquid / ~74.5 mol% vapor)."""
+    bst.settings.set_thermo(['Water', 'Ethanol'], cache=True)
+    return bst.Stream('two_phase_feed', Water=50, Ethanol=50, units='kmol/hr', P=101325)
 
 
 class FakeOutlet:
@@ -218,6 +229,64 @@ def test_default_reference_temperature_is_constant(feed):
     assert result['target_temperature_K'] == REFERENCE_TEMPERATURE_K
     assert REFERENCE_TEMPERATURE_K == 313.15
     assert LIQUEFACTION_THRESHOLD == 0.50
+
+
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-vapor-liquid-dead-end.md Step 16 -- this function
+# must also work correctly when the feed is already a vapor-liquid mixture
+# (not fully vapor) at `initial_temperature_K`, and must condition the whole
+# feed rather than only its initial vapor portion.
+# ---------------------------------------------------------------------------
+
+def test_two_phase_initial_feed_conditions_the_whole_feed(two_phase_feed):
+    """The full component molar flow (both the original vapor and liquid
+    portions) must reach the exchanger -- not only the ~74.5 mol% that was
+    vapor at the initial 355 K/101325 Pa conditions."""
+    result = evaluate_vapor_feed_at_reference_temperature(
+        two_phase_feed, pressure_Pa=101325, initial_temperature_K=355.0,
+    )
+    assert result['valid'] is True
+    total_water = result['vapor_mol']['Water'] + result['liquid_mol']['Water']
+    total_ethanol = result['vapor_mol']['Ethanol'] + result['liquid_mol']['Ethanol']
+    assert total_water == pytest.approx(50.0, abs=1e-6)
+    assert total_ethanol == pytest.approx(50.0, abs=1e-6)
+
+
+def test_two_phase_initial_feed_unchanged(two_phase_feed):
+    original_T = two_phase_feed.T
+    original_P = two_phase_feed.P
+    original_phase = two_phase_feed.phase
+    original_flows = {ID: float(two_phase_feed.imol[ID]) for ID in ('Water', 'Ethanol')}
+
+    evaluate_vapor_feed_at_reference_temperature(
+        two_phase_feed, pressure_Pa=101325, initial_temperature_K=355.0,
+    )
+
+    assert two_phase_feed.T == original_T
+    assert two_phase_feed.P == original_P
+    assert two_phase_feed.phase == original_phase
+    assert {ID: float(two_phase_feed.imol[ID]) for ID in ('Water', 'Ethanol')} == original_flows
+
+
+@pytest.mark.parametrize('initial_temperature_K', [355.0])
+def test_two_phase_initial_feed_fraction_conservation(two_phase_feed, initial_temperature_K):
+    result = evaluate_vapor_feed_at_reference_temperature(
+        two_phase_feed, pressure_Pa=101325, initial_temperature_K=initial_temperature_K,
+    )
+    assert result['valid'] is True
+    assert abs(result['liquid_fraction'] + result['vapor_fraction'] - 1.0) < 1e-6
+
+
+def test_two_phase_initial_feed_conditioning_failure_reported_deterministically(two_phase_feed, monkeypatch):
+    monkeypatch.setattr(fpc.bst.units, 'HXutility', _raising_hx_factory('boom'))
+
+    result = evaluate_vapor_feed_at_reference_temperature(
+        two_phase_feed, pressure_Pa=101325, initial_temperature_K=355.0,
+    )
+    assert result['valid'] is False
+    assert result['error'] == 'reference_temperature_flash_failed'
+    assert 'boom' in result['message']
+    assert 'route' not in result
 
 
 if __name__ == '__main__':

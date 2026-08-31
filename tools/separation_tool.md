@@ -77,7 +77,8 @@ in the `optimizer.py` section below.
 | `binary_distillation_workflow_agent.py` | Ollama tool-calling front end exposing `assess_binary_distillation_problem()` (WRITE/READ) plus `calculate_current_binary_distillation_problem()` (CALCULATE); the latter can only ever perform the deterministic feed-phase check, never Wankat Case A-D sizing, by construction. |
 | `biosteam_feed.py` | `build_biosteam_feed()` — converts a `ready_for_calculation` workflow assessment into one canonical `bst.Stream`; no LLM involvement. |
 | `feed_phase.py` | `evaluate_feed_phase()` — deterministic VLE feed-phase evaluation (T/P, V/P, or H/P) and liquid/vapor/vapor_liquid classification. |
-| `binary_distillation_calculation.py` | `calculate_binary_distillation_problem()` — the calculation-layer entry point downstream of the workflow checker; chains `assess_binary_distillation_problem()` → `build_biosteam_feed()` → `evaluate_feed_phase()`. |
+| `feed_partial_condensation.py` | `evaluate_vapor_feed_at_reference_temperature()` — deterministic rigorous-BioSTEAM screen conditioning the overall feed to a fixed 313.15 K reference temperature; runs whenever `evaluate_feed_phase()` reports any vapor fraction (`vapor` or `vapor_liquid`), never for a `liquid` feed. |
+| `binary_distillation_calculation.py` | `calculate_binary_distillation_problem()` — the calculation-layer entry point downstream of the workflow checker; chains `assess_binary_distillation_problem()` → `build_biosteam_feed()` → `evaluate_feed_phase()` → (for `vapor`/`vapor_liquid`) `evaluate_vapor_feed_at_reference_temperature()` → deterministic routing. |
 | `sample_request.py` | Minimal standalone Ollama connectivity smoke test (`client.generate(...)`) — not part of the tool-calling pipeline; predates and is unrelated to `separation_agent.py`. |
 | `testing_caes.ipynb` | Scratch/interactive notebook for ad hoc testing — not a maintained module; nothing else in this folder imports it. |
 
@@ -906,8 +907,8 @@ CALCULATION-kind tool. It deliberately still does **not** import
 `separation_tool.py`, `case_design.py`, or `optimizer.py` — the sizing/
 optimization sweep layer remains out of scope here. It now **does** import
 `binary_distillation_calculation.py` (and, transitively, BioSTEAM via
-`biosteam_feed.py`/`feed_phase.py`) for that one CALCULATION tool — see
-"Four capabilities" below.
+`biosteam_feed.py`/`feed_phase.py`/`feed_partial_condensation.py`) for that
+one CALCULATION tool — see "Four capabilities" below.
 
 Four tools are registered:
 
@@ -1181,17 +1182,18 @@ when you actually want the sized/costed column back.
 
 ---
 
-# `biosteam_feed.py` + `feed_phase.py` + `binary_distillation_calculation.py` — deterministic feed-phase calculation layer
+# `biosteam_feed.py` + `feed_phase.py` + `feed_partial_condensation.py` + `binary_distillation_calculation.py` — deterministic feed-phase calculation layer
 
-Implements `tools/binary-distillation-feed-phase-evaluation.md` in full:
-the first deterministic **calculation** layer downstream of the workflow-
-only checker above. It only ever runs once
-`assess_binary_distillation_problem()` reports
+Implements `tools/binary-distillation-feed-phase-evaluation.md`,
+`tools/binary-distillation-feed-vapor-liquid.md`, and
+`tools/binary-distillation-vapor-liquid-dead-end.md` in full: the first
+deterministic **calculation** layer downstream of the workflow-only checker
+above. It only ever runs once `assess_binary_distillation_problem()` reports
 `status == 'ready_for_calculation'` — the LLM never generates BioSTEAM
-code, invents a missing value, or decides the feed phase itself; every
-number that goes into the BioSTEAM stream and every branch of the VLE
-calculation comes from the already-normalized, already-validated workflow
-state.
+code, invents a missing value, decides the feed phase itself, or decides
+routing; every number that goes into the BioSTEAM stream and every branch of
+the VLE/conditioning calculation comes from the already-normalized,
+already-validated workflow state.
 
 ```text
 assess_binary_distillation_problem(spec)
@@ -1210,9 +1212,44 @@ evaluate_feed_phase(feed, ...)             feed_phase.py
     liquid / vapor / vapor_liquid classification
         │
         ▼
+                phase
+     /            |            \
+liquid      vapor_liquid      vapor
+   │              └─────┬──────┘
+   ▼                    ▼
+stop /          evaluate_vapor_feed_at_reference_temperature(...)
+future                             feed_partial_condensation.py
+liquid              condition the OVERALL feed to 313.15 K via a
+route               rigorous BioSTEAM HXutility VLE flash
+                                    │
+                                    ▼
+                    conditioned liquid_fraction >= 0.50 ?
+                          /                  \
+                        yes                   no
+                         │                     │
+                         ▼                     ▼
+              liquid + vapor future    vapor-phase separation
+              separation routes        advisable (not implemented)
+        │
+        ▼
 calculate_binary_distillation_problem(spec)   binary_distillation_calculation.py
-    {'calculation_performed', 'workflow', 'checks': {'feed_phase': {...}}}
+    {'calculation_performed', 'workflow',
+     'checks': {'feed_phase': {...}, 'routing': {...},
+                'vapor_condensation_screen': {...} (vapor/vapor_liquid only)},
+     'calculation_progress': {...}}
 ```
+
+**A feed that starts out already a vapor-liquid mixture is not a dead end.**
+Earlier, `phase == 'vapor_liquid'` stopped immediately with an
+`implemented: False` `two_phase_feed` route and no further BioSTEAM call.
+`tools/binary-distillation-vapor-liquid-dead-end.md` replaced that: any feed
+containing a vapor fraction — entirely vapor, or already a vapor-liquid
+mixture — now runs the identical reference-temperature conditioning screen
+and the identical >=50%-liquid routing threshold described below. The
+feed's ORIGINAL phase result (at its stated feed conditions) and its
+CONDITIONED result (after cooling/heating to 313.15 K) are kept as two
+separate, independently inspectable dict entries — `checks['feed_phase']`
+and `checks['vapor_condensation_screen']` — never overwritten into one.
 
 ## `biosteam_feed.py`
 
@@ -1276,6 +1313,72 @@ with:
 pytest tools/chopper/test_feed_phase.py -v
 ```
 
+## `feed_partial_condensation.py`
+
+`evaluate_vapor_feed_at_reference_temperature(feed, *, pressure_Pa,
+initial_temperature_K, reference_temperature_K=313.15)` — the deterministic
+reference-temperature screen `binary_distillation_calculation.py` runs
+whenever `evaluate_feed_phase()` reports the feed has any vapor fraction
+(`phase in ('vapor', 'vapor_liquid')`). It never runs for a `liquid` feed.
+
+On a **copy** of `feed` (the canonical feed itself is never mutated), it
+runs a rigorous BioSTEAM VLE flash to the feed's actual equilibrium state at
+`initial_temperature_K`/`pressure_Pa` (`feed_copy.vle(T=..., P=...)` —
+reproducing a pure-vapor state exactly when the feed is entirely vapor, and
+the true mixed-phase state when the feed is already vapor-liquid), then
+passes that **whole** copy — never only its initial vapor portion — through
+a `bst.units.HXutility(ins=feed_copy, T=reference_temperature_K,
+rigorous=True)` conditioned to `REFERENCE_TEMPERATURE_K` (313.15 K / ~40°C,
+a common heat-exchanger utility-water screening point). BioSTEAM's rigorous
+VLE flash is the sole source of the resulting liquid/vapor split — this
+module never estimates, assumes complete condensation, or infers the split
+itself.
+
+The resulting `liquid_fraction` is classified against a fixed
+`LIQUEFACTION_THRESHOLD = 0.50` (exactly 50% falls in the `>= 0.50`
+branch):
+
+| `liquid_fraction` after conditioning | `route` |
+|---|---|
+| `>= 0.50` | `liquid_and_vapor_separation_future` — both a future liquid-phase and a future vapor-phase separation pathway are reported, neither implemented. |
+| `< 0.50` | `vapor_separation_advisable` — a vapor-phase separation method is advisable, not implemented. |
+
+`operation` reports `'cooling'`/`'heating'`/`'none'` from comparing
+`initial_temperature_K` to `reference_temperature_K` — a two-phase feed is
+never assumed to always be cooled. Any BioSTEAM/HX failure is caught and
+reported as `{'valid': False, 'error':
+'reference_temperature_flash_failed', 'message': str(err)}` rather than
+fabricating a route.
+
+**Output schema** (JSON-friendly):
+
+```python
+{
+    'valid': True, 'check': 'vapor_feed_reference_temperature',
+    'target_temperature_K': 313.15, 'initial_temperature_K': 355.0,
+    'pressure_Pa': 101325.0, 'operation': 'cooling',
+    'components': ['Water', 'Ethanol'],
+    'vapor_mol': {...}, 'liquid_mol': {...},
+    'liquid_fraction': 1.0, 'vapor_fraction': 0.0,
+    'liquid_percent': 100.0, 'vapor_percent': 0.0,
+    'route': 'liquid_and_vapor_separation_future',
+    'implemented': False, 'message': '...',
+}
+```
+
+`tools/chopper/test_feed_partial_condensation.py` covers the module-level
+HX-screen behavior: cooling vs. heating direction, the exactly-50%/
+above-50%/below-50% routing thresholds, original-feed immutability,
+liquid+vapor fraction conservation, deterministic BioSTEAM-failure
+reporting, defensive component-count/zero-flow checks, and — per
+`tools/binary-distillation-vapor-liquid-dead-end.md` — that this all holds
+equally for a feed that is already vapor_liquid (not just entirely vapor)
+at its initial conditions, including that the *whole* feed's molar flow
+(not just its initial vapor portion) reaches the exchanger. Run with:
+```bash
+pytest tools/chopper/test_feed_partial_condensation.py -v
+```
+
 ## `binary_distillation_calculation.py`
 
 `calculate_binary_distillation_problem(spec)` — calls
@@ -1283,27 +1386,55 @@ pytest tools/chopper/test_feed_phase.py -v
 'ready_for_calculation'`, returns `{'calculation_performed': False,
 'workflow': assessment, 'checks': {}, 'calculation_progress': {...}}`
 immediately (no BioSTEAM call at all). Otherwise builds the feed and
-evaluates its phase, returning `{'calculation_performed': True, 'workflow':
-assessment, 'checks': {'feed_phase': <result>}, 'calculation_progress':
-{...}}` — a `BiosteamFeedError` from the feed-build step is caught and
-reported as `checks['feed_phase']` with `error='feed_build_failed'` rather
-than propagating (still with a populated `calculation_progress`). The
-`checks` dict is deliberately shaped to hold future deterministic checks
-alongside `feed_phase` (`relative_volatility`, `azeotrope`,
-`thermal_stability`, `condensability`, `critical_temperature_margin`, ...)
-without changing this function's return shape — none of those are
-implemented yet. See "Calculation-progress state" below for
-`calculation_progress` itself.
+evaluates its phase (`checks['feed_phase']`) — a `BiosteamFeedError` from
+the feed-build step is caught and reported as `checks['feed_phase']` with
+`error='feed_build_failed'` rather than propagating (still with a populated
+`calculation_progress`).
+
+Once `checks['feed_phase']['valid']` is `True`, deterministic routing (never
+model-decided) runs from `phase_result['phase']` alone:
+
+| `phase` | Behavior |
+|---|---|
+| `liquid` | Stops immediately. `checks['routing']` = `{'route': 'liquid_phase_separation', 'implemented': False, ...}`. `evaluate_vapor_feed_at_reference_temperature()` is never called. |
+| `vapor` or `vapor_liquid` | Both run `evaluate_vapor_feed_at_reference_temperature()` on the SAME overall feed — the vapor/vapor_liquid distinction only matters for the ORIGINAL feed-phase result, never for which conditioning pathway runs. The result is stored as `checks['vapor_condensation_screen']`, and — if valid — echoed into `checks['routing']` (`route`, `liquid_fraction`/`vapor_fraction`, `liquid_percent`/`vapor_percent`, `message`) per the >=50%-liquid threshold table above. |
+
+The full return shape is `{'calculation_performed': True, 'workflow':
+assessment, 'checks': {'feed_phase': {...}, 'routing': {...},
+'vapor_condensation_screen': {...} (vapor/vapor_liquid only)},
+'calculation_progress': {...}}`. The `checks` dict is deliberately shaped to
+hold future deterministic checks alongside these (`relative_volatility`,
+`azeotrope`, `thermal_stability`, `condensability`,
+`critical_temperature_margin`, ...) without changing this function's return
+shape — none of those are implemented yet, and neither is any actual
+liquid- or vapor-phase separator design (`STEP_LIQUID_PHASE_SEPARATION`/
+`STEP_VAPOR_PHASE_SEPARATION` below are recognized-but-unimplemented
+endpoints this pipeline intentionally stops at). See "Calculation-progress
+state" below for `calculation_progress` itself.
 
 `tools/chopper/test_binary_distillation_calculation.py` covers the
 incomplete-workflow → no-calculation and complete-workflow →
 feed-phase-calculation transitions, plus a ternary spec being rejected by
-the binary-scope gate before any BioSTEAM code runs. Run with:
+the binary-scope gate before any BioSTEAM code runs.
+`tools/chopper/test_binary_distillation_feed_vapor_liquid.py` covers the
+phase-based routing end to end: a liquid feed skips the HX screen entirely;
+a vapor feed with <50% conditioned liquid routes to
+`vapor_separation_advisable`; and — per
+`tools/binary-distillation-vapor-liquid-dead-end.md` — a genuinely
+vapor_liquid feed (a real Water/Ethanol 355 K/101325 Pa case, ~25.5 mol%
+liquid/~74.5 mol% vapor at feed conditions) no longer stops, actually runs
+the reference-temperature screen, preserves its original feed-phase result
+distinctly from the conditioned one, is routed by the conditioned
+liquid_fraction at every threshold (below/exactly/above 50%), reports
+conditioning failures deterministically, and answers a follow-up "what
+next?" from the stored conditioned result rather than rerunning BioSTEAM or
+falling back to the old dead-end message. Run with:
 ```bash
 pytest tools/chopper/test_binary_distillation_calculation.py -v
+pytest tools/chopper/test_binary_distillation_feed_vapor_liquid.py -v
 ```
 
-**One-directional boundary:** none of these three modules import `ollama`
+**One-directional boundary:** none of these four modules import `ollama`
 or `openai` — this calculation layer remains structurally incapable of LLM
 involvement, regardless of what imports it. The reverse is no longer true:
 `tools/binary-distillation-connecting-feed-calculation.md` connects
@@ -1311,9 +1442,10 @@ involvement, regardless of what imports it. The reverse is no longer true:
 capabilities" right below) via one narrow entry point,
 `calculate_current_binary_distillation_problem()` — the workflow agent
 still never imports `separation_tool.py`/`case_design.py`/`optimizer.py`,
-so no Wankat Case A-D sizing is reachable through it, only this one
-feed-phase check. RAG heuristic retrieval (`tools/chopperRAG/`) is not
-connected to either layer yet — see
+so no Wankat Case A-D sizing is reachable through it, only the feed-phase
+evaluation, reference-temperature conditioning screen, and the
+deterministic post-feed-phase routing between them. RAG heuristic retrieval
+(`tools/chopperRAG/`) is not connected to either layer yet — see
 `tools/binary-distillation-feed-phase-evaluation.md` Step 16.
 
 ## Four capabilities: connecting the calculation layer to the agent
@@ -1383,12 +1515,14 @@ turn and still forces a no-tools finalization call afterward.
 
 **Scope stays explicit at every layer.** Because
 `calculate_binary_distillation_problem()` only ever populates
-`checks['feed_phase']`, `SYSTEM_PROMPT`'s `ready_for_calculation` guidance
-tells the model to report exactly that check and to explicitly note that
-`would_calculate`'s other quantities (distillate/bottoms flow, reflux
-ratio, reboiler/condenser duty, stage count, feed stage, column diameter)
-are still not computed — never implying the full Wankat Case design was
-performed.
+`checks['feed_phase']`, `checks['routing']`, and — for a `vapor`/
+`vapor_liquid` feed — `checks['vapor_condensation_screen']`,
+`SYSTEM_PROMPT`'s `ready_for_calculation` guidance tells the model to report
+exactly those checks and to explicitly note that `would_calculate`'s other
+quantities (distillate/bottoms flow, reflux ratio, reboiler/condenser duty,
+stage count, feed stage, column diameter) are still not computed, and that
+no liquid- or vapor-phase separator has actually been designed or sized —
+never implying the full Wankat Case design was performed.
 
 `tools/chopper/test_binary_distillation_workflow_agent_calculation.py` is
 the pytest suite for this connection (fakes/scripted clients throughout,
@@ -1440,17 +1574,25 @@ failure, or workflow-not-ready — now includes a `calculation_progress` dict:
 
 | Key | Contents |
 |---|---|
-| `completed_steps` | `list[str]` of stable step IDs that actually completed, derived only from `checks` — e.g. `['feed_phase']` once `checks['feed_phase']['valid'] is True`. Never includes a step whose check is missing or `valid: False`. |
-| `next_step` / `next_step_available` | The next EXECUTABLE step, or `None`/`False`. Always `None`/`False` today — no Case A-D design step is implemented yet (see `STEP_CASE_A_DESIGN`..`STEP_CASE_D_DESIGN` below); reserved for when one ships. |
-| `remaining_steps` | `[STEP_CASE_<case>_DESIGN]` once the workflow has identified a Wankat case, else `[]`. |
-| `remaining_outputs` | The workflow's own `would_calculate` list, echoed here (not duplicated/re-derived) whenever `remaining_steps` is non-empty. |
-| `blocked_reason` | `None` once nothing remains; `'not_implemented'` once feed-phase succeeded but the case design step hasn't shipped; `'calculation_failed'` if the feed-phase check itself errored (e.g. `feed_build_failed`) despite the workflow being ready — **never** reported as a missing-input situation; `'workflow_not_ready'` when `calculate_binary_distillation_problem` never even reached the calculation layer. |
-| `message` | Human-readable summary matching whichever branch above applies. |
+| `completed_steps` | `list[str]` of stable step IDs that actually completed, derived only from `checks` — `[STEP_FEED_PHASE]` once `checks['feed_phase']['valid'] is True`; `[STEP_FEED_PHASE, STEP_VAPOR_CONDENSATION_SCREEN]` once the reference-temperature screen also completed (for a `vapor`/`vapor_liquid` feed). Never includes a step whose check is missing or `valid: False`. |
+| `next_step` / `next_step_available` | The next EXECUTABLE step, or `None`/`False`. Always `None`/`False` today — no downstream separator design step is implemented yet (see the step IDs below); reserved for when one ships. |
+| `remaining_steps` | Deterministic, from `phase`: `[STEP_LIQUID_PHASE_SEPARATION]` for `liquid`; `[STEP_LIQUID_PHASE_SEPARATION, STEP_VAPOR_PHASE_SEPARATION]` for `vapor`/`vapor_liquid` once the conditioned liquid fraction is `>= 0.50`; `[STEP_VAPOR_PHASE_SEPARATION]` once it's `< 0.50`; `[]` if the screen itself failed. |
+| `remaining_outputs` | No `would_calculate`-equivalent output list exists yet for any of these separation pathways, so this is always `[]` even when `remaining_steps` is non-empty. |
+| `blocked_reason` | `None` once nothing remains; `'not_implemented'` once feed-phase (and, for `vapor`/`vapor_liquid`, the conditioning screen) succeeded but the separation-pathway step hasn't shipped; `'calculation_failed'` if the feed-phase check OR the reference-temperature screen itself errored despite the workflow being ready — **never** reported as a missing-input situation; `'workflow_not_ready'` when `calculate_binary_distillation_problem` never even reached the calculation layer. |
+| `message` | Human-readable summary matching whichever branch above applies — for `vapor`/`vapor_liquid`, this is the screen's own message (percentages, cooling/heating direction). |
 
 Stable step IDs (module-level constants in `binary_distillation_calculation.py`):
-`STEP_FEED_PHASE` (the only one actually executable today),
-`STEP_CASE_A_DESIGN`, `STEP_CASE_B_DESIGN`, `STEP_CASE_C_DESIGN`,
-`STEP_CASE_D_DESIGN` (recognized future steps, not yet implemented).
+`STEP_FEED_PHASE` and `STEP_VAPOR_CONDENSATION_SCREEN` (the two actually
+executable today — the latter runs for any feed with a vapor fraction, per
+`tools/binary-distillation-vapor-liquid-dead-end.md`),
+`STEP_LIQUID_PHASE_SEPARATION`, `STEP_VAPOR_PHASE_SEPARATION` (recognized
+downstream endpoints this pipeline intentionally stops at, not yet
+implemented), and `STEP_CASE_A_DESIGN`..`STEP_CASE_D_DESIGN` (reserved for
+once a Wankat Case A-D design step is wired into this pipeline — not
+reachable today, since post-feed-phase routing always stops at a
+separation-pathway step first). The old `STEP_TWO_PHASE_ROUTING` step ID
+and its `two_phase_feed` route no longer exist — an initially vapor_liquid
+feed is no longer a dead end (see above).
 `build_calculation_progress(*, assessment, checks)` derives all of this
 purely from the already-computed `assessment`/`checks` — it is never asked
 of the LLM.
@@ -1545,10 +1687,13 @@ re-requested unless the deterministic checker actually reports them
 missing/inconsistent/invalidated.
 
 `tools/chopper/test_binary_distillation_calculation_progress.py` covers all
-of this: `calculation_progress` schema correctness (feed-phase completed,
-Case D's `next_step_available=False`/`blocked_reason='not_implemented'`, a
+of this: `calculation_progress` schema correctness (feed-phase and
+vapor-condensation-screen completed, a fully-condensed Case D feed's
+`next_step_available=False`/`remaining_steps=[STEP_LIQUID_PHASE_SEPARATION,
+STEP_VAPOR_PHASE_SEPARATION]`/`blocked_reason='not_implemented'`, a
 not-ready workflow's `blocked_reason='workflow_not_ready'`,
-`remaining_outputs` matching `would_calculate`), the
+`remaining_outputs` staying `[]` even though `remaining_steps` is
+non-empty), the
 `get_binary_distillation_calculation_status` READ before/after a
 calculation, reset and WRITE invalidation, and the exact worked
 regression from that doc (complete Case D → "yes" runs the calculation →

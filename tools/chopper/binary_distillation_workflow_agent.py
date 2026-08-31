@@ -267,10 +267,10 @@ def calculate_current_binary_distillation_problem() -> dict:
 
     The calculation only proceeds when the accumulated problem is `ready_for_calculation`; otherwise this returns `calculation_performed: False` and the same workflow assessment `get_binary_distillation_problem` would -- relay `missing_essential_inputs` / `case_candidates` / `message` from the returned `workflow` and explain what is still needed, rather than guessing the property yourself.
 
-    The calculation pipeline evaluates the feed phase (`checks['feed_phase']`: liquid / vapor / vapor_liquid classification, vapor/liquid fraction, per-component vapor/liquid molar flows) and, deterministically from that result, a post-feed-phase routing decision (`checks['routing']`, plus `checks['vapor_condensation_screen']` for a vapor feed -- a rigorous BioSTEAM screen at 313.15 K). It does NOT compute distillate/bottoms flow, reflux ratio, reboiler/condenser duty, theoretical stage count, feed stage, or column diameter for the identified Wankat case, and it does NOT design or size any liquid- or vapor-phase separator -- never describe any of those as calculated from this tool's result. Which route applies is decided in Python, never by you.
+    The calculation pipeline evaluates the feed phase (`checks['feed_phase']`: liquid / vapor / vapor_liquid classification, vapor/liquid fraction, per-component vapor/liquid molar flows) and, deterministically from that result, a post-feed-phase routing decision (`checks['routing']`, plus `checks['vapor_condensation_screen']` -- a rigorous BioSTEAM screen conditioning the overall feed to 313.15 K -- whenever the feed contains any vapor fraction, i.e. `phase` is `vapor` or `vapor_liquid`). It does NOT compute distillate/bottoms flow, reflux ratio, reboiler/condenser duty, theoretical stage count, feed stage, or column diameter for the identified Wankat case, and it does NOT design or size any liquid- or vapor-phase separator -- never describe any of those as calculated from this tool's result. Which route applies is decided in Python, never by you.
 
     Returns:
-        {'calculation_performed': bool, 'workflow': <same assessment schema as get_binary_distillation_problem>, 'checks': {'feed_phase': {...}, 'routing': {...}, 'vapor_condensation_screen': {...} (vapor feeds only)} if calculation_performed else {}, 'calculation_progress': {...}}.
+        {'calculation_performed': bool, 'workflow': <same assessment schema as get_binary_distillation_problem>, 'checks': {'feed_phase': {...}, 'routing': {...}, 'vapor_condensation_screen': {...} (whenever the feed has any vapor fraction)} if calculation_performed else {}, 'calculation_progress': {...}}.
     """
     global _last_calculation_result
     result = calculate_binary_distillation_problem(_effective_spec())
@@ -898,29 +898,33 @@ do not re-open with the full problem-definition summary ("Your problem is \
 fully specified...") again unless the user actually asks about the \
 problem definition.
 
-### Post-feed-phase routing (tools/binary-distillation-feed-vapor-liquid.md)
+### Post-feed-phase routing (tools/binary-distillation-feed-vapor-liquid.md, \
+updated by tools/binary-distillation-vapor-liquid-dead-end.md)
 
 `checks['feed_phase']['phase']` deterministically decides what happens next \
 -- you never make this choice yourself, and the routing decision is always \
-already present in `checks['routing']` (and, for a vapor feed, also in \
-`checks['vapor_condensation_screen']`) by the time you see the result:
+already present in `checks['routing']` (and, whenever the feed has any \
+vapor fraction, also in `checks['vapor_condensation_screen']`) by the time \
+you see the result:
 
 - `phase == 'liquid'`: `checks['routing']['route']` is \
   `liquid_phase_separation`. State that the feed is liquid and should \
   proceed to a liquid-phase separation method, which is not implemented in \
   this pipeline yet. No 313.15 K screen ever runs for a liquid feed.
-- `phase == 'vapor'`: a rigorous BioSTEAM screen at 313.15 K already ran -- \
+- `phase == 'vapor'` or `phase == 'vapor_liquid'`: a rigorous BioSTEAM \
+  screen conditioning the OVERALL feed to 313.15 K already ran -- \
   `checks['vapor_condensation_screen']['liquid_percent']`/`vapor_percent` \
-  are the resulting split, and `route` is either \
-  `liquid_and_vapor_separation_future` (>= 50 mol% liquefies -- report BOTH \
-  a future liquid-phase and a future vapor-phase pathway, neither \
-  implemented) or `vapor_separation_advisable` (< 50 mol% liquefies -- a \
-  vapor-phase separation method is advisable, not implemented). State the \
-  percentages exactly as given; never recompute or round them yourself.
-- `phase == 'vapor_liquid'`: the feed was already two-phase at its stated \
-  conditions (no 313.15 K screen runs). Report `checks['routing']`'s \
-  `liquid_fraction`/`vapor_fraction` and state that routing an initially \
-  two-phase feed is not implemented yet.
+  are the resulting split AFTER conditioning, and `route` is either \
+  `liquid_and_vapor_separation_future` (>= 50 mol% liquefies at 313.15 K -- \
+  report BOTH a future liquid-phase and a future vapor-phase pathway, \
+  neither implemented) or `vapor_separation_advisable` (< 50 mol% liquefies \
+  -- a vapor-phase separation method is advisable, not implemented). State \
+  the percentages exactly as given; never recompute or round them yourself. \
+  When `phase == 'vapor_liquid'`, first state the feed's ORIGINAL split from \
+  `checks['feed_phase']['liquid_fraction']`/`vapor_fraction` at its stated \
+  conditions, then separately state the CONDITIONED split at 313.15 K from \
+  `checks['vapor_condensation_screen']` -- these are two distinct results \
+  and must not be conflated.
 
 In every case, `checks['routing']['implemented']` is `False` -- never imply \
 a liquid- or vapor-phase separator was actually designed or sized.
