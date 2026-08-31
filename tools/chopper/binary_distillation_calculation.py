@@ -128,7 +128,13 @@ def build_calculation_progress(*, assessment, checks):
         screen = checks.get('vapor_condensation_screen')
         if isinstance(screen, dict) and screen.get('valid'):
             completed_steps.append(STEP_VAPOR_CONDENSATION_SCREEN)
-            if screen['route'] == 'liquid_and_vapor_separation_future':
+            # Same three-way classification `feed_partial_condensation.py`
+            # already computed (via `screen['route']`) -- never re-derived
+            # independently from liquid_fraction here, so progress and the
+            # main calculation result cannot disagree.
+            if screen['route'] == 'liquid_phase_separation':
+                remaining_steps = [STEP_LIQUID_PHASE_SEPARATION]
+            elif screen['route'] == 'liquid_and_vapor_separation_future':
                 remaining_steps = [STEP_LIQUID_PHASE_SEPARATION, STEP_VAPOR_PHASE_SEPARATION]
             else:
                 remaining_steps = [STEP_VAPOR_PHASE_SEPARATION]

@@ -22,6 +22,12 @@ import biosteam as bst
 REFERENCE_TEMPERATURE_K = 313.15
 LIQUEFACTION_THRESHOLD = 0.50
 
+# tools/binary-distillation-condensation-edge-case.md -- a vapor_fraction at
+# or below this is treated as "no meaningful vapor phase remains", rather
+# than requiring exact equality with 0.0 (rigorous VLE flashes can return
+# tiny nonzero residuals like 2.4e-12 for an effectively absent phase).
+PHASE_FRACTION_TOLERANCE = 1e-9
+
 
 def evaluate_vapor_feed_at_reference_temperature(
     feed,
@@ -124,7 +130,21 @@ def evaluate_vapor_feed_at_reference_temperature(
         liquid_fraction = liquid_mol_total / total_mol
         vapor_fraction = vapor_mol_total / total_mol
 
-        if liquid_fraction >= LIQUEFACTION_THRESHOLD:
+        if vapor_fraction <= PHASE_FRACTION_TOLERANCE:
+            # Complete (or numerically-complete) condensation: no meaningful
+            # vapor phase remains, so a future vapor-phase separation
+            # pathway is not a real remaining step -- this must be checked
+            # before the >=50%-liquid branch below, since liquid_fraction=1.0
+            # would otherwise still satisfy that condition.
+            route = 'liquid_phase_separation'
+            message = (
+                f'At {reference_temperature_K:.2f} K, the conditioned feed is '
+                f'effectively fully liquid ({operation} from '
+                f'{initial_temperature_K:.2f} K). No meaningful vapor phase '
+                'remains. Liquid-phase separation is the next future pathway, '
+                'but it is not yet implemented.'
+            )
+        elif liquid_fraction >= LIQUEFACTION_THRESHOLD:
             route = 'liquid_and_vapor_separation_future'
             message = (
                 f'{liquid_fraction * 100:.1f} mol% of the feed liquefies at '

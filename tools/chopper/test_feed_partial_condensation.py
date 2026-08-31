@@ -11,6 +11,7 @@ import pytest
 import feed_partial_condensation as fpc
 from feed_partial_condensation import (
     LIQUEFACTION_THRESHOLD,
+    PHASE_FRACTION_TOLERANCE,
     REFERENCE_TEMPERATURE_K,
     evaluate_vapor_feed_at_reference_temperature,
 )
@@ -144,6 +145,72 @@ def test_less_than_50_percent_liquid(feed, monkeypatch):
     assert result['vapor_fraction'] == pytest.approx(0.80)
     assert result['route'] == 'vapor_separation_advisable'
     assert result['implemented'] is False
+
+
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-condensation-edge-case.md -- complete-condensation
+# edge case. Exact 0.0 vapor fraction, a near-zero (within-tolerance) vapor
+# fraction, and a just-above-tolerance vapor fraction must all be routed
+# correctly, with the exact-equality/tolerance boundary never hard-coded.
+# ---------------------------------------------------------------------------
+
+def test_complete_condensation_routes_to_liquid_only(feed, monkeypatch):
+    mol = {('g', 'Butane'): 0.0, ('g', 'Water'): 0.0, ('l', 'Butane'): 50.0, ('l', 'Water'): 50.0}
+    monkeypatch.setattr(fpc.bst.units, 'HXutility', _fake_hx_factory(mol))
+
+    result = evaluate_vapor_feed_at_reference_temperature(
+        feed, pressure_Pa=101325, initial_temperature_K=405.0,
+    )
+    assert result['valid'] is True
+    assert result['liquid_fraction'] == pytest.approx(1.0)
+    assert result['vapor_fraction'] == pytest.approx(0.0)
+    assert result['route'] == 'liquid_phase_separation'
+    assert result['implemented'] is False
+    assert 'substantial partial condensation' not in result['message']
+    assert 'effectively fully liquid' in result['message']
+    assert 'no meaningful vapor phase remains' in result['message'].lower()
+
+
+def test_near_zero_vapor_fraction_within_tolerance_routes_to_liquid_only(feed, monkeypatch):
+    tiny_vapor = 1e-12
+    mol = {
+        ('g', 'Butane'): tiny_vapor, ('g', 'Water'): 0.0,
+        ('l', 'Butane'): 50.0 - tiny_vapor, ('l', 'Water'): 50.0,
+    }
+    monkeypatch.setattr(fpc.bst.units, 'HXutility', _fake_hx_factory(mol))
+
+    result = evaluate_vapor_feed_at_reference_temperature(
+        feed, pressure_Pa=101325, initial_temperature_K=405.0,
+    )
+    assert result['valid'] is True
+    assert result['vapor_fraction'] < PHASE_FRACTION_TOLERANCE
+    assert result['route'] == 'liquid_phase_separation'
+    assert result['implemented'] is False
+
+
+def test_just_above_tolerance_vapor_fraction_routes_to_both_pathways(feed, monkeypatch):
+    # PHASE_FRACTION_TOLERANCE == 1e-9; 1e-6 total vapor (out of 100 total
+    # feed mol) is intentionally well above that tolerance, proving the
+    # implementation checks a real numerical boundary rather than depending
+    # on exact 0.0.
+    small_vapor = 1e-4
+    mol = {
+        ('g', 'Butane'): small_vapor, ('g', 'Water'): 0.0,
+        ('l', 'Butane'): 50.0 - small_vapor, ('l', 'Water'): 50.0,
+    }
+    monkeypatch.setattr(fpc.bst.units, 'HXutility', _fake_hx_factory(mol))
+
+    result = evaluate_vapor_feed_at_reference_temperature(
+        feed, pressure_Pa=101325, initial_temperature_K=405.0,
+    )
+    assert result['valid'] is True
+    assert result['vapor_fraction'] > PHASE_FRACTION_TOLERANCE
+    assert result['liquid_fraction'] >= LIQUEFACTION_THRESHOLD
+    assert result['route'] == 'liquid_and_vapor_separation_future'
+
+
+def test_phase_fraction_tolerance_is_a_small_deterministic_constant():
+    assert PHASE_FRACTION_TOLERANCE == 1e-9
 
 
 # ---------------------------------------------------------------------------

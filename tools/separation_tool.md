@@ -1185,8 +1185,9 @@ when you actually want the sized/costed column back.
 # `biosteam_feed.py` + `feed_phase.py` + `feed_partial_condensation.py` + `binary_distillation_calculation.py` — deterministic feed-phase calculation layer
 
 Implements `tools/binary-distillation-feed-phase-evaluation.md`,
-`tools/binary-distillation-feed-vapor-liquid.md`, and
-`tools/binary-distillation-vapor-liquid-dead-end.md` in full: the first
+`tools/binary-distillation-feed-vapor-liquid.md`,
+`tools/binary-distillation-vapor-liquid-dead-end.md`, and
+`tools/binary-distillation-condensation-edge-case.md` in full: the first
 deterministic **calculation** layer downstream of the workflow-only checker
 above. It only ever runs once `assess_binary_distillation_problem()` reports
 `status == 'ready_for_calculation'` — the LLM never generates BioSTEAM
@@ -1223,15 +1224,19 @@ liquid              condition the OVERALL feed to 313.15 K via a
 route               rigorous BioSTEAM HXutility VLE flash
                                     │
                                     ▼
-                    conditioned liquid_fraction >= 0.50 ?
-                          /                  \
-                        yes                   no
-                         │                     │
-                         ▼                     ▼
-              liquid + vapor future    vapor-phase separation
-              separation routes        advisable (not implemented)
-        │
-        ▼
+                    conditioned vapor_fraction <= PHASE_FRACTION_TOLERANCE ?
+                          /                          \
+                        yes                           no
+                         │                             │
+                         ▼                   conditioned liquid_fraction >= 0.50 ?
+              liquid-phase separation              /            \
+              only (no vapor pathway)            yes             no
+                         │                         │               │
+                         │                         ▼               ▼
+                         │              liquid + vapor future  vapor-phase separation
+                         │              separation routes      advisable (not implemented)
+        │                │                         │               │
+        ▼                ▼                         ▼               ▼
 calculate_binary_distillation_problem(spec)   binary_distillation_calculation.py
     {'calculation_performed', 'workflow',
      'checks': {'feed_phase': {...}, 'routing': {...},
@@ -1245,7 +1250,8 @@ Earlier, `phase == 'vapor_liquid'` stopped immediately with an
 `tools/binary-distillation-vapor-liquid-dead-end.md` replaced that: any feed
 containing a vapor fraction — entirely vapor, or already a vapor-liquid
 mixture — now runs the identical reference-temperature conditioning screen
-and the identical >=50%-liquid routing threshold described below. The
+and the identical complete-condensation/>=50%-liquid routing classification
+described below. The
 feed's ORIGINAL phase result (at its stated feed conditions) and its
 CONDITIONED result (after cooling/heating to 313.15 K) are kept as two
 separate, independently inspectable dict entries — `checks['feed_phase']`
@@ -1334,14 +1340,23 @@ VLE flash is the sole source of the resulting liquid/vapor split — this
 module never estimates, assumes complete condensation, or infers the split
 itself.
 
-The resulting `liquid_fraction` is classified against a fixed
-`LIQUEFACTION_THRESHOLD = 0.50` (exactly 50% falls in the `>= 0.50`
-branch):
+The resulting `liquid_fraction`/`vapor_fraction` are classified in a fixed
+order, per `tools/binary-distillation-condensation-edge-case.md` — complete
+(or numerically-complete) condensation is checked **before** the 50%
+threshold, since a `liquid_fraction` of `1.0` would otherwise still satisfy
+`>= 0.50` and incorrectly route to the mixed-phase branch as well:
 
-| `liquid_fraction` after conditioning | `route` |
+| Condition | `route` |
 |---|---|
-| `>= 0.50` | `liquid_and_vapor_separation_future` — both a future liquid-phase and a future vapor-phase separation pathway are reported, neither implemented. |
-| `< 0.50` | `vapor_separation_advisable` — a vapor-phase separation method is advisable, not implemented. |
+| `vapor_fraction <= PHASE_FRACTION_TOLERANCE` | `liquid_phase_separation` — no meaningful vapor phase remains; only a future liquid-phase separation pathway is reported, not implemented. **Checked first.** |
+| `liquid_fraction >= LIQUEFACTION_THRESHOLD` (and vapor is above tolerance) | `liquid_and_vapor_separation_future` — both a future liquid-phase and a future vapor-phase separation pathway are reported, neither implemented. Exactly 50% liquid falls in this branch. |
+| otherwise | `vapor_separation_advisable` — a vapor-phase separation method is advisable, not implemented. |
+
+`PHASE_FRACTION_TOLERANCE = 1e-9` (module-level constant) is used instead of
+exact equality against `0.0`, since a rigorous VLE flash can return a tiny
+nonzero residual (e.g. `2.4e-12`) for a phase that is effectively absent.
+The same constant governs both the routing decision here and the tests
+below — never a second, independently-chosen tolerance.
 
 `operation` reports `'cooling'`/`'heating'`/`'none'` from comparing
 `initial_temperature_K` to `reference_temperature_K` — a two-phase feed is
@@ -1350,7 +1365,9 @@ reported as `{'valid': False, 'error':
 'reference_temperature_flash_failed', 'message': str(err)}` rather than
 fabricating a route.
 
-**Output schema** (JSON-friendly):
+**Output schema** (JSON-friendly) — complete condensation, e.g. the real
+Water/Ethanol 355 K worked example, which conditions to `liquid_fraction ==
+1.0`/`vapor_fraction == 0.0` at 313.15 K:
 
 ```python
 {
@@ -1361,10 +1378,21 @@ fabricating a route.
     'vapor_mol': {...}, 'liquid_mol': {...},
     'liquid_fraction': 1.0, 'vapor_fraction': 0.0,
     'liquid_percent': 100.0, 'vapor_percent': 0.0,
-    'route': 'liquid_and_vapor_separation_future',
-    'implemented': False, 'message': '...',
+    'route': 'liquid_phase_separation',
+    'implemented': False,
+    'message': (
+        'At 313.15 K, the conditioned feed is effectively fully liquid '
+        '(cooling from 355.00 K). No meaningful vapor phase remains. '
+        'Liquid-phase separation is the next future pathway, but it is '
+        'not yet implemented.'
+    ),
 }
 ```
+
+A genuinely mixed-phase result (`vapor_fraction` above tolerance and
+`liquid_fraction >= 0.50`) still returns `route: 'liquid_and_vapor_separation_future'`
+with the original "substantial partial condensation" wording — the message
+above is used only for the complete-condensation branch.
 
 `tools/chopper/test_feed_partial_condensation.py` covers the module-level
 HX-screen behavior: cooling vs. heating direction, the exactly-50%/
@@ -1374,7 +1402,13 @@ reporting, defensive component-count/zero-flow checks, and — per
 `tools/binary-distillation-vapor-liquid-dead-end.md` — that this all holds
 equally for a feed that is already vapor_liquid (not just entirely vapor)
 at its initial conditions, including that the *whole* feed's molar flow
-(not just its initial vapor portion) reaches the exchanger. Run with:
+(not just its initial vapor portion) reaches the exchanger. Per
+`tools/binary-distillation-condensation-edge-case.md`, it additionally
+covers the complete-condensation edge case: exact `vapor_fraction == 0.0`,
+a near-zero vapor fraction within `PHASE_FRACTION_TOLERANCE` (`1e-12`)
+routing identically to exact zero, a just-above-tolerance vapor fraction
+(`1e-6` overall) still routing to `liquid_and_vapor_separation_future`, and
+`PHASE_FRACTION_TOLERANCE == 1e-9` as a fixed constant. Run with:
 ```bash
 pytest tools/chopper/test_feed_partial_condensation.py -v
 ```
@@ -1397,7 +1431,7 @@ model-decided) runs from `phase_result['phase']` alone:
 | `phase` | Behavior |
 |---|---|
 | `liquid` | Stops immediately. `checks['routing']` = `{'route': 'liquid_phase_separation', 'implemented': False, ...}`. `evaluate_vapor_feed_at_reference_temperature()` is never called. |
-| `vapor` or `vapor_liquid` | Both run `evaluate_vapor_feed_at_reference_temperature()` on the SAME overall feed — the vapor/vapor_liquid distinction only matters for the ORIGINAL feed-phase result, never for which conditioning pathway runs. The result is stored as `checks['vapor_condensation_screen']`, and — if valid — echoed into `checks['routing']` (`route`, `liquid_fraction`/`vapor_fraction`, `liquid_percent`/`vapor_percent`, `message`) per the >=50%-liquid threshold table above. |
+| `vapor` or `vapor_liquid` | Both run `evaluate_vapor_feed_at_reference_temperature()` on the SAME overall feed — the vapor/vapor_liquid distinction only matters for the ORIGINAL feed-phase result, never for which conditioning pathway runs. The result is stored as `checks['vapor_condensation_screen']`, and — if valid — echoed into `checks['routing']` (`route`, `liquid_fraction`/`vapor_fraction`, `liquid_percent`/`vapor_percent`, `message`) per the complete-condensation/>=50%-liquid/otherwise classification table above (complete condensation checked first — see `tools/binary-distillation-condensation-edge-case.md`). |
 
 The full return shape is `{'calculation_performed': True, 'workflow':
 assessment, 'checks': {'feed_phase': {...}, 'routing': {...},
@@ -1423,12 +1457,20 @@ a vapor feed with <50% conditioned liquid routes to
 `tools/binary-distillation-vapor-liquid-dead-end.md` — a genuinely
 vapor_liquid feed (a real Water/Ethanol 355 K/101325 Pa case, ~25.5 mol%
 liquid/~74.5 mol% vapor at feed conditions) no longer stops, actually runs
-the reference-temperature screen, preserves its original feed-phase result
-distinctly from the conditioned one, is routed by the conditioned
-liquid_fraction at every threshold (below/exactly/above 50%), reports
-conditioning failures deterministically, and answers a follow-up "what
-next?" from the stored conditioned result rather than rerunning BioSTEAM or
-falling back to the old dead-end message. Run with:
+the reference-temperature screen, and preserves its original feed-phase
+result distinctly from the conditioned one. That same Water/Ethanol case
+fully condenses at 313.15 K (conditioned `liquid_fraction == 1.0`), so —
+per `tools/binary-distillation-condensation-edge-case.md` — it now serves
+as the real-BioSTEAM regression case for the complete-condensation edge
+case: `route == 'liquid_phase_separation'`, `remaining_steps ==
+['liquid_phase_separation']`, and `'vapor_phase_separation'` is absent from
+`remaining_steps`. A separate fake-HX-driven test covers genuine (non-
+complete) partial condensation at a >=50%-liquid mixed split, still routing
+to `liquid_and_vapor_separation_future` with both future pathways reported.
+Conditioning failures are still reported deterministically, and a follow-up
+"what next?" is still answered from the stored conditioned result rather
+than rerunning BioSTEAM or falling back to the old dead-end message. Run
+with:
 ```bash
 pytest tools/chopper/test_binary_distillation_calculation.py -v
 pytest tools/chopper/test_binary_distillation_feed_vapor_liquid.py -v
@@ -1576,7 +1618,7 @@ failure, or workflow-not-ready — now includes a `calculation_progress` dict:
 |---|---|
 | `completed_steps` | `list[str]` of stable step IDs that actually completed, derived only from `checks` — `[STEP_FEED_PHASE]` once `checks['feed_phase']['valid'] is True`; `[STEP_FEED_PHASE, STEP_VAPOR_CONDENSATION_SCREEN]` once the reference-temperature screen also completed (for a `vapor`/`vapor_liquid` feed). Never includes a step whose check is missing or `valid: False`. |
 | `next_step` / `next_step_available` | The next EXECUTABLE step, or `None`/`False`. Always `None`/`False` today — no downstream separator design step is implemented yet (see the step IDs below); reserved for when one ships. |
-| `remaining_steps` | Deterministic, from `phase`: `[STEP_LIQUID_PHASE_SEPARATION]` for `liquid`; `[STEP_LIQUID_PHASE_SEPARATION, STEP_VAPOR_PHASE_SEPARATION]` for `vapor`/`vapor_liquid` once the conditioned liquid fraction is `>= 0.50`; `[STEP_VAPOR_PHASE_SEPARATION]` once it's `< 0.50`; `[]` if the screen itself failed. |
+| `remaining_steps` | Deterministic, from `phase`: `[STEP_LIQUID_PHASE_SEPARATION]` for `liquid`. For `vapor`/`vapor_liquid`, derived from the screen's `route` (never re-derived independently from `liquid_fraction` — see `tools/binary-distillation-condensation-edge-case.md`): `[STEP_LIQUID_PHASE_SEPARATION]` when the conditioned feed is effectively fully liquid (`route == 'liquid_phase_separation'`, i.e. `vapor_fraction <= PHASE_FRACTION_TOLERANCE`); `[STEP_LIQUID_PHASE_SEPARATION, STEP_VAPOR_PHASE_SEPARATION]` for genuine partial condensation with `liquid_fraction >= 0.50`; `[STEP_VAPOR_PHASE_SEPARATION]` once it's `< 0.50`; `[]` if the screen itself failed. |
 | `remaining_outputs` | No `would_calculate`-equivalent output list exists yet for any of these separation pathways, so this is always `[]` even when `remaining_steps` is non-empty. |
 | `blocked_reason` | `None` once nothing remains; `'not_implemented'` once feed-phase (and, for `vapor`/`vapor_liquid`, the conditioning screen) succeeded but the separation-pathway step hasn't shipped; `'calculation_failed'` if the feed-phase check OR the reference-temperature screen itself errored despite the workflow being ready — **never** reported as a missing-input situation; `'workflow_not_ready'` when `calculate_binary_distillation_problem` never even reached the calculation layer. |
 | `message` | Human-readable summary matching whichever branch above applies — for `vapor`/`vapor_liquid`, this is the screen's own message (percentages, cooling/heating direction). |
@@ -1689,11 +1731,14 @@ missing/inconsistent/invalidated.
 `tools/chopper/test_binary_distillation_calculation_progress.py` covers all
 of this: `calculation_progress` schema correctness (feed-phase and
 vapor-condensation-screen completed, a fully-condensed Case D feed's
-`next_step_available=False`/`remaining_steps=[STEP_LIQUID_PHASE_SEPARATION,
-STEP_VAPOR_PHASE_SEPARATION]`/`blocked_reason='not_implemented'`, a
-not-ready workflow's `blocked_reason='workflow_not_ready'`,
-`remaining_outputs` staying `[]` even though `remaining_steps` is
-non-empty), the
+`next_step_available=False`/`remaining_steps=[STEP_LIQUID_PHASE_SEPARATION]`
+with `STEP_VAPOR_PHASE_SEPARATION` absent/`blocked_reason='not_implemented'`
+— per `tools/binary-distillation-condensation-edge-case.md`, this real
+Methanol/Water 400 K worked example also conditions to complete
+condensation at 313.15 K, so its `route` is `'liquid_phase_separation'`,
+not `'liquid_and_vapor_separation_future'` — a not-ready workflow's
+`blocked_reason='workflow_not_ready'`, `remaining_outputs` staying `[]`
+even though `remaining_steps` is non-empty), the
 `get_binary_distillation_calculation_status` READ before/after a
 calculation, reset and WRITE invalidation, and the exact worked
 regression from that doc (complete Case D → "yes" runs the calculation →

@@ -49,7 +49,10 @@ VAPOR_LOW_LIQUID_SPEC = dict(
 # dead-end.md Step 17's worked example. Genuinely vapor_liquid at the stated
 # feed conditions (~25.5 mol% liquid / ~74.5 mol% vapor), and cooling the
 # overall feed to 313.15 K fully condenses it (conditioned liquid_fraction
-# == 1.0), landing in the >=50% branch.
+# == 1.0, vapor_fraction == 0.0) -- tools/binary-distillation-condensation-
+# edge-case.md's complete-condensation edge case: this lands in the
+# vapor_fraction<=tolerance branch (liquid_phase_separation only), not the
+# genuine two-phase >=50% branch.
 TWO_PHASE_SPEC = dict(
     component_names=['Water', 'Ethanol'],
     component_flows={'Water': 50, 'Ethanol': 50},
@@ -167,23 +170,51 @@ def test_two_phase_feed_preserves_original_feed_phase_result():
     assert screen['liquid_fraction'] != feed_phase['liquid_fraction']
 
 
-# Test C -- conditioned liquid fraction >= 50%: both future-separation
-# pathways are reported, neither implemented.
-def test_two_phase_feed_conditioned_high_liquid_fraction_routes_to_both_pathways():
+# Test C -- tools/binary-distillation-condensation-edge-case.md regression:
+# this real Water/Ethanol case conditions to complete condensation
+# (liquid_fraction == 1.0, vapor_fraction == 0.0), which must route to
+# liquid-phase separation only -- no future vapor-phase separation step,
+# since no meaningful vapor phase remains.
+def test_two_phase_feed_conditioned_complete_condensation_routes_to_liquid_only():
     result = calculate_binary_distillation_problem(TWO_PHASE_SPEC)
 
     screen = result['checks']['vapor_condensation_screen']
-    assert screen['liquid_fraction'] >= 0.50
+    assert screen['liquid_fraction'] == pytest.approx(1.0)
+    assert screen['vapor_fraction'] == pytest.approx(0.0)
+
+    routing = result['checks']['routing']
+    assert routing['route'] == 'liquid_phase_separation'
+    assert routing['implemented'] is False
+
+    progress = result['calculation_progress']
+    assert progress['completed_steps'] == [calc.STEP_FEED_PHASE, calc.STEP_VAPOR_CONDENSATION_SCREEN]
+    assert progress['remaining_steps'] == [calc.STEP_LIQUID_PHASE_SEPARATION]
+    assert calc.STEP_VAPOR_PHASE_SEPARATION not in progress['remaining_steps']
+    assert progress['blocked_reason'] == 'not_implemented'
+    assert not hasattr(calc, 'STEP_TWO_PHASE_ROUTING')
+
+
+# Test C' -- a genuine (not complete) partial condensation with >=50%
+# liquid must still route to both future pathways -- the complete-
+# condensation branch above must not swallow this case.
+def test_two_phase_feed_conditioned_genuine_partial_condensation_routes_to_both_pathways(monkeypatch):
+    mol = {('g', 'Water'): 0.0, ('g', 'Ethanol'): 30.0, ('l', 'Water'): 50.0, ('l', 'Ethanol'): 20.0}
+    monkeypatch.setattr(fpc.bst.units, 'HXutility', _fake_hx_factory(mol))
+
+    result = calculate_binary_distillation_problem(TWO_PHASE_SPEC)
+
+    screen = result['checks']['vapor_condensation_screen']
+    assert screen['liquid_fraction'] == pytest.approx(0.70)
+    assert screen['vapor_fraction'] == pytest.approx(0.30)
+    assert screen['route'] == 'liquid_and_vapor_separation_future'
 
     routing = result['checks']['routing']
     assert routing['route'] == 'liquid_and_vapor_separation_future'
     assert routing['implemented'] is False
 
     progress = result['calculation_progress']
-    assert progress['completed_steps'] == [calc.STEP_FEED_PHASE, calc.STEP_VAPOR_CONDENSATION_SCREEN]
     assert progress['remaining_steps'] == [calc.STEP_LIQUID_PHASE_SEPARATION, calc.STEP_VAPOR_PHASE_SEPARATION]
     assert progress['blocked_reason'] == 'not_implemented'
-    assert not hasattr(calc, 'STEP_TWO_PHASE_ROUTING')
 
 
 # Test D -- conditioned liquid fraction < 50%: vapor-phase separation
@@ -354,12 +385,12 @@ def test_what_next_after_liquid_route_uses_stored_result():
 def test_what_next_after_two_phase_conditioning_route_uses_stored_result():
     agent.update_binary_distillation_problem(**TWO_PHASE_SPEC)
     calc_result = agent.calculate_current_binary_distillation_problem()
-    assert calc_result['checks']['routing']['route'] == 'liquid_and_vapor_separation_future'
+    assert calc_result['checks']['routing']['route'] == 'liquid_phase_separation'
 
     client = ScriptedClient([final(
-        '100% of the feed liquefies at 313.15 K; both a future liquid-phase '
-        'and a future vapor-phase separation are indicated, neither '
-        'implemented yet.'
+        'The conditioned feed is effectively fully liquid at 313.15 K; it '
+        'should proceed to the (not yet implemented) liquid-phase '
+        'separation pathway.'
     )])
     messages = _base_messages() + [{'role': 'user', 'content': 'what next?'}]
     agent.ask(client, messages)

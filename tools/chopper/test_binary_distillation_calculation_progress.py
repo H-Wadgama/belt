@@ -65,10 +65,13 @@ def test_successful_feed_phase_marks_completed():
 
 
 # ---------------------------------------------------------------------------
-# Test 2 -- Case D's feed is vapor and fully condenses at 313.15 K, so
-# deterministic phase routing (tools/binary-distillation-feed-vapor-liquid.md
-# Step 7) reports both future separation pathways -- this supersedes the old
-# case-design assumption once feed-phase evaluation succeeds (Step 12).
+# Test 2 -- Case D's feed is vapor and fully (not merely partially) condenses
+# at 313.15 K (liquid_fraction == 1.0, vapor_fraction == 0.0), so per
+# tools/binary-distillation-condensation-edge-case.md's complete-condensation
+# edge case, deterministic phase routing reports ONLY the future liquid-phase
+# separation pathway -- no vapor-phase step remains, since no meaningful
+# vapor phase remains. This supersedes the old case-design assumption once
+# feed-phase evaluation succeeds (Step 12).
 # ---------------------------------------------------------------------------
 
 def test_case_d_has_no_executable_next_step():
@@ -77,11 +80,10 @@ def test_case_d_has_no_executable_next_step():
     progress = result['calculation_progress']
     assert progress['next_step'] is None
     assert progress['next_step_available'] is False
-    assert progress['remaining_steps'] == [
-        calc.STEP_LIQUID_PHASE_SEPARATION, calc.STEP_VAPOR_PHASE_SEPARATION,
-    ]
+    assert progress['remaining_steps'] == [calc.STEP_LIQUID_PHASE_SEPARATION]
+    assert calc.STEP_VAPOR_PHASE_SEPARATION not in progress['remaining_steps']
     assert progress['blocked_reason'] == 'not_implemented'
-    assert result['checks']['vapor_condensation_screen']['route'] == 'liquid_and_vapor_separation_future'
+    assert result['checks']['vapor_condensation_screen']['route'] == 'liquid_phase_separation'
 
 
 # ---------------------------------------------------------------------------
@@ -259,13 +261,14 @@ def test_exact_agent_regression_ready_then_yes_then_what_next():
     progress = _tool_result_content(next_messages, 'get_binary_distillation_calculation_status')
     assert progress['calculation_available'] is True
     # READY_CASE_D's feed is vapor and fully condenses at 313.15 K, so the
-    # reference-temperature screen also completes (Step 12).
+    # reference-temperature screen also completes (Step 12); complete
+    # condensation routes to liquid-phase separation only (Step 2 above).
     assert progress['latest_calculation']['calculation_progress']['completed_steps'] == [
         calc.STEP_FEED_PHASE, calc.STEP_VAPOR_CONDENSATION_SCREEN,
     ]
     assert progress['latest_calculation']['calculation_progress']['next_step_available'] is False
     assert progress['latest_calculation']['calculation_progress']['remaining_steps'] == [
-        calc.STEP_LIQUID_PHASE_SEPARATION, calc.STEP_VAPOR_PHASE_SEPARATION,
+        calc.STEP_LIQUID_PHASE_SEPARATION,
     ]
     assert progress['latest_calculation']['calculation_progress']['blocked_reason'] == 'not_implemented'
 
