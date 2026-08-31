@@ -710,20 +710,24 @@ inserts as a layer before everything else). One function:
    what a designer would compute for that case (workflow doc section 8;
    Case C's list depends on which of `distillate_flow`/`bottoms_flow` and
    `xD`/`xB` was actually given, since the other one is what gets
-   calculated). `calculation_performed` is **always `False`** — this
+   calculated). `would_calculate_details` reports the same set of
+   quantities with explicit engineering metadata — see "The
+   `BINARY_DISTILLATION_QUANTITIES` registry" subsection right after this
+   list. `calculation_performed` is **always `False`** — this
    function never builds a feed stream or calls BioSTEAM.
 
 Return schema (workflow doc section 15, extended by
 `tools/binary-distillation-flow-rate-issue.md` section 8/10,
-`tools/binary-distillation-pending-truth.md` section 2/18, and
-`tools/binary-distillation-flow-units.md`): `{'valid_binary_scope',
-'component_count', 'components', 'feed_flow_complete',
-'feed_composition_complete', 'feed', 'essential_complete',
-'missing_essential_inputs', 'case', 'case_candidates', 'case_complete',
-'missing_case_inputs', 'optimum_feed_plate_confirmed',
+`tools/binary-distillation-pending-truth.md` section 2/18,
+`tools/binary-distillation-flow-units.md`, and
+`tools/chopper/binary-distillation-incorrect-symbol-reading-issue.md`):
+`{'valid_binary_scope', 'component_count', 'components',
+'feed_flow_complete', 'feed_composition_complete', 'feed',
+'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates',
+'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed',
 'calculation_inputs_complete', 'missing_calculation_inputs', 'status',
-'would_calculate', 'calculation_performed', 'message', 'provenance',
-'pending_request'}`.
+'would_calculate', 'would_calculate_details', 'calculation_performed',
+'message', 'provenance', 'pending_request'}`.
 `feed` is the normalized `feed_state` dict (component flows/total flow/
 composition, each with its provenance) — present on every result once the
 scope gate passes, primarily for audit/debugging rather than for the
@@ -843,6 +847,91 @@ covers the full agent-level replay: a complete Case D spec missing only
 reply performs a real WRITE (never a READ) and reaches
 `ready_for_calculation`; and a subsequent feed-phase question then runs the
 real calculation without asking for units again.
+
+### The `BINARY_DISTILLATION_QUANTITIES` registry — deterministic engineering labels
+
+Implements `tools/chopper/binary-distillation-incorrect-symbol-reading-issue.md`:
+a single authoritative mapping, in `binary_distillation_workflow.py`, from
+every engineering symbol this workflow can report in `would_calculate` to
+its field name and human-readable meaning. It exists because Qwen was
+observed reinterpreting a bare returned symbol from its own model
+knowledge — most concretely, reading `QR` as "reflux flow rate" when this
+workflow means "reboiler duty." The fix keeps Python, not the LLM,
+authoritative for what a symbol *means*, not just which symbols apply.
+
+```python
+BINARY_DISTILLATION_QUANTITIES = {
+    'D':               {'field': 'distillate_flow',        'symbol': 'D',     'label': 'distillate flow rate'},
+    'B':               {'field': 'bottoms_flow',            'symbol': 'B',     'label': 'bottoms flow rate'},
+    'xD':              {'field': 'distillate_composition',  'symbol': 'xD',    'label': 'distillate composition'},
+    'xB':              {'field': 'bottoms_composition',     'symbol': 'xB',    'label': 'bottoms composition'},
+    'QR':              {'field': 'reboiler_duty',           'symbol': 'QR',    'label': 'reboiler duty'},
+    'Qc':              {'field': 'condenser_duty',          'symbol': 'Qc',    'label': 'condenser duty'},
+    'N':               {'field': 'number_of_stages',        'symbol': 'N',     'label': 'number of stages'},
+    'Nfeed':           {'field': 'optimum_feed_stage',      'symbol': 'Nfeed', 'label': 'optimum feed stage'},
+    'column_diameter': {'field': 'column_diameter',         'symbol': None,    'label': 'column diameter'},
+}
+```
+
+`label` wording is taken from this project's own established terminology —
+`tools/binary-distillation-context.md` section 7 ("Reboiler/heating load,
+QR" / "Condenser/cooling load, Qc") and this agent's own prompt text
+("reboiler/condenser duty") — not from generic model knowledge, and not
+invented for this task.
+
+**`would_calculate_details`** is the structured counterpart to the
+pre-existing `would_calculate` (bare strings, e.g. `'QR'`): once `status`
+is `ready_for_calculation`, it's a list of `{'field', 'symbol', 'label'}`
+dicts, one per quantity, built by `_would_calculate_details(case, spec)`
+from `WOULD_CALCULATE_KEYS_BY_CASE`/`BINARY_DISTILLATION_QUANTITIES` — the
+same case-A/B/D membership as the legacy `WOULD_CALCULATE_BY_CASE`, and the
+same Case C give-one/get-the-other-back logic as `_would_calculate`, just
+expressed as registry keys instead of display strings. For example, a
+complete Case A returns:
+
+```python
+[
+    {'field': 'distillate_flow', 'symbol': 'D', 'label': 'distillate flow rate'},
+    {'field': 'bottoms_flow', 'symbol': 'B', 'label': 'bottoms flow rate'},
+    {'field': 'reboiler_duty', 'symbol': 'QR', 'label': 'reboiler duty'},
+    {'field': 'condenser_duty', 'symbol': 'Qc', 'label': 'condenser duty'},
+    {'field': 'number_of_stages', 'symbol': 'N', 'label': 'number of stages'},
+    {'field': 'optimum_feed_stage', 'symbol': 'Nfeed', 'label': 'optimum feed stage'},
+    {'field': 'column_diameter', 'symbol': None, 'label': 'column diameter'},
+]
+```
+
+`would_calculate` itself is kept byte-for-byte unchanged (same strings, same
+case membership) purely for backward compatibility with existing callers/
+tests; new code — and the agent prompt — should read `would_calculate_details`
+for engineering meaning. The deterministic `ready_for_calculation` message
+was also updated to render from this registry (`"QR (reboiler duty)"`
+instead of a bare `"QR"`), so the human-readable summary can no longer omit
+a symbol's meaning either.
+
+`binary_distillation_workflow_agent.py`'s `SYSTEM_PROMPT` carries a matching
+**ENGINEERING OUTPUT GROUNDING RULE**: when a tool result supplies a
+quantity's `symbol` and `label`, Qwen must use that `label` verbatim and
+must never expand, reinterpret, or redefine the symbol from its own
+knowledge — with the QR/reboiler-duty case given as the explicit worked
+example, and "reflux flow rate" named as the specific wrong answer to never
+substitute. A companion rule covers the legacy bare-string path: if
+`would_calculate` ever contains a symbol with no matching
+`would_calculate_details` entry, Qwen repeats the bare symbol rather than
+inventing a definition for it.
+
+`tools/chopper/test_binary_distillation_workflow.py` covers the registry
+directly: every currently supported symbol has the correct label (using
+this project's own terminology, not a generic one), Case A/B/C/D each
+return the correct structured set, and `would_calculate`'s legacy strings/
+case membership are unaffected by the new field.
+`tools/chopper/test_binary_distillation_workflow_agent.py` covers the
+agent-level grounding: `SYSTEM_PROMPT` contains the grounding rule and its
+QR/reboiler-duty example (verified via the actual scripted-client harness,
+not just a string search), and — most importantly — the raw JSON tool
+result actually appended to `messages` for a completed Case A carries
+`"symbol": "QR"` / `"label": "reboiler duty"` and never contains the phrase
+"reflux flow rate."
 
 ### `pending_request` — deterministic "what is being asked right now"
 
@@ -1247,7 +1336,12 @@ inferring a case itself, to never invent pressure/feed condition/reflux
 condition/purity/recovery/reflux ratio/boilup ratio/product flow/optimum-
 feed-plate use, to never claim a calculation was performed (there is no
 calculation tool available to this agent), and to stop — reporting
-`would_calculate` — once `status` comes back `ready_for_calculation`.
+`would_calculate_details` (see "The `BINARY_DISTILLATION_QUANTITIES`
+registry" above) — once `status` comes back `ready_for_calculation`. An
+**ENGINEERING OUTPUT GROUNDING RULE** block tells the model to use each
+`would_calculate_details` entry's `label` verbatim for its `symbol`'s
+meaning and never redefine it from its own knowledge (the QR ≠ "reflux flow
+rate" fix).
 Separate guidance blocks cover each `status` value the checker can return
 (`need_components`/`unsupported_multicomponent`/`inconsistent_input`/
 `need_essential_inputs`/`need_case_definition`/`need_case_inputs`/
@@ -1671,8 +1765,8 @@ turn and still forces a no-tools finalization call afterward.
 `checks['feed_phase']`, `checks['routing']`, and — for a `vapor`/
 `vapor_liquid` feed — `checks['vapor_condensation_screen']`,
 `SYSTEM_PROMPT`'s `ready_for_calculation` guidance tells the model to report
-exactly those checks and to explicitly note that `would_calculate`'s other
-quantities (distillate/bottoms flow, reflux ratio, reboiler/condenser duty,
+exactly those checks and to explicitly note that `would_calculate_details`'s
+other quantities (distillate/bottoms flow, reflux ratio, reboiler/condenser duty,
 stage count, feed stage, column diameter) are still not computed, and that
 no liquid- or vapor-phase separator has actually been designed or sized —
 never implying the full Wankat Case design was performed.

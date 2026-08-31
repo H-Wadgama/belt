@@ -216,7 +216,7 @@ def update_binary_distillation_problem(
         use_optimum_feed_plate: Whether the design should use the optimum feed plate. This is common to ALL FOUR cases and is never itself evidence of which case applies -- ask for it separately, and never default it to True.
 
     Returns:
-        A dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'calculation_performed' (always False), 'message', 'provenance'. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed.
+        A dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'would_calculate_details', 'calculation_performed' (always False), 'message', 'provenance'. When `status` is 'ready_for_calculation', use `would_calculate_details` (a list of `{'field', 'symbol', 'label'}` dicts) to describe each quantity -- it is the authoritative engineering meaning; see the ENGINEERING OUTPUT GROUNDING RULE below. `would_calculate` (bare strings, e.g. "QR") is kept only for backward compatibility -- do not define or explain a symbol from that field alone. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed.
     """
     global _last_calculation_result
 
@@ -1001,10 +1001,29 @@ never assume "kmol/hr" just because that's the usual choice.
 ## When `status` is `ready_for_calculation`
 
 Tell the user their problem is fully specified as Wankat Case `case`, and \
-list exactly the quantities in `would_calculate` as what a FULL Case `case` \
-design would compute. The calculation layer available to you does not \
-compute those yet -- it evaluates only the feed phase. Do not calculate, \
-approximate, or imply you have already found `would_calculate`'s values.
+list exactly the quantities in `would_calculate_details` as what a FULL \
+Case `case` design would compute -- for each entry, present its `symbol` \
+together with its `label` (e.g. "QR (reboiler duty)"). The calculation \
+layer available to you does not compute those yet -- it evaluates only the \
+feed phase. Do not calculate, approximate, or imply you have already found \
+`would_calculate_details`'s values.
+
+## ENGINEERING OUTPUT GROUNDING RULE
+
+When a deterministic tool result gives a quantity with an explicit `symbol` \
+and `label` (as `would_calculate_details` does), use that `label` verbatim \
+for its engineering meaning. Do not expand, reinterpret, rename, or \
+redefine an engineering symbol from your own knowledge, and never let a \
+symbol's usual meaning in an unrelated context override what the tool just \
+told you. For example, if an entry has `symbol="QR"` and \
+`label="reboiler duty"`, describe QR only as reboiler duty -- never as \
+"reflux flow rate" or any other substitute, no matter how plausible it \
+sounds.
+
+If you ever see the legacy `would_calculate` field contain a bare symbol \
+with no accompanying `would_calculate_details` entry, do not invent a \
+definition for it -- repeat the bare symbol (e.g. "QR") without adding a \
+parenthetical meaning, since none was supplied.
 
 If the user then asks to proceed/calculate/go ahead, or asks a feed-phase/ \
 vapor-fraction question, the calculation runs automatically before you see \

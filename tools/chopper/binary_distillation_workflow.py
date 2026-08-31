@@ -57,6 +57,43 @@ WOULD_CALCULATE_BY_CASE = {
     'D': list(_WOULD_CALCULATE_ABD),
 }
 
+# Single authoritative engineering-quantity registry for every symbol this
+# workflow can report in `would_calculate` --
+# tools/chopper/binary-distillation-incorrect-symbol-reading-issue.md. Python
+# owns what these symbols MEAN; the agent (Qwen) renders them verbatim and
+# must never reinterpret a bare symbol from its own model knowledge (see
+# `binary_distillation_workflow_agent.py`'s ENGINEERING OUTPUT GROUNDING
+# RULE). `label` wording follows this project's own established usage:
+# `tools/binary-distillation-context.md` section 7 ("Reboiler/heating load,
+# QR" / "Condenser/cooling load, Qc") and this agent's own prompt text
+# ("reboiler/condenser duty") settle QR/Qc as reboiler/condenser duty; `N`/
+# `Nfeed`/`column diameter` labels match this module's pre-existing
+# `_WOULD_CALCULATE_ABD` wording above.
+BINARY_DISTILLATION_QUANTITIES = {
+    'D': {'field': 'distillate_flow', 'symbol': 'D', 'label': 'distillate flow rate'},
+    'B': {'field': 'bottoms_flow', 'symbol': 'B', 'label': 'bottoms flow rate'},
+    'xD': {'field': 'distillate_composition', 'symbol': 'xD', 'label': 'distillate composition'},
+    'xB': {'field': 'bottoms_composition', 'symbol': 'xB', 'label': 'bottoms composition'},
+    'QR': {'field': 'reboiler_duty', 'symbol': 'QR', 'label': 'reboiler duty'},
+    'Qc': {'field': 'condenser_duty', 'symbol': 'Qc', 'label': 'condenser duty'},
+    'N': {'field': 'number_of_stages', 'symbol': 'N', 'label': 'number of stages'},
+    'Nfeed': {'field': 'optimum_feed_stage', 'symbol': 'Nfeed', 'label': 'optimum feed stage'},
+    'column_diameter': {'field': 'column_diameter', 'symbol': None, 'label': 'column diameter'},
+}
+
+# Case-output membership expressed as registry keys (kept alongside the
+# legacy string tables above rather than replacing them -- see
+# `_would_calculate_details` and the module docstring note on
+# `would_calculate` vs. `would_calculate_details`). This is the same
+# case-A/B/D membership as `WOULD_CALCULATE_BY_CASE`; only the
+# representation (canonical key vs. legacy string) differs.
+_WOULD_CALCULATE_KEYS_ABD = ['D', 'B', 'QR', 'Qc', 'N', 'Nfeed', 'column_diameter']
+WOULD_CALCULATE_KEYS_BY_CASE = {
+    'A': list(_WOULD_CALCULATE_KEYS_ABD),
+    'B': ['xD', 'xB', *_WOULD_CALCULATE_KEYS_ABD],
+    'D': list(_WOULD_CALCULATE_KEYS_ABD),
+}
+
 # Case A-D fields that identify which case is being specified -- used only
 # to distinguish "nothing case-specific stated yet" (explain the four
 # options) from "some case-specific field given, but that candidate is
@@ -323,11 +360,27 @@ def _would_calculate(case, spec):
     return calc
 
 
+def _would_calculate_keys(case, spec):
+    """Same case-output selection as `_would_calculate`, but as `BINARY_DISTILLATION_QUANTITIES` keys instead of legacy display strings."""
+    if case != 'C':
+        return list(WOULD_CALCULATE_KEYS_BY_CASE[case])
+    keys = ['B' if spec.get('distillate_flow') is not None else 'D']
+    keys.append('xB' if spec.get('xD') is not None else 'xD')
+    keys += ['QR', 'Qc', 'N', 'Nfeed', 'column_diameter']
+    return keys
+
+
+def _would_calculate_details(case, spec):
+    """Structured `{'field', 'symbol', 'label'}` entries for what a fully-specified `case` would calculate -- the deterministic source Qwen must render verbatim instead of reinterpreting the bare strings in `would_calculate` (see `BINARY_DISTILLATION_QUANTITIES` above)."""
+    return [dict(BINARY_DISTILLATION_QUANTITIES[key]) for key in _would_calculate_keys(case, spec)]
+
+
 def _base_report(scope, essential_complete=False, missing_essential_inputs=None,
                   case=None, case_candidates=None, case_complete=False,
                   missing_case_inputs=None, optimum_feed_plate_confirmed=None,
                   calculation_inputs_complete=False, missing_calculation_inputs=None,
-                  status=None, would_calculate=None, message='', feed=None,
+                  status=None, would_calculate=None, would_calculate_details=None,
+                  message='', feed=None,
                   feed_flow_complete=False, feed_composition_complete=False,
                   pending_request=None):
     return {
@@ -354,6 +407,12 @@ def _base_report(scope, essential_complete=False, missing_essential_inputs=None,
         'missing_calculation_inputs': missing_calculation_inputs or [],
         'status': status,
         'would_calculate': would_calculate or [],
+        # Structured {'field', 'symbol', 'label'} form of `would_calculate`
+        # -- see `BINARY_DISTILLATION_QUANTITIES`/`_would_calculate_details`
+        # above. `would_calculate` (bare strings) is kept unchanged for
+        # backward compatibility; this is the field Qwen should read for
+        # engineering meaning.
+        'would_calculate_details': would_calculate_details or [],
         'calculation_performed': False,
         'message': message,
         'provenance': PROVENANCE,
@@ -587,17 +646,27 @@ def assess_binary_distillation_problem(spec):
         )
 
     would_calculate = _would_calculate(case, spec)
+    would_calculate_details = _would_calculate_details(case, spec)
+    # Step 6 (symbol-reading-issue doc): the deterministic message must use
+    # the same registry as `would_calculate_details`, not the bare
+    # `would_calculate` strings -- so Qwen is never handed a bare "QR" to
+    # define on its own even in the human-readable summary.
+    would_calculate_text = ', '.join(
+        f"{q['symbol']} ({q['label']})" if q['symbol'] else q['label']
+        for q in would_calculate_details
+    )
     return _base_report(
         scope, essential_complete=True, case=case, case_candidates=[case],
         case_complete=True, optimum_feed_plate_confirmed=bool(ofp),
         calculation_inputs_complete=True, missing_calculation_inputs=[],
         status='ready_for_calculation', would_calculate=would_calculate,
+        would_calculate_details=would_calculate_details,
         message=(
             f"Your binary-distillation problem is fully specified as Wankat "
             f"Case {case}, and ready for the currently implemented "
             f"calculation layer. The available calculation can evaluate "
             f"feed phase. A full Case {case} design would also calculate: "
-            f"{', '.join(would_calculate)} -- these are not yet implemented "
+            f"{would_calculate_text} -- these are not yet implemented "
             f"in this pipeline."
         ),
         feed=feed, feed_flow_complete=True, feed_composition_complete=True,

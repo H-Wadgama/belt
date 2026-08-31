@@ -11,6 +11,8 @@ to stop.
 Run with:
     pytest tools/chopper/test_binary_distillation_workflow_agent.py -v
 """
+import json
+
 import pytest
 
 import binary_distillation_workflow_agent as agent
@@ -264,3 +266,87 @@ def test_hard_call_budget_enforced():
 
     executed = _tool_result_names(messages)
     assert len(executed) <= agent.MAX_TOOL_CALLS_PER_TURN
+
+
+# ---------------------------------------------------------------------------
+# tools/chopper/binary-distillation-incorrect-symbol-reading-issue.md --
+# engineering-output grounding: the raw tool-result text actually handed to
+# the model must carry QR/Qc's authoritative meaning, and the prompt must
+# never itself encode the wrong definition.
+# ---------------------------------------------------------------------------
+
+def test_system_prompt_contains_engineering_output_grounding_rule():
+    assert 'ENGINEERING OUTPUT GROUNDING RULE' in agent.SYSTEM_PROMPT
+    assert 'would_calculate_details' in agent.SYSTEM_PROMPT
+    # "reflux flow rate" appears only as the explicit wrong-answer example in
+    # the grounding rule itself, never as an actual definition of QR/Qc.
+    assert 'never as "reflux flow rate"' in agent.SYSTEM_PROMPT
+    assert 'label="reboiler duty"' in agent.SYSTEM_PROMPT
+
+
+def test_system_prompt_instructs_no_bare_symbol_enrichment():
+    assert 'do not invent a definition' in agent.SYSTEM_PROMPT.lower()
+
+
+def test_ready_for_calculation_tool_result_grounds_QR_as_reboiler_duty():
+    """Step 19 regression: complete Case A (xD=0.9, xB=0.1, L0/D=2,
+    optimum feed plate) via one WRITE call, then check the JSON actually
+    appended to `messages` for the model -- not a hypothetical -- carries
+    QR's authoritative meaning and never the wrong "reflux flow rate"."""
+    client = ScriptedClient([
+        with_calls(write_call(
+            component_names=['Methanol', 'Water'],
+            component_flows={'Methanol': 40, 'Water': 60},
+            component_flow_units='kmol/hr',
+            pressure_Pa=101325,
+            feed_temperature_K=350.0,
+            reflux_condition='saturated_liquid',
+            xD=0.9, xB=0.1,
+            external_reflux_ratio_LD=2.0,
+            use_optimum_feed_plate=True,
+        )),
+        final('Your Case A design is fully specified.'),
+    ])
+    messages = _base_messages() + [{'role': 'user', 'content': 'design a methanol/water column'}]
+
+    agent.ask(client, messages)
+
+    tool_messages = [m for m in messages if isinstance(m, dict) and m.get('role') == 'tool']
+    assert tool_messages, 'expected a tool result message in the conversation'
+    content = tool_messages[-1]['content']
+    assert '"status": "ready_for_calculation"' in content
+    assert '"symbol": "QR"' in content
+    assert '"label": "reboiler duty"' in content
+    assert '"symbol": "Qc"' in content
+    assert '"label": "condenser duty"' in content
+    assert 'reflux flow rate' not in content
+
+
+def test_legacy_bare_would_calculate_symbol_has_no_details_entry_mismatch():
+    """Bare-symbol fallback (Step 16): whenever `would_calculate` carries a
+    symbol, `would_calculate_details` must carry its grounded counterpart --
+    so the model is never left needing to guess at a symbol that legitimately
+    has a definition available."""
+    client = ScriptedClient([
+        with_calls(write_call(
+            component_names=['Methanol', 'Water'],
+            component_flows={'Methanol': 40, 'Water': 60},
+            component_flow_units='kmol/hr',
+            pressure_Pa=101325,
+            feed_temperature_K=350.0,
+            reflux_condition='saturated_liquid',
+            xD=0.9, xB=0.1,
+            external_reflux_ratio_LD=2.0,
+            use_optimum_feed_plate=True,
+        )),
+        final('Your Case A design is fully specified.'),
+    ])
+    messages = _base_messages() + [{'role': 'user', 'content': 'design a methanol/water column'}]
+
+    agent.ask(client, messages)
+
+    tool_messages = [m for m in messages if isinstance(m, dict) and m.get('role') == 'tool']
+    result = json.loads(tool_messages[-1]['content'])
+    symbols_in_would_calculate = {s for s in result['would_calculate'] if s in ('D', 'B', 'QR', 'Qc', 'N')}
+    symbols_with_details = {e['symbol'] for e in result['would_calculate_details']}
+    assert symbols_in_would_calculate <= symbols_with_details

@@ -16,7 +16,10 @@ itself).
 Run with:
     pytest tools/chopper/test_binary_distillation_workflow.py -v
 """
-from binary_distillation_workflow import assess_binary_distillation_problem
+from binary_distillation_workflow import (
+    BINARY_DISTILLATION_QUANTITIES,
+    assess_binary_distillation_problem,
+)
 
 PRESSURE = 101325
 TEMP = 350.0
@@ -328,4 +331,102 @@ def test_problem_example_2_single_component_flow_never_becomes_total():
     assert result['feed']['composition'] == {}
     assert result['status'] == 'need_essential_inputs'
     assert '50' in result['message']
-    assert 'not yet fully defined' in result['message']
+
+
+# ---------------------------------------------------------------------------
+# tools/chopper/binary-distillation-incorrect-symbol-reading-issue.md --
+# authoritative quantity registry + structured `would_calculate_details`.
+# ---------------------------------------------------------------------------
+
+def test_quantity_registry_covers_every_supported_symbol():
+    """Step 13 -- every currently supported would_calculate symbol has an explicit, correct label using this project's own terminology."""
+    expected_labels = {
+        'D': 'distillate flow rate',
+        'B': 'bottoms flow rate',
+        'QR': 'reboiler duty',
+        'Qc': 'condenser duty',
+        'N': 'number of stages',
+        'Nfeed': 'optimum feed stage',
+        'column_diameter': 'column diameter',
+    }
+    for key, label in expected_labels.items():
+        entry = BINARY_DISTILLATION_QUANTITIES[key]
+        assert entry['label'] == label
+        assert entry['field']  # every entry has a stable machine-readable field name
+
+
+def test_quantity_registry_QR_and_Qc_are_never_reflux_flow_rate():
+    """Regression for the reported bug: QR/Qc must never resolve to 'reflux flow rate' anywhere in the registry."""
+    for entry in BINARY_DISTILLATION_QUANTITIES.values():
+        assert entry['label'] != 'reflux flow rate'
+    assert BINARY_DISTILLATION_QUANTITIES['QR']['symbol'] == 'QR'
+    assert BINARY_DISTILLATION_QUANTITIES['QR']['label'] == 'reboiler duty'
+    assert BINARY_DISTILLATION_QUANTITIES['Qc']['symbol'] == 'Qc'
+    assert BINARY_DISTILLATION_QUANTITIES['Qc']['label'] == 'condenser duty'
+
+
+def test_case_a_would_calculate_details_structured():
+    """Step 12 -- a fully specified Case A reports structured QR/Qc metadata, never a bare/mislabeled symbol."""
+    spec = dict(ESSENTIALS, xD=0.9, xB=0.1, external_reflux_ratio_LD=2.0, use_optimum_feed_plate=True)
+    result = assess_binary_distillation_problem(spec)
+    assert result['status'] == 'ready_for_calculation'
+    assert result['case'] == 'A'
+
+    by_symbol = {entry['symbol']: entry for entry in result['would_calculate_details']}
+    assert by_symbol['QR'] == {'field': 'reboiler_duty', 'symbol': 'QR', 'label': 'reboiler duty'}
+    assert by_symbol['Qc'] == {'field': 'condenser_duty', 'symbol': 'Qc', 'label': 'condenser duty'}
+    named_symbols = {e['symbol'] for e in result['would_calculate_details'] if e['symbol'] is not None}
+    assert named_symbols == {'D', 'B', 'QR', 'Qc', 'N', 'Nfeed'}
+    assert any(e['symbol'] is None and e['label'] == 'column diameter' for e in result['would_calculate_details'])
+
+    assert 'QR (reflux flow rate)' not in result['message']
+    assert 'reboiler duty' in result['message']
+    assert 'condenser duty' in result['message']
+
+
+def test_case_b_would_calculate_details_includes_compositions():
+    """Case B's structured output additionally includes xD/xB, matching WOULD_CALCULATE_BY_CASE's existing membership."""
+    spec = dict(ESSENTIALS, Lr=0.99, Hr=0.99, external_reflux_ratio_LD=3.0, use_optimum_feed_plate=True)
+    result = assess_binary_distillation_problem(spec)
+    assert result['status'] == 'ready_for_calculation'
+    assert result['case'] == 'B'
+    fields = {e['field'] for e in result['would_calculate_details']}
+    assert fields == {
+        'distillate_composition', 'bottoms_composition', 'distillate_flow',
+        'bottoms_flow', 'reboiler_duty', 'condenser_duty', 'number_of_stages',
+        'optimum_feed_stage', 'column_diameter',
+    }
+
+
+def test_case_c_would_calculate_details_matches_calculated_side_only():
+    """Case C's structured output reports only the CALCULATED product flow/composition, mirroring the existing `would_calculate` behavior in test_10."""
+    spec = dict(ESSENTIALS, distillate_flow=40.0, xD=0.99,
+                external_reflux_ratio_LD=3.0, use_optimum_feed_plate=True)
+    result = assess_binary_distillation_problem(spec)
+    assert result['status'] == 'ready_for_calculation'
+    assert result['case'] == 'C'
+    fields = {e['field'] for e in result['would_calculate_details']}
+    assert 'bottoms_flow' in fields
+    assert 'bottoms_composition' in fields
+    assert 'distillate_flow' not in fields
+    assert 'distillate_composition' not in fields
+
+
+def test_case_d_would_calculate_details_structured():
+    """Case D structured output carries the same QR/Qc grounding as Case A."""
+    spec = dict(ESSENTIALS, xD=0.99, xB=0.01, boilup_ratio_VB=2.0, use_optimum_feed_plate=True)
+    result = assess_binary_distillation_problem(spec)
+    assert result['status'] == 'ready_for_calculation'
+    assert result['case'] == 'D'
+    by_symbol = {entry['symbol']: entry for entry in result['would_calculate_details']}
+    assert by_symbol['QR']['label'] == 'reboiler duty'
+    assert by_symbol['Qc']['label'] == 'condenser duty'
+
+
+def test_would_calculate_legacy_field_unchanged_by_registry_addition():
+    """Definition of done #8 -- adding would_calculate_details must not change the pre-existing `would_calculate` string list or case membership."""
+    spec = dict(ESSENTIALS, xD=0.99, xB=0.01, external_reflux_ratio_LD=3.0, use_optimum_feed_plate=True)
+    result = assess_binary_distillation_problem(spec)
+    assert set(result['would_calculate']) == {
+        'D', 'B', 'QR', 'Qc', 'N', 'Nfeed (optimum feed stage)', 'column diameter',
+    }
