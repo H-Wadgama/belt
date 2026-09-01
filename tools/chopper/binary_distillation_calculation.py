@@ -5,7 +5,9 @@ See `tools/binary-distillation-feed-phase-evaluation.md` Step 9. Chains
 the existing workflow-only checker (`binary_distillation_workflow.py`) with
 the new BioSTEAM feed adapter (`biosteam_feed.py`) and feed-phase evaluator
 (`feed_phase.py`): a calculation only ever runs once the workflow reports
-`status == 'ready_for_calculation'`.
+`feed_screening['ready'] is True` -- independent of whether a Design Option
+A-D (`design_assessment`) is complete; see
+tools/binary-distillation-separating-feed-phase-from-options-a-d.md.
 
 This is a separate downstream layer from the workflow-only agent -- see
 that module's docstring and `tools/binary-distillation-feed-phase-evaluation.md`
@@ -61,8 +63,8 @@ def build_calculation_progress(*, assessment, checks):
     ----------
     assessment : dict
         The `assess_binary_distillation_problem(spec)` result. Must have
-        `status == 'ready_for_calculation'` -- callers with an earlier
-        status build the `workflow_not_ready` progress dict directly (Step
+        `assessment['feed_screening']['ready'] is True` -- callers where
+        that isn't yet true build the `workflow_not_ready` progress dict directly (Step
         5), never through this function.
     checks : dict
         The `checks` dict `calculate_binary_distillation_problem` is about
@@ -212,8 +214,15 @@ def calculate_binary_distillation_problem(spec):
         `feed_phase` later without changing this shape.
     """
     assessment = assess_binary_distillation_problem(spec)
+    feed_screening = assessment['feed_screening']
 
-    if assessment['status'] != 'ready_for_calculation':
+    # tools/binary-distillation-separating-feed-phase-from-options-a-d.md
+    # Step 9 -- the calculation gate is feed-screening readiness, NOT the
+    # legacy `status` field (which also requires reflux_condition, a fully
+    # identified Design Option, and optimum-feed-plate confirmation). A
+    # feed-ready/Design-Option-incomplete problem must be able to run this
+    # calculation; a Design-Option-complete/feed-incomplete problem must not.
+    if not feed_screening['ready']:
         return {
             'calculation_performed': False,
             'workflow': assessment,
@@ -225,7 +234,7 @@ def calculate_binary_distillation_problem(spec):
                 'remaining_steps': [],
                 'remaining_outputs': [],
                 'blocked_reason': 'workflow_not_ready',
-                'message': assessment['message'],
+                'message': feed_screening['message'],
             },
         }
 

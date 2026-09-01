@@ -31,6 +31,7 @@ from feed_state import (
 )
 from problem_spec import (
     CASE_FIELD_SUMMARY,
+    FEED_THERMAL_FIELDS,
     FULL_CITATION,
     SUPPORTED_REFLUX_CONDITIONS,
     TABLE_3_1_PROVENANCE,
@@ -291,6 +292,225 @@ def _calculation_pending_request(missing_calculation_inputs):
     return {'field': field, 'request_type': 'flow_units', 'prompt': meta['prompt']}
 
 
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-separating-feed-phase-from-options-a-d.md --
+# feed screening and Design Option A-D assessment are two independent
+# deterministic branches over the same accumulated state. Neither gates the
+# other: feed screening depends only on what the feed-VLE/reference-
+# temperature-conditioning calculation physically needs (component identity,
+# quantity, flow units, pressure, and the feed's own thermal condition);
+# Design Option assessment depends only on `identify_case()`'s design-field
+# presence logic plus `reflux_condition` and `use_optimum_feed_plate`
+# (common to all four cases). `assess_binary_distillation_problem()` below
+# computes both, unconditionally, on every call.
+# ---------------------------------------------------------------------------
+
+_FEED_SCREENING_MESSAGES = {
+    'pressure_Pa': 'The column pressure (pressure_Pa) has not been given yet.',
+    'feed_thermal_condition': (
+        'The feed thermal condition (exactly one of feed_temperature_K, '
+        'feed_quality, or feed_enthalpy_kJ_per_hr) has not been given yet.'
+    ),
+    'feed_thermal_condition_ambiguous': (
+        'More than one feed thermal condition was given (feed_temperature_K, '
+        'feed_quality, feed_enthalpy_kJ_per_hr are mutually exclusive) -- '
+        'supply exactly one.'
+    ),
+}
+
+
+def _feed_screening_status(missing):
+    """First-priority missing item decides the reported status -- quantity
+    before pressure before thermal condition before units, matching the
+    order `_compute_feed_screening` checks them in."""
+    if 'feed_quantity' in missing:
+        return 'need_feed_quantity'
+    if 'pressure_Pa' in missing:
+        return 'need_pressure'
+    if 'feed_thermal_condition' in missing or 'feed_thermal_condition_ambiguous' in missing:
+        return 'need_feed_thermal_condition'
+    if any(m in ('component_flow_units', 'total_flow_units') for m in missing):
+        return 'need_feed_units'
+    return 'ready'
+
+
+def _feed_screening_message(missing, feed_state):
+    if 'feed_quantity' in missing:
+        return _feed_quantity_message(feed_state)
+    parts = [_FEED_SCREENING_MESSAGES[m] for m in missing if m in _FEED_SCREENING_MESSAGES]
+    for m in missing:
+        if m in _CALCULATION_INPUT_MESSAGES:
+            parts.append(_CALCULATION_INPUT_MESSAGES[m])
+    return ' '.join(parts) or 'The feed information is sufficient for feed-phase screening.'
+
+
+def _compute_feed_screening(spec, scope, assessed):
+    """
+    Independent feed-screening readiness -- ONLY what
+    `biosteam_feed.build_biosteam_feed` + `feed_phase.evaluate_feed_phase`
+    physically need: exactly two components, complete feed quantity/
+    composition, flow-rate units, pressure, and exactly one feed thermal
+    condition. Never looks at `reflux_condition`, case-defining fields, or
+    `use_optimum_feed_plate` -- those belong to `_compute_design_assessment`
+    below and must never block this.
+
+    Parameters
+    ----------
+    spec : dict
+        The raw accumulated spec (for `pressure_Pa` / thermal-condition
+        fields, which live outside the feed-state dict).
+    scope : dict
+        Output of `check_binary_scope`.
+    assessed : dict
+        Output of `feed_state.assess_feed_state` for the same spec.
+
+    Returns
+    -------
+    dict with keys 'ready' (bool), 'missing_inputs' (list[str]), 'status'
+    (str), 'message' (str).
+    """
+    if not scope['valid_binary_scope']:
+        return {
+            'ready': False, 'missing_inputs': [],
+            'status': scope['status'], 'message': scope['message'],
+        }
+    if assessed['conflicts']:
+        return {
+            'ready': False, 'missing_inputs': [],
+            'status': 'inconsistent_feed',
+            'message': 'Inconsistent feed information given: ' + ' '.join(assessed['conflicts']),
+        }
+
+    feed_state = assessed['state']
+    missing = []
+    if not (assessed['feed_flow_complete'] and assessed['feed_composition_complete']):
+        missing.append('feed_quantity')
+    if spec.get('pressure_Pa') is None:
+        missing.append('pressure_Pa')
+    given_thermal = [f for f in FEED_THERMAL_FIELDS if spec.get(f) is not None]
+    if len(given_thermal) == 0:
+        missing.append('feed_thermal_condition')
+    elif len(given_thermal) > 1:
+        missing.append('feed_thermal_condition_ambiguous')
+
+    if missing:
+        return {
+            'ready': False, 'missing_inputs': missing,
+            'status': _feed_screening_status(missing),
+            'message': _feed_screening_message(missing, feed_state),
+        }
+
+    calc_check = check_calculation_inputs(feed_state)
+    if not calc_check['complete']:
+        return {
+            'ready': False, 'missing_inputs': list(calc_check['missing']),
+            'status': 'need_feed_units',
+            'message': _feed_screening_message(calc_check['missing'], feed_state),
+        }
+
+    return {
+        'ready': True, 'missing_inputs': [], 'status': 'ready',
+        'message': 'The feed information is sufficient for feed-phase screening.',
+    }
+
+
+def _compute_design_assessment(spec):
+    """
+    Independent Design Option A-D assessment, built from
+    `problem_spec.identify_case()` (already design-field-only) plus
+    `reflux_condition` and `use_optimum_feed_plate` (common to all four
+    cases, per section 9 of the workflow doc). Runs unconditionally --
+    regardless of feed-scope validity or feed-screening readiness -- so
+    early Design Option facts are always classified as soon as they're
+    given (tools/binary-distillation-separating-feed-phase-from-options-a-d.md
+    Step 18/19). Never gates, and is never gated by, `_compute_feed_screening`.
+
+    Returns
+    -------
+    dict with keys 'design_option' ('A'|'B'|'C'|'D'|None),
+    'design_option_candidates' (list[str]), 'complete' (bool),
+    'missing_inputs' (list[str] -- populated only once a single design
+    option is identified but still incomplete), 'missing_inputs_by_candidate'
+    (dict[str, list[str]] -- populated only while multiple candidates
+    remain), 'ambiguous' (bool), 'ambiguous_reason' (str or None),
+    'reflux_condition_given' (bool), 'reflux_condition_valid' (bool or
+    None -- None if not given), 'optimum_feed_plate_confirmed' (bool or
+    None), 'status' (one of 'need_design_definition' / 'need_design_inputs'
+    / 'ambiguous' / 'complete'), 'message' (str, "Design Option" wording).
+    """
+    case_info = identify_case(spec)
+    reflux_condition = spec.get('reflux_condition')
+    reflux_given = reflux_condition is not None
+    reflux_valid = (reflux_condition in SUPPORTED_REFLUX_CONDITIONS) if reflux_given else None
+    ofp = spec.get('use_optimum_feed_plate')
+
+    if case_info['ambiguous']:
+        return {
+            'design_option': None, 'design_option_candidates': [],
+            'complete': False, 'missing_inputs': [], 'missing_inputs_by_candidate': {},
+            'ambiguous': True, 'ambiguous_reason': case_info['ambiguous_reason'],
+            'reflux_condition_given': reflux_given, 'reflux_condition_valid': reflux_valid,
+            'optimum_feed_plate_confirmed': ofp,
+            'status': 'ambiguous', 'message': case_info['ambiguous_reason'],
+        }
+
+    case = case_info['case']
+    if case is None:
+        candidates = case_info['candidates']
+        if _no_case_signal_given(spec):
+            message = (
+                'This does not yet identify a Design Option. Provide fields '
+                'matching one of: '
+                + '; '.join(f'Design Option {c} = {d}' for c, d in CASE_FIELD_SUMMARY.items())
+                + '.'
+            )
+            status = 'need_design_definition'
+        else:
+            message = 'Still-possible Design Options and what each still needs: ' + '; '.join(
+                f"Design Option {c} needs: {', '.join(case_info['missing_by_candidate'][c])}"
+                for c in candidates
+            ) + '.'
+            status = 'need_design_inputs'
+        return {
+            'design_option': None, 'design_option_candidates': candidates,
+            'complete': False, 'missing_inputs': [],
+            'missing_inputs_by_candidate': case_info['missing_by_candidate'],
+            'ambiguous': False, 'ambiguous_reason': None,
+            'reflux_condition_given': reflux_given, 'reflux_condition_valid': reflux_valid,
+            'optimum_feed_plate_confirmed': ofp,
+            'status': status, 'message': message,
+        }
+
+    # A single case's own fields (xD/xB, Lr/Hr, product flow, boilup ratio,
+    # reflux ratio) are fully satisfied -- but design completeness also
+    # needs a valid reflux_condition and an explicit optimum-feed-plate
+    # confirmation, common to all four cases (never itself case-defining).
+    still_missing = []
+    if not reflux_given:
+        still_missing.append('reflux_condition')
+    elif not reflux_valid:
+        still_missing.append('reflux_condition (unsupported value)')
+    if ofp is None:
+        still_missing.append('use_optimum_feed_plate')
+
+    complete = not still_missing
+    if complete:
+        status = 'complete'
+        message = f'Design Option {case} is fully specified.'
+    else:
+        status = 'need_design_inputs'
+        message = f'Design Option {case} is identified, but still needs: ' + ', '.join(still_missing) + '.'
+
+    return {
+        'design_option': case, 'design_option_candidates': [case],
+        'complete': complete, 'missing_inputs': still_missing, 'missing_inputs_by_candidate': {},
+        'ambiguous': False, 'ambiguous_reason': None,
+        'reflux_condition_given': reflux_given, 'reflux_condition_valid': reflux_valid,
+        'optimum_feed_plate_confirmed': ofp,
+        'status': status, 'message': message,
+    }
+
+
 def check_binary_scope(component_names):
     """
     Section 2 of tools/binary-distillation-workflow.md -- the first gate.
@@ -382,7 +602,7 @@ def _base_report(scope, essential_complete=False, missing_essential_inputs=None,
                   status=None, would_calculate=None, would_calculate_details=None,
                   message='', feed=None,
                   feed_flow_complete=False, feed_composition_complete=False,
-                  pending_request=None):
+                  pending_request=None, feed_screening=None, design_assessment=None):
     return {
         'valid_binary_scope': scope['valid_binary_scope'],
         'component_count': scope['component_count'],
@@ -422,6 +642,15 @@ def _base_report(scope, essential_complete=False, missing_essential_inputs=None,
         # from `spec` (never separately stored/mutated), so it is
         # automatically absent/correct after a reset or a problem change.
         'pending_request': pending_request,
+        # tools/binary-distillation-separating-feed-phase-from-options-a-d.md
+        # -- the two independent branches, always populated. NEITHER gates
+        # the other; `feed_screening['ready']` (not `status`) is what
+        # `biosteam_feed.build_biosteam_feed` /
+        # `binary_distillation_calculation.calculate_binary_distillation_problem`
+        # actually check. `status` above is kept for backward compatibility
+        # only and must not be used as a calculation gate by new code.
+        'feed_screening': feed_screening,
+        'design_assessment': design_assessment,
     }
 
 
@@ -522,10 +751,21 @@ def assess_binary_distillation_problem(spec):
     """
     feed = apply_user_update(empty_feed_state(), spec)
     scope = check_binary_scope(feed['component_names'])
-    if not scope['valid_binary_scope']:
-        return _base_report(scope, status=scope['status'], message=scope['message'], feed=feed)
 
+    # tools/binary-distillation-separating-feed-phase-from-options-a-d.md --
+    # both independent branches are computed unconditionally, regardless of
+    # which (if either) waterfall branch below ultimately fires. Neither one
+    # gates, or is gated by, the other.
     assessed = assess_feed_state(feed)
+    design_assessment = _compute_design_assessment(spec)
+    feed_screening = _compute_feed_screening(spec, scope, assessed)
+
+    if not scope['valid_binary_scope']:
+        return _base_report(
+            scope, status=scope['status'], message=scope['message'], feed=feed,
+            feed_screening=feed_screening, design_assessment=design_assessment,
+        )
+
     feed = assessed['state']
     if assessed['conflicts']:
         return _base_report(
@@ -534,6 +774,7 @@ def assess_binary_distillation_problem(spec):
             feed_composition_complete=assessed['feed_composition_complete'],
             status='inconsistent_input',
             message='Inconsistent feed information given: ' + ' '.join(assessed['conflicts']),
+            feed_screening=feed_screening, design_assessment=design_assessment,
         )
 
     essential_spec = dict(spec)
@@ -580,6 +821,7 @@ def assess_binary_distillation_problem(spec):
                 other_missing, feed_incomplete,
                 essential['ambiguous_thermal'], essential['invalid_reflux_condition'],
             ),
+            feed_screening=feed_screening, design_assessment=design_assessment,
         )
 
     case_info = identify_case(spec)
@@ -591,6 +833,7 @@ def assess_binary_distillation_problem(spec):
             optimum_feed_plate_confirmed=spec.get('use_optimum_feed_plate'),
             status='ambiguous', message=case_info['ambiguous_reason'],
             feed=feed, feed_flow_complete=True, feed_composition_complete=True,
+            feed_screening=feed_screening, design_assessment=design_assessment,
         )
 
     if case_info['case'] is None:
@@ -598,15 +841,15 @@ def assess_binary_distillation_problem(spec):
         pending_request = None
         if _no_case_signal_given(spec):
             message = (
-                'This does not yet identify a Wankat design case. Provide '
+                'This does not yet identify a Design Option. Provide '
                 'fields matching one of: '
-                + '; '.join(f'Case {c} = {d}' for c, d in CASE_FIELD_SUMMARY.items())
+                + '; '.join(f'Design Option {c} = {d}' for c, d in CASE_FIELD_SUMMARY.items())
                 + '.'
             )
             status = 'need_case_definition'
         else:
-            message = 'Still-possible cases and what each still needs: ' + '; '.join(
-                f"Case {c} needs: {', '.join(case_info['missing_by_candidate'][c])}"
+            message = 'Still-possible Design Options and what each still needs: ' + '; '.join(
+                f"Design Option {c} needs: {', '.join(case_info['missing_by_candidate'][c])}"
                 for c in candidates
             ) + '.'
             status = 'need_case_inputs'
@@ -618,6 +861,7 @@ def assess_binary_distillation_problem(spec):
             status=status, message=message,
             feed=feed, feed_flow_complete=True, feed_composition_complete=True,
             pending_request=pending_request,
+            feed_screening=feed_screening, design_assessment=design_assessment,
         )
 
     case = case_info['case']
@@ -630,6 +874,7 @@ def assess_binary_distillation_problem(spec):
             message='Should the design use the optimum feed plate?',
             feed=feed, feed_flow_complete=True, feed_composition_complete=True,
             pending_request=dict(_OPTIMUM_FEED_PLATE_PENDING_REQUEST),
+            feed_screening=feed_screening, design_assessment=design_assessment,
         )
 
     calc_check = check_calculation_inputs(feed)
@@ -643,6 +888,7 @@ def assess_binary_distillation_problem(spec):
             message=_CALCULATION_INPUT_MESSAGES[calc_check['missing'][0]],
             feed=feed, feed_flow_complete=True, feed_composition_complete=True,
             pending_request=_calculation_pending_request(calc_check['missing']),
+            feed_screening=feed_screening, design_assessment=design_assessment,
         )
 
     would_calculate = _would_calculate(case, spec)
@@ -662,14 +908,15 @@ def assess_binary_distillation_problem(spec):
         status='ready_for_calculation', would_calculate=would_calculate,
         would_calculate_details=would_calculate_details,
         message=(
-            f"Your binary-distillation problem is fully specified as Wankat "
-            f"Case {case}, and ready for the currently implemented "
+            f"Your binary-distillation problem is fully specified as "
+            f"Design Option {case}, and ready for the currently implemented "
             f"calculation layer. The available calculation can evaluate "
-            f"feed phase. A full Case {case} design would also calculate: "
-            f"{would_calculate_text} -- these are not yet implemented "
-            f"in this pipeline."
+            f"feed phase. A full Design Option {case} design would also "
+            f"calculate: {would_calculate_text} -- these are not yet "
+            f"implemented in this pipeline."
         ),
         feed=feed, feed_flow_complete=True, feed_composition_complete=True,
+        feed_screening=feed_screening, design_assessment=design_assessment,
     )
 
 

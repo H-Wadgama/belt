@@ -33,7 +33,10 @@ def build_biosteam_feed(spec, assessment, *, stream_id='feed'):
         in `assessment['feed']` does not carry pressure).
     assessment : dict
         Output of `binary_distillation_workflow.assess_binary_distillation_problem(spec)`.
-        Must have `assessment['status'] == 'ready_for_calculation'`.
+        Must have `assessment['feed_screening']['ready'] is True` -- this is
+        independent of Design Option A-D completeness
+        (`assessment['design_assessment']`); see
+        tools/binary-distillation-separating-feed-phase-from-options-a-d.md.
     stream_id : str, optional
         BioSTEAM unit/stream ID for the constructed feed.
 
@@ -48,10 +51,12 @@ def build_biosteam_feed(spec, assessment, *, stream_id='feed'):
         exactly 2 components, a component's flow is missing, no flow units
         are available, or `pressure_Pa` is missing from `spec`.
     """
-    if assessment.get('status') != 'ready_for_calculation':
+    feed_screening = assessment.get('feed_screening') or {}
+    if not feed_screening.get('ready'):
         raise BiosteamFeedError(
-            "build_biosteam_feed requires assessment['status'] == "
-            f"'ready_for_calculation'; got {assessment.get('status')!r}."
+            "build_biosteam_feed requires assessment['feed_screening']['ready'] "
+            f"to be True; got {feed_screening.get('ready')!r} "
+            f"(feed_screening status: {feed_screening.get('status')!r})."
         )
 
     feed_state = assessment.get('feed') or {}

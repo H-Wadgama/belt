@@ -73,12 +73,12 @@ in the `optimizer.py` section below.
 | `separation_tool.py` | `design_separation_case()` and `optimize_separation()` — JSON-in/JSON-out wrappers around `case_design.design_binary_distillation()` and `optimizer.optimize_reflux_ratio()` respectively, built to be handed to Ollama as tools. |
 | `separation_agent.py` | Natural-language chat front end (Ollama + `qwen3:8b`) that calls `design_separation_case()`/`optimize_separation()` on the model's behalf. |
 | `feed_state.py` | `apply_user_update()`, `normalize_feed_state()`, `assess_feed_state()` — feed identity/quantity state layer with provenance tracking; sits ahead of the binary-scope gate in `binary_distillation_workflow.py`. |
-| `binary_distillation_workflow.py` | `assess_binary_distillation_problem()` — deterministic, LLM-free workflow/case-routing checker; never performs a calculation. |
-| `binary_distillation_workflow_agent.py` | Ollama tool-calling front end exposing `assess_binary_distillation_problem()` (WRITE/READ) plus `calculate_current_binary_distillation_problem()` (CALCULATE); the latter can only ever perform the deterministic feed-phase check, never Wankat Case A-D sizing, by construction. |
-| `biosteam_feed.py` | `build_biosteam_feed()` — converts a `ready_for_calculation` workflow assessment into one canonical `bst.Stream`; no LLM involvement. |
+| `binary_distillation_workflow.py` | `assess_binary_distillation_problem()` — deterministic, LLM-free workflow/case-routing checker; never performs a calculation. Computes two independent branches on every call, `feed_screening` and `design_assessment` (Design Option A-D) — see "Feed screening vs. Design Option A-D assessment" below. |
+| `binary_distillation_workflow_agent.py` | Ollama tool-calling front end exposing `assess_binary_distillation_problem()` (WRITE/READ) plus `calculate_current_binary_distillation_problem()` (CALCULATE); the latter can only ever perform the deterministic feed-phase check, never Design Option A-D sizing, by construction, and is gated on `feed_screening['ready']` alone. |
+| `biosteam_feed.py` | `build_biosteam_feed()` — converts a `feed_screening`-ready workflow assessment into one canonical `bst.Stream`; no LLM involvement. |
 | `feed_phase.py` | `evaluate_feed_phase()` — deterministic VLE feed-phase evaluation (T/P, V/P, or H/P) and liquid/vapor/vapor_liquid classification. |
 | `feed_partial_condensation.py` | `evaluate_vapor_feed_at_reference_temperature()` — deterministic rigorous-BioSTEAM screen conditioning the overall feed to a fixed 313.15 K reference temperature; runs whenever `evaluate_feed_phase()` reports any vapor fraction (`vapor` or `vapor_liquid`), never for a `liquid` feed. |
-| `binary_distillation_calculation.py` | `calculate_binary_distillation_problem()` — the calculation-layer entry point downstream of the workflow checker; chains `assess_binary_distillation_problem()` → `build_biosteam_feed()` → `evaluate_feed_phase()` → (for `vapor`/`vapor_liquid`) `evaluate_vapor_feed_at_reference_temperature()` → deterministic routing. |
+| `binary_distillation_calculation.py` | `calculate_binary_distillation_problem()` — the calculation-layer entry point downstream of the workflow checker; chains `assess_binary_distillation_problem()` → `build_biosteam_feed()` → `evaluate_feed_phase()` → (for `vapor`/`vapor_liquid`) `evaluate_vapor_feed_at_reference_temperature()` → deterministic routing, gated on `feed_screening['ready']` alone, independent of Design Option A-D completeness. |
 | `sample_request.py` | Minimal standalone Ollama connectivity smoke test (`client.generate(...)`) — not part of the tool-calling pipeline; predates and is unrelated to `separation_agent.py`. |
 | `testing_caes.ipynb` | Scratch/interactive notebook for ad hoc testing — not a maintained module; nothing else in this folder imports it. |
 
@@ -719,15 +719,17 @@ inserts as a layer before everything else). One function:
 Return schema (workflow doc section 15, extended by
 `tools/binary-distillation-flow-rate-issue.md` section 8/10,
 `tools/binary-distillation-pending-truth.md` section 2/18,
-`tools/binary-distillation-flow-units.md`, and
-`tools/chopper/binary-distillation-incorrect-symbol-reading-issue.md`):
+`tools/binary-distillation-flow-units.md`,
+`tools/chopper/binary-distillation-incorrect-symbol-reading-issue.md`, and
+`tools/binary-distillation-separating-feed-phase-from-options-a-d.md`):
 `{'valid_binary_scope', 'component_count', 'components',
 'feed_flow_complete', 'feed_composition_complete', 'feed',
 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates',
 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed',
 'calculation_inputs_complete', 'missing_calculation_inputs', 'status',
 'would_calculate', 'would_calculate_details', 'calculation_performed',
-'message', 'provenance', 'pending_request'}`.
+'message', 'provenance', 'pending_request', 'feed_screening',
+'design_assessment'}`.
 `feed` is the normalized `feed_state` dict (component flows/total flow/
 composition, each with its provenance) — present on every result once the
 scope gate passes, primarily for audit/debugging rather than for the
@@ -740,6 +742,153 @@ component flow (not treated as the total), missing essentials, an
 inconsistent-input case, the no-case-signal state, boilup-ratio routing to
 Case D, a complete Case D report blocked on missing calculation units, and
 the same report once units are supplied.
+
+**`status`/`case`/`essential_complete`/`case_complete`/`missing_case_inputs`/
+`optimum_feed_plate_confirmed`/`calculation_inputs_complete`/
+`missing_calculation_inputs`/`would_calculate`/`would_calculate_details`/
+`pending_request` above are all computed EXACTLY as described — nothing in
+this legacy waterfall changed.** `feed_screening` and `design_assessment`
+are two new, always-populated, independent fields layered on top; see the
+next subsection.
+
+### Feed screening vs. Design Option A-D assessment (independent branches)
+
+Implements `tools/binary-distillation-separating-feed-phase-from-options-a-d.md`
+in full: feed-phase screening and Design Option A-D identification are two
+separate deterministic workflows, computed unconditionally on every call to
+`assess_binary_distillation_problem()`, that never gate one another. This
+fixes an architectural bug in the waterfall above: `essential_complete`
+(and therefore `status == 'ready_for_calculation'`) required
+`reflux_condition` — a Design Option A-D input, per Wankat Table 3-1 —
+before the feed-VLE/reference-temperature-conditioning calculation could
+run at all, even though that calculation never actually needs
+`reflux_condition`, `xD`, `xB`, or any other Design Option field.
+
+```python
+result['feed_screening']    # {'ready', 'missing_inputs', 'status', 'message'}
+result['design_assessment'] # {'design_option', 'design_option_candidates',
+                             #  'complete', 'missing_inputs',
+                             #  'missing_inputs_by_candidate', 'ambiguous',
+                             #  'ambiguous_reason', 'reflux_condition_given',
+                             #  'reflux_condition_valid',
+                             #  'optimum_feed_plate_confirmed', 'status',
+                             #  'message'}
+```
+
+**`feed_screening`** (computed by `_compute_feed_screening()`) requires
+ONLY what `biosteam_feed.build_biosteam_feed()` +
+`feed_phase.evaluate_feed_phase()` physically need: exactly two components,
+complete feed quantity/composition, flow-rate units, `pressure_Pa`, and
+exactly one feed thermal condition. It never looks at `reflux_condition`,
+`xD`/`xB`/`Lr`/`Hr`, a product flow, a boilup ratio, an external reflux
+ratio, or `use_optimum_feed_plate`. `status` is one of `need_components` /
+`unsupported_multicomponent` (from the existing scope gate) /
+`inconsistent_feed` / `need_feed_quantity` / `need_pressure` /
+`need_feed_thermal_condition` / `need_feed_units` / `ready` — checked in
+that priority order (quantity, then pressure, then thermal condition, then
+flow units last, since the units check depends on the feed already being
+complete; reuses `check_calculation_inputs()` from the subsection above).
+
+**`design_assessment`** (computed by `_compute_design_assessment()`) is
+built from `identify_case()` (already design-field-only — Table 3-2) plus
+`reflux_condition` presence/validity plus `use_optimum_feed_plate` (common
+to all four cases, never itself case-defining). It runs continuously,
+regardless of feed-scope validity or feed-screening readiness, so early
+Design Option facts (e.g. `xD`/`xB` given before the feed is even named)
+are classified as soon as they're given rather than discarded or deferred.
+`design_option`/`design_option_candidates` mirror the legacy
+`case`/`case_candidates` exactly (same underlying `identify_case()` call,
+same no-default-to-Design-Option-A rule) — they are simply reported
+independently of whether the feed is ready. `status` is one of
+`need_design_definition` / `need_design_inputs` / `ambiguous` / `complete`.
+
+**The two branches are genuinely independent in both directions** — all
+four combinations are valid and occur in practice:
+
+| `feed_screening['ready']` | `design_assessment['complete']` | Example |
+|---|---|---|
+| `True` | `False` | Water/Ethanol, 50/50 kmol/hr, 355 K, 101325 Pa, no Design Option fields at all — the worked example below. |
+| `True` | `True` | A fully specified Case D problem — also `status == 'ready_for_calculation'` (legacy field agrees). |
+| `False` | `True` | The same Case D problem with `reflux_condition`/`xD`/`xB`/`boilup_ratio_VB`/`use_optimum_feed_plate` all given, but `feed_temperature_K` (or flow units) missing. |
+| `False` | `False` | Nothing given yet. |
+
+**The new gate.** `biosteam_feed.build_biosteam_feed()` and
+`binary_distillation_calculation.calculate_binary_distillation_problem()`
+(see the section below) now check `assessment['feed_screening']['ready']`
+instead of `assessment['status'] == 'ready_for_calculation'` — this is the
+one functional change; every other field above is unaffected. A
+feed-ready/Design-Option-incomplete problem can now run the real BioSTEAM
+feed-phase calculation:
+
+```python
+spec = {
+    'component_names': ['Water', 'Ethanol'],
+    'component_flows': {'Water': 50, 'Ethanol': 50},
+    'component_flow_units': 'kmol/hr',
+    'pressure_Pa': 101325, 'feed_temperature_K': 355.0,
+    # NOTE: no reflux_condition, xD, xB, or any other Design Option field.
+}
+assessment = assess_binary_distillation_problem(spec)
+assessment['feed_screening']['ready']       # True
+assessment['design_assessment']['complete'] # False
+assessment['design_assessment']['design_option']  # None
+
+from binary_distillation_calculation import calculate_binary_distillation_problem
+result = calculate_binary_distillation_problem(spec)
+result['calculation_performed']  # True — the real BioSTEAM VLE call ran
+```
+
+**Terminology: "Wankat Case A-D" → "Design Option A-D" in user-facing
+text only.** `binary_distillation_workflow.py`'s own message-building (the
+`need_case_definition` message and the final `ready_for_calculation`
+message) and `binary_distillation_workflow_agent.py`'s `SYSTEM_PROMPT`/tool
+docstrings now say "Design Option A" rather than "Wankat Case A" wherever
+that text reaches the user or the model. The underlying engineering
+definitions are unchanged and remain Wankat-derived — `PROVENANCE`
+(`TABLE_3_1_PROVENANCE`/`TABLE_3_2_PROVENANCE`/`FULL_CITATION`) still cites
+Wankat, and code identifiers (`case`, `case_candidates`, `identify_case()`,
+`CASE_FIELD_SUMMARY`, `problem_spec.py`'s own Wankat citations) are
+unchanged — only the workflow-facing name changed, not the provenance or
+the internals. `separation_tool.py`/`separation_agent.py`/`case_design.py`
+(a separate, independent pipeline — see below) still say "Wankat Case
+A-D"; this rename is scoped to the `binary_distillation_workflow*` files
+only.
+
+**`ask()` reordering (`binary_distillation_workflow_agent.py`).**
+Pending-request resolution (see "Deterministic pending-request resolution
+and the state-truth rule" below) now runs unconditionally first, before
+the "proceed" phrase check and the feed-phase-question check — previously
+it only ran when the legacy `status` was NOT `'ready_for_calculation'`.
+Both of those two checks are now gated on
+`current_state['feed_screening']['ready']` instead of
+`status == 'ready_for_calculation'`. This reordering is a no-op whenever
+the legacy `status` was already `'ready_for_calculation'` (`pending_request`
+is always `None` in that state), so it only changes behavior for the new
+feed-ready/Design-Option-incomplete case — where a live pending question
+(e.g. an outstanding optimum-feed-plate confirmation) must still win over a
+bare "yes" being misread as "run the calculation now" rather than "answer
+the pending question."
+
+`tools/chopper/test_binary_distillation_feed_design_separation.py` is the
+pytest suite for this refactor: `feed_screening`/`design_assessment`
+independence in all four directions from the table above (including the
+exact Water/Ethanol 355 K worked example and a complete Case D problem
+with each of `feed_temperature_K`/`component_flow_units`/
+`reflux_condition`/`use_optimum_feed_plate` individually removed); no
+default to Design Option A; early Design Option facts retained once the
+feed later completes; `calculate_binary_distillation_problem()` actually
+running real BioSTEAM for a feed-ready/no-Design-Option spec (and NOT
+running for the inverse); `build_biosteam_feed()` succeeding/raising on the
+new gate; "Design Option"/no-"Wankat Case" terminology in both the
+`ready_for_calculation` message and `SYSTEM_PROMPT`, with Wankat provenance
+confirmed still present; agent-level `get_precalculation_progress()`
+reporting `feed_phase` available as soon as feed screening alone is ready;
+a plain feed-phase question and "go ahead" both running the calculation
+without a completed Design Option; and the reordered `ask()`'s pending-
+request-wins-over-proceed-trigger regression. Run with:
+```bash
+pytest tools/chopper/test_binary_distillation_feed_design_separation.py -v
+```
 
 ### Calculation-input readiness — `check_calculation_inputs()` and `need_calculation_inputs`
 
@@ -1141,11 +1290,16 @@ doc):
    returned state, never mutate it further. If it doesn't resolve, `ask()`
    falls through unchanged to the per-turn controller described above.
 
-Separately, once `status == 'ready_for_calculation'` and the (normalized)
-message is either an exact match against a small "proceed" phrase set
-(`yes`, `go ahead`, `proceed`, `calculate it`, `yes boss`, ...) or an
-explicit feed-phase/vapor-fraction question (`is_feed_phase_question` —
-see "Four capabilities" below), `ask()` now runs
+Separately, once `feed_screening['ready']` is True (per
+"Feed screening vs. Design Option A-D assessment" above — this pending-
+reply layer and the resolution order it participates in were updated by
+that refactor to run before this proceed-trigger check, and this trigger
+no longer requires the legacy `status == 'ready_for_calculation'` — Design
+Option A-D completeness is not required) and the (normalized) message is
+either an exact match against a small "proceed" phrase set (`yes`, `go
+ahead`, `proceed`, `calculate it`, `yes boss`, ...) or an explicit
+feed-phase/vapor-fraction question (`is_feed_phase_question` — see "Four
+capabilities" below), `ask()` now runs
 `calculate_current_binary_distillation_problem()` directly and finalizes
 from its result — **without ever giving the model a tool-selection turn**.
 This supersedes the pending-truth doc's original fixed-refusal boundary
@@ -1391,12 +1545,16 @@ when you actually want the sized/costed column back.
 
 Implements `tools/binary-distillation-feed-phase-evaluation.md`,
 `tools/binary-distillation-feed-vapor-liquid.md`,
-`tools/binary-distillation-vapor-liquid-dead-end.md`, and
-`tools/binary-distillation-condensation-edge-case.md` in full: the first
-deterministic **calculation** layer downstream of the workflow-only checker
-above. It only ever runs once `assess_binary_distillation_problem()` reports
-`status == 'ready_for_calculation'` — the LLM never generates BioSTEAM
-code, invents a missing value, decides the feed phase itself, or decides
+`tools/binary-distillation-vapor-liquid-dead-end.md`,
+`tools/binary-distillation-condensation-edge-case.md`, and
+`tools/binary-distillation-separating-feed-phase-from-options-a-d.md` in
+full: the first deterministic **calculation** layer downstream of the
+workflow-only checker above. It only ever runs once
+`assess_binary_distillation_problem()` reports
+`feed_screening['ready'] is True` — independent of whether a Design Option
+A-D (`design_assessment`) is complete; see "Feed screening vs. Design
+Option A-D assessment" above — the LLM never generates BioSTEAM code,
+invents a missing value, decides the feed phase itself, or decides
 routing; every number that goes into the BioSTEAM stream and every branch of
 the VLE/conditioning calculation comes from the already-normalized,
 already-validated workflow state.
@@ -1405,8 +1563,9 @@ already-validated workflow state.
 assess_binary_distillation_problem(spec)
         │
         ▼
-status != ready_for_calculation → no calculation (checks == {})
-status == ready_for_calculation
+feed_screening['ready'] is False → no calculation (checks == {})
+feed_screening['ready'] is True
+    (independent of design_assessment['complete'])
         │
         ▼
 build_biosteam_feed(spec, assessment)      biosteam_feed.py
@@ -1465,7 +1624,8 @@ and `checks['vapor_condensation_screen']` — never overwritten into one.
 ## `biosteam_feed.py`
 
 `build_biosteam_feed(spec, assessment, *, stream_id='feed')` — raises
-`BiosteamFeedError` unless `assessment['status'] == 'ready_for_calculation'`,
+`BiosteamFeedError` unless `assessment['feed_screening']['ready'] is True`
+(independent of `assessment['design_assessment']['complete']`),
 the normalized `assessment['feed']['component_names']` has exactly 2
 entries, every one of those components has a known flow in
 `assessment['feed']['component_flows']`, flow units are available (from
@@ -1621,10 +1781,13 @@ pytest tools/chopper/test_feed_partial_condensation.py -v
 ## `binary_distillation_calculation.py`
 
 `calculate_binary_distillation_problem(spec)` — calls
-`assess_binary_distillation_problem(spec)`; if `status !=
-'ready_for_calculation'`, returns `{'calculation_performed': False,
-'workflow': assessment, 'checks': {}, 'calculation_progress': {...}}`
-immediately (no BioSTEAM call at all). Otherwise builds the feed and
+`assess_binary_distillation_problem(spec)`; if
+`assessment['feed_screening']['ready']` is False, returns
+`{'calculation_performed': False, 'workflow': assessment, 'checks': {},
+'calculation_progress': {...}}` immediately (no BioSTEAM call at all) —
+this is independent of `design_assessment['complete']`, so a
+feed-ready/Design-Option-incomplete spec does NOT hit this early return.
+Otherwise builds the feed and
 evaluates its phase (`checks['feed_phase']`) — a `BiosteamFeedError` from
 the feed-build step is caught and reported as `checks['feed_phase']` with
 `error='feed_build_failed'` rather than propagating (still with a populated
@@ -1725,7 +1888,10 @@ def calculate_current_binary_distillation_problem() -> dict:
 
 Two deterministic (non-model) routing layers decide when this tool runs
 without waiting for the model to choose it, in `ask()`, both gated on
-`status == 'ready_for_calculation'`:
+`feed_screening['ready']` (per "Feed screening vs. Design Option A-D
+assessment" above — NOT the legacy `status == 'ready_for_calculation'`,
+which additionally requires `reflux_condition` and a complete Design
+Option):
 
 - **The existing "proceed" trigger** (`yes`, `go ahead`, `proceed`,
   `calculate it`, ...) — previously a fixed refusal message (see the
@@ -1741,8 +1907,8 @@ without waiting for the model to choose it, in `ask()`, both gated on
   this explicitly (e.g. forbidding reasoning like "400 K is above
   methanol's boiling point, so the feed is probably vapor"), and this
   deterministic router makes it structural rather than advisory whenever
-  the phrasing is unambiguous. A feed-phase question asked while the
-  problem is **not yet** `ready_for_calculation` deliberately does NOT
+  the phrasing is unambiguous. A feed-phase question asked while
+  `feed_screening['ready']` is **not yet** True deliberately does NOT
   trigger this router — it falls through to normal model-driven tool
   selection, where the tool itself (if the model calls it) reports
   `calculation_performed: False` and the missing inputs, without ever
@@ -1881,10 +2047,12 @@ mutates anything, never runs BioSTEAM:
 **`get_precalculation_progress()`** — an internal helper, not registered as
 an Ollama tool, used only by the deterministic "what next?" router below to
 give that question a meaningful answer even BEFORE the first calculation has
-run: if the workflow is already `ready_for_calculation`, it reports
-`next_step='feed_phase'`/`next_step_available=True` directly from the
-workflow assessment (no BioSTEAM call); otherwise it reports
-`blocked_reason='workflow_not_ready'` with the workflow's own `message`.
+run: if `feed_screening['ready']` is already True — independent of
+`design_assessment['complete']`, per "Feed screening vs. Design Option A-D
+assessment" above — it reports `next_step='feed_phase'`/
+`next_step_available=True` directly from the workflow assessment (no
+BioSTEAM call); otherwise it reports `blocked_reason='workflow_not_ready'`
+with `feed_screening['message']`.
 
 **Deterministic "what next?"/"continue"/"what remains?" routing.**
 `is_calculation_progress_question(text)` matches a small, fixed phrase set

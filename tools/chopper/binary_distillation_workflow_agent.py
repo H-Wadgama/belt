@@ -39,8 +39,14 @@ imports BioSTEAM via `biosteam_feed.py`/`feed_phase.py`) for the CALCULATION
 tool above -- that layer is the sole place any BioSTEAM call happens; the
 LLM itself never infers feed phase, vapor fraction, or any other
 thermodynamic property from general knowledge. The calculation pipeline
-currently evaluates ONLY the feed phase -- no Wankat Case A-D sizing
+currently evaluates ONLY the feed phase -- no Design Option A-D sizing
 (reflux ratio, stage count, column diameter, etc.) is performed here yet.
+Feed-phase screening and Design Option A-D assessment are two independent
+deterministic branches (`feed_screening` / `design_assessment` in every
+engineering-tool result) -- see
+tools/binary-distillation-separating-feed-phase-from-options-a-d.md. The
+CALCULATION tool is gated on `feed_screening['ready']` alone, never on
+Design Option A-D completeness.
 
 Run interactively:
     python binary_distillation_workflow_agent.py
@@ -216,7 +222,7 @@ def update_binary_distillation_problem(
         use_optimum_feed_plate: Whether the design should use the optimum feed plate. This is common to ALL FOUR cases and is never itself evidence of which case applies -- ask for it separately, and never default it to True.
 
     Returns:
-        A dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'would_calculate_details', 'calculation_performed' (always False), 'message', 'provenance'. When `status` is 'ready_for_calculation', use `would_calculate_details` (a list of `{'field', 'symbol', 'label'}` dicts) to describe each quantity -- it is the authoritative engineering meaning; see the ENGINEERING OUTPUT GROUNDING RULE below. `would_calculate` (bare strings, e.g. "QR") is kept only for backward compatibility -- do not define or explain a symbol from that field alone. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed.
+        A dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'would_calculate_details', 'calculation_performed' (always False), 'message', 'provenance'. When `status` is 'ready_for_calculation', use `would_calculate_details` (a list of `{'field', 'symbol', 'label'}` dicts) to describe each quantity -- it is the authoritative engineering meaning; see the ENGINEERING OUTPUT GROUNDING RULE below. `would_calculate` (bare strings, e.g. "QR") is kept only for backward compatibility -- do not define or explain a symbol from that field alone. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed. The dict ALSO always includes two independent branches: 'feed_screening' (`{'ready', 'missing_inputs', 'status', 'message'}` -- whether the feed-VLE calculation can run; depends only on component identity/quantity/units, pressure, and the feed's own thermal condition) and 'design_assessment' (`{'design_option', 'design_option_candidates', 'complete', 'missing_inputs', 'ambiguous', 'reflux_condition_given', 'optimum_feed_plate_confirmed', 'status', 'message'}` -- Design Option A-D completeness, including reflux_condition and optimum-feed-plate confirmation). These are independent: 'feed_screening'['ready'] can be True while 'design_assessment'['complete'] is False, and vice versa. `calculate_current_binary_distillation_problem` is gated on 'feed_screening'['ready'] alone, not on 'design_assessment'['complete'] or the legacy 'status' field.
     """
     global _last_calculation_result
 
@@ -250,9 +256,9 @@ def update_binary_distillation_problem(
 
 
 def get_binary_distillation_problem() -> dict:
-    """READ operation: return the current binary-distillation problem state -- what has been supplied, what has been derived, which Wankat case (if any) it matches, and what is still missing -- WITHOUT changing anything.
+    """READ operation: return the current binary-distillation problem state -- what has been supplied, what has been derived, which Design Option (if any) it matches, and what is still missing -- WITHOUT changing anything.
 
-    Call this whenever the user asks about information already supplied, derived, or still missing, instead of guessing from earlier chat text or calling `update_binary_distillation_problem`. Examples: "What is my feed composition?", "What is the feed flow rate?", "What pressure did I specify?", "What information do you have so far?", "What is still missing?", "Which Wankat case am I in?", "What would be calculated?". Takes no arguments -- it is strictly read-only and never mutates the accumulated state, never derives anything beyond what the deterministic checker already derives, and never invents a value.
+    Call this whenever the user asks about information already supplied, derived, or still missing, instead of guessing from earlier chat text or calling `update_binary_distillation_problem`. Examples: "What is my feed composition?", "What is the feed flow rate?", "What pressure did I specify?", "What information do you have so far?", "What is still missing?", "Which Design Option am I in?", "What would be calculated?". Takes no arguments -- it is strictly read-only and never mutates the accumulated state, never derives anything beyond what the deterministic checker already derives, and never invents a value.
 
     Returns:
         The identical schema `update_binary_distillation_problem` returns (see that tool's docstring), computed from whatever has already been accumulated -- no new information is merged in by this call.
@@ -267,7 +273,7 @@ def calculate_current_binary_distillation_problem() -> dict:
 
     The calculation only proceeds when the accumulated problem is `ready_for_calculation`; otherwise this returns `calculation_performed: False` and the same workflow assessment `get_binary_distillation_problem` would -- relay `missing_essential_inputs` / `case_candidates` / `message` from the returned `workflow` and explain what is still needed, rather than guessing the property yourself.
 
-    The calculation pipeline evaluates the feed phase (`checks['feed_phase']`: liquid / vapor / vapor_liquid classification, vapor/liquid fraction, per-component vapor/liquid molar flows) and, deterministically from that result, a post-feed-phase routing decision (`checks['routing']`, plus `checks['vapor_condensation_screen']` -- a rigorous BioSTEAM screen conditioning the overall feed to 313.15 K -- whenever the feed contains any vapor fraction, i.e. `phase` is `vapor` or `vapor_liquid`). It does NOT compute distillate/bottoms flow, reflux ratio, reboiler/condenser duty, theoretical stage count, feed stage, or column diameter for the identified Wankat case, and it does NOT design or size any liquid- or vapor-phase separator -- never describe any of those as calculated from this tool's result. Which route applies is decided in Python, never by you.
+    The calculation pipeline evaluates the feed phase (`checks['feed_phase']`: liquid / vapor / vapor_liquid classification, vapor/liquid fraction, per-component vapor/liquid molar flows) and, deterministically from that result, a post-feed-phase routing decision (`checks['routing']`, plus `checks['vapor_condensation_screen']` -- a rigorous BioSTEAM screen conditioning the overall feed to 313.15 K -- whenever the feed contains any vapor fraction, i.e. `phase` is `vapor` or `vapor_liquid`). It does NOT compute distillate/bottoms flow, reflux ratio, reboiler/condenser duty, theoretical stage count, feed stage, or column diameter for the identified Design Option, and it does NOT design or size any liquid- or vapor-phase separator -- never describe any of those as calculated from this tool's result. Which route applies is decided in Python, never by you.
 
     Returns:
         {'calculation_performed': bool, 'workflow': <same assessment schema as get_binary_distillation_problem>, 'checks': {'feed_phase': {...}, 'routing': {...}, 'vapor_condensation_screen': {...} (whenever the feed has any vapor fraction)} if calculation_performed else {}, 'calculation_progress': {...}}.
@@ -312,7 +318,11 @@ def get_precalculation_progress() -> dict:
     """
     assessment = get_binary_distillation_problem()
 
-    if assessment['status'] == 'ready_for_calculation':
+    # tools/binary-distillation-separating-feed-phase-from-options-a-d.md
+    # Step 24 -- the next executable stage is feed-phase evaluation as soon
+    # as FEED SCREENING alone is ready; it must never wait on Design Option
+    # A-D completeness.
+    if assessment['feed_screening']['ready']:
         return {
             'calculation_available': False,
             'calculation_progress': {
@@ -336,7 +346,7 @@ def get_precalculation_progress() -> dict:
             'next_step_available': False,
             'remaining_steps': [],
             'blocked_reason': 'workflow_not_ready',
-            'message': assessment['message'],
+            'message': assessment['feed_screening']['message'],
         },
     }
 
@@ -680,6 +690,37 @@ questions deterministically before you see the message; see the \
 CALCULATION-PROGRESS TRUTH RULE below.
   - `reset_workflow_session` (housekeeping) -- clears everything.
 
+## FEED SCREENING VS DESIGN OPTION RULE
+
+Feed-phase screening and Design Option A-D identification are two \
+separate, independent deterministic workflows, both computed on every \
+WRITE/READ call and reported as two independent top-level fields:
+  - `feed_screening` (`{'ready', 'missing_inputs', 'status', 'message'}`) -- \
+whether the feed-VLE/reference-temperature-conditioning calculation can \
+run. Depends ONLY on: component identity, feed quantity/composition, flow-\
+rate units, column pressure, and the feed's own thermal condition. Never \
+depends on `reflux_condition`, xD/xB/Lr/Hr, a product flow, a boilup \
+ratio, an external reflux ratio, or optimum-feed-plate confirmation.
+  - `design_assessment` (`{'design_option', 'design_option_candidates', \
+'complete', 'missing_inputs', 'ambiguous', 'reflux_condition_given', \
+'optimum_feed_plate_confirmed', 'status', 'message'}`) -- Design Option \
+A-D completeness. Independent of feed-screening readiness in both \
+directions.
+
+These two are never conflated. All explicit user facts are stored \
+immediately regardless of which branch they belong to -- storage order is \
+never the same thing as execution order. `calculate_current_binary_distillation_problem` \
+is gated ONLY on `feed_screening['ready']`; it never waits on \
+`design_assessment['complete']`, `reflux_condition`, or optimum-feed-plate \
+confirmation. A problem can be simultaneously `feed_screening['ready'] == \
+True` and `design_assessment['complete'] == False` -- that combination is \
+valid and expected, and you should offer/perform the feed-phase check \
+immediately rather than first asking the user to complete a Design \
+Option. Do NOT require a complete Design Option before offering or \
+performing feed-phase evaluation, and do not infer physical routing \
+yourself -- always use the deterministic `checks['feed_phase']`/ \
+`checks['routing']` result.
+
 ## Deciding which tool to call: classify every user turn
 
 1. **New engineering information** (e.g. "Water flow rate is 90 kmol/hr.", \
@@ -688,7 +729,7 @@ feed plate."): call `update_binary_distillation_problem` with ONLY the new \
 field(s) from this turn.
 2. **A question about existing state** (e.g. "What is the feed \
 composition?", "What is my total feed flow?", "What values have I given \
-you?", "What is still missing?", "Which Wankat case does this match?", \
+you?", "What is still missing?", "Which Design Option does this match?", \
 "What pressure did I specify?"): call `get_binary_distillation_problem` \
 with no arguments. Do NOT call `update_binary_distillation_problem` for \
 these, even if you copy the answer's numbers into the call -- that would \
@@ -818,10 +859,11 @@ is currently known, missing, or derived, call `get_binary_distillation_problem` 
 rather than searching your own earlier replies for a remembered number -- \
 the deterministic state is always the source of truth, not your prior text.
 
-Never infer a Wankat design case (A, B, C, or D) yourself when the checker \
-has not identified one -- if `case` comes back null and `case_candidates` \
-lists more than one case, present those options (or ask which kind of \
-specification the user wants to give) rather than guessing.
+Never infer a Design Option (A, B, C, or D) yourself when the checker \
+has not identified one -- if `case`/`design_option` comes back null and \
+`case_candidates`/`design_option_candidates` lists more than one option, \
+present those options (or ask which kind of specification the user wants \
+to give) rather than guessing.
 
 Never invent missing engineering specifications. Never assume pressure, \
 feed thermal condition, reflux thermal condition, product purity, \
@@ -837,8 +879,8 @@ flow rate -- pass it under `component_flows`, and never pass it as \
 what the current message actually states; do not reconstruct or guess \
 feed information the user has not (yet) given, even partially.
 
-Do NOT perform, describe performing, or claim to have performed any Wankat \
-Case A-D distillation sizing or optimization (distillate/bottoms flow, \
+Do NOT perform, describe performing, or claim to have performed any \
+Design Option A-D distillation sizing or optimization (distillate/bottoms flow, \
 reflux ratio, reboiler/condenser duty, theoretical stage count, feed \
 stage, column diameter) during this conversation -- `update_binary_distillation_problem` \
 and `get_binary_distillation_problem` only check problem-definition \
@@ -946,7 +988,7 @@ been given" from "some feed quantity was given (e.g. one component's flow), \
 but it's not enough to determine the total feed flow and composition yet." \
 Never tell the user their feed is fully defined when it isn't, and never \
 imply a partial quantity (e.g. one component's flow) is the total. Do not \
-discuss Wankat cases A-D yet unless the user has already volunteered \
+discuss Design Options A-D yet unless the user has already volunteered \
 case-specific information -- essential inputs come first.
 
 ## When `status` is `inconsistent_input`
@@ -962,12 +1004,16 @@ other yourself.
 
 None of the case-distinguishing fields (xD/xB, Lr/Hr, a product flow, or a \
 boilup ratio) have been given yet. Explain, in your own words, the four \
-valid specification sets from the tool's `message` (or `case_candidates` + \
-the general shape: A = compositions + reflux ratio; B = recoveries + \
-reflux ratio; C = one product flow + one composition + reflux ratio; D = \
-compositions + boilup ratio). The user does not need to say "Case A" -- \
-they can just give the engineering quantities and the next call will \
-identify the case automatically. Do NOT ask the user to name a case letter.
+valid Design Option specification sets from the tool's `message` (or \
+`case_candidates`/`design_assessment['design_option_candidates']` + the \
+general shape: A = compositions + reflux ratio; B = recoveries + reflux \
+ratio; C = one product flow + one composition + reflux ratio; D = \
+compositions + boilup ratio). The user does not need to say "Design \
+Option A" -- they can just give the engineering quantities and the next \
+call will identify the Design Option automatically. Do NOT ask the user \
+to name a Design Option letter. This has NO effect on whether the feed-\
+phase calculation can run -- see the FEED SCREENING VS DESIGN OPTION RULE \
+above.
 
 ## When `status` is `need_case_inputs`
 
@@ -987,7 +1033,7 @@ Never silently resolve the conflict yourself.
 
 ## When `status` is `need_calculation_inputs`
 
-The engineering problem definition (Wankat essentials + case + optimum-\
+The engineering problem definition (essentials + case + optimum-\
 feed-plate) is already complete, but the calculation layer still cannot \
 run because a flow-rate UNIT is missing -- `missing_calculation_inputs` \
 names exactly which one (`component_flow_units` or `total_flow_units`). \
@@ -1000,13 +1046,27 @@ never assume "kmol/hr" just because that's the usual choice.
 
 ## When `status` is `ready_for_calculation`
 
-Tell the user their problem is fully specified as Wankat Case `case`, and \
+Tell the user their problem is fully specified as Design Option `case`, and \
 list exactly the quantities in `would_calculate_details` as what a FULL \
-Case `case` design would compute -- for each entry, present its `symbol` \
-together with its `label` (e.g. "QR (reboiler duty)"). The calculation \
-layer available to you does not compute those yet -- it evaluates only the \
-feed phase. Do not calculate, approximate, or imply you have already found \
-`would_calculate_details`'s values.
+Design Option `case` design would compute -- for each entry, present its \
+`symbol` together with its `label` (e.g. "QR (reboiler duty)"). The \
+calculation layer available to you does not compute those yet -- it \
+evaluates only the feed phase. Do not calculate, approximate, or imply you \
+have already found `would_calculate_details`'s values.
+
+## When `feed_screening['ready']` is True but `status` is NOT `ready_for_calculation`
+
+This is expected and valid -- it means the feed has enough information for \
+the feed-phase calculation, but the Design Option A-D specification \
+(`design_assessment`) is still incomplete (e.g. `reflux_condition`, a \
+case-defining field, or optimum-feed-plate confirmation is still missing). \
+Tell the user the feed information is sufficient for feed-phase screening, \
+and separately state what `design_assessment` still needs -- but do NOT \
+withhold or delay the feed-phase check waiting on that. If the user asks \
+to proceed, or asks a feed-phase/vapor-fraction question, the calculation \
+runs the same way it does when `status` is `ready_for_calculation` (see \
+below) -- never tell the user they must first specify `reflux_condition` \
+or complete a Design Option before you can check the feed phase.
 
 ## ENGINEERING OUTPUT GROUNDING RULE
 
@@ -1030,7 +1090,7 @@ vapor-fraction question, the calculation runs automatically before you see \
 the message and you will find a `calculate_current_binary_distillation_problem` \
 tool result already in the conversation -- describe exactly what its \
 `checks['feed_phase']` says, and explicitly note that this is the feed-phase \
-check only, not the full Case `case` design (`would_calculate`'s other \
+check only, not the full Design Option `case` design (`would_calculate`'s other \
 quantities are still not computed). Do not call any tool yourself for this \
 -- the orchestrator has already run it. After that, prefer a short answer \
 built directly from `checks['feed_phase']` and `calculation_progress` -- \
@@ -1225,21 +1285,29 @@ def ask(client, messages):
     turn, in this order (tools/binary-distillation-pending-truth.md section
     4/17, tools/binary-distillation-connecting-feed-calculation.md Step 12,
     tools/binary-distillation-whats-next.md Step 16,
-    tools/binary-distillation-temperature-issue.md Steps 5-7): it inspects
-    the CURRENT authoritative state (never conversation history) and --
-      1. if the user's message plainly resolves an outstanding
-         `pending_request`, converts it directly into a real WRITE (this
-         includes an explicit Kelvin-suffixed reply, e.g. '355 K', when the
-         live pending field is the feed thermal condition);
+    tools/binary-distillation-temperature-issue.md Steps 5-7,
+    tools/binary-distillation-separating-feed-phase-from-options-a-d.md
+    Steps 20-23): it inspects the CURRENT authoritative state (never
+    conversation history) and --
+      1. ALWAYS first: if the user's message plainly resolves an
+         outstanding `pending_request`, converts it directly into a real
+         WRITE (this includes an explicit Kelvin-suffixed reply, e.g.
+         '355 K', when the live pending field is the feed thermal
+         condition). This runs regardless of feed-screening readiness --
+         a live pending question (e.g. an outstanding optimum-feed-plate
+         confirmation) must win over a bare "yes" being misread as "run
+         the calculation now."
       1b. else, if the feed thermal condition is still missing (whether or
          not anything else is currently pending) and the message explicitly
          and unambiguously names the FEED's temperature in Kelvin (e.g.
          'feed temperature is 355 K') -- as opposed to a bare number, or a
          value tied to a different apparatus like a condenser or reboiler --
          likewise converts it directly into a real WRITE;
-      2. else if `status == 'ready_for_calculation'` and the message is a
+      2. else if `feed_screening['ready']` is True and the message is a
          "proceed" request, runs the (currently feed-phase-only)
-         calculation layer and finalizes from its result;
+         calculation layer and finalizes from its result -- this does NOT
+         require Design Option A-D completeness (reflux_condition, a fully
+         identified case, or optimum-feed-plate confirmation);
       3. else if the message is a calculation-PROGRESS question
          (`is_calculation_progress_question` -- "what next?", "continue",
          "what remains?", ...), answers it deterministically from
@@ -1248,50 +1316,60 @@ def ask(client, messages):
          never from conversation history or generic LLM reasoning, and
          never by re-asking for engineering inputs already on file;
       4. else if the message explicitly asks a feed-phase/vapor-fraction
-         question (`is_feed_phase_question`) while `status ==
-         'ready_for_calculation'`, likewise runs the calculation layer
-         deterministically instead of letting the model decide whether to
-         answer from remembered chemical knowledge.
+         question (`is_feed_phase_question`) while `feed_screening['ready']`
+         is True, likewise runs the calculation layer deterministically
+         instead of letting the model decide whether to answer from
+         remembered chemical knowledge.
     If none of these apply (including: a feed-phase question asked before
-    the problem is `ready_for_calculation`, which must not trigger a
-    BioSTEAM call), control falls through to normal model-driven tool
-    selection below.
+    the feed screen is ready, which must not trigger a BioSTEAM call),
+    control falls through to normal model-driven tool selection below.
     """
     user_text = _current_user_text(messages)
     if user_text is not None:
         current_state = get_binary_distillation_problem()
-        status = current_state.get('status')
+        # tools/binary-distillation-separating-feed-phase-from-options-a-d.md
+        # Steps 21-23 -- the CALCULATE trigger ("go ahead" / a feed-phase
+        # question) is gated on FEED SCREENING readiness alone, never on
+        # Design Option A-D completeness (`status == 'ready_for_calculation'`
+        # additionally requires reflux_condition + a fully identified case +
+        # optimum-feed-plate confirmation).
+        feed_ready = current_state.get('feed_screening', {}).get('ready', False)
 
-        if status == 'ready_for_calculation':
-            if normalize_short_reply(user_text) in _PROCEED_PHRASES:
-                return _run_calculation_and_finalize(client, messages)
-        else:
-            resolved = resolve_pending_reply(current_state.get('pending_request'), user_text)
-            if resolved is None and _feed_thermal_condition_missing(current_state):
-                temperature_value = extract_explicit_feed_temperature_K(user_text)
-                if temperature_value is not None:
-                    resolved = {'feed_temperature_K': temperature_value}
-            if resolved is not None:
-                print(f"  [pending-request resolved -> calling update_binary_distillation_problem({resolved})]")
-                messages.append({
-                    'role': 'assistant',
-                    'content': None,
-                    'tool_calls': [{'function': {'name': 'update_binary_distillation_problem', 'arguments': resolved}}],
-                })
-                result = update_binary_distillation_problem(**resolved)
-                messages.append({
-                    'role': 'tool',
-                    'tool_name': 'update_binary_distillation_problem',
-                    'content': json.dumps(result),
-                })
-                response = _chat_without_tools(client, messages)
-                messages.append(response.message)
-                return response.message.content
+        # Pending-request resolution always runs first, regardless of
+        # feed-screening readiness -- a live outstanding question (e.g.
+        # optimum-feed-plate confirmation) must win over a bare "yes" being
+        # misread as "run the calculation now." This is a no-op whenever the
+        # legacy `status` was already 'ready_for_calculation', since
+        # `pending_request` is always None in that state.
+        resolved = resolve_pending_reply(current_state.get('pending_request'), user_text)
+        if resolved is None and _feed_thermal_condition_missing(current_state):
+            temperature_value = extract_explicit_feed_temperature_K(user_text)
+            if temperature_value is not None:
+                resolved = {'feed_temperature_K': temperature_value}
+        if resolved is not None:
+            print(f"  [pending-request resolved -> calling update_binary_distillation_problem({resolved})]")
+            messages.append({
+                'role': 'assistant',
+                'content': None,
+                'tool_calls': [{'function': {'name': 'update_binary_distillation_problem', 'arguments': resolved}}],
+            })
+            result = update_binary_distillation_problem(**resolved)
+            messages.append({
+                'role': 'tool',
+                'tool_name': 'update_binary_distillation_problem',
+                'content': json.dumps(result),
+            })
+            response = _chat_without_tools(client, messages)
+            messages.append(response.message)
+            return response.message.content
+
+        if feed_ready and normalize_short_reply(user_text) in _PROCEED_PHRASES:
+            return _run_calculation_and_finalize(client, messages)
 
         if is_calculation_progress_question(user_text):
             return _run_progress_query_and_finalize(client, messages)
 
-        if status == 'ready_for_calculation' and is_feed_phase_question(user_text):
+        if feed_ready and is_feed_phase_question(user_text):
             return _run_calculation_and_finalize(client, messages)
 
     response = _chat_with_tools(client, messages)
