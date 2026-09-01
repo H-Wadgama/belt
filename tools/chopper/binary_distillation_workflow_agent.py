@@ -64,6 +64,7 @@ import ollama
 from binary_distillation_calculation import STEP_FEED_PHASE, calculate_binary_distillation_problem
 from binary_distillation_workflow import assess_binary_distillation_problem
 from feed_state import apply_user_update, empty_feed_state
+from tool_argument_normalizer import normalize_write_arguments
 
 MODEL = 'qwen3:8b'
 
@@ -222,9 +223,29 @@ def update_binary_distillation_problem(
         use_optimum_feed_plate: Whether the design should use the optimum feed plate. This is common to ALL FOUR cases and is never itself evidence of which case applies -- ask for it separately, and never default it to True.
 
     Returns:
-        A dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'would_calculate_details', 'calculation_performed' (always False), 'message', 'provenance'. When `status` is 'ready_for_calculation', use `would_calculate_details` (a list of `{'field', 'symbol', 'label'}` dicts) to describe each quantity -- it is the authoritative engineering meaning; see the ENGINEERING OUTPUT GROUNDING RULE below. `would_calculate` (bare strings, e.g. "QR") is kept only for backward compatibility -- do not define or explain a symbol from that field alone. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed. The dict ALSO always includes two independent branches: 'feed_screening' (`{'ready', 'missing_inputs', 'status', 'message'}` -- whether the feed-VLE calculation can run; depends only on component identity/quantity/units, pressure, and the feed's own thermal condition) and 'design_assessment' (`{'design_option', 'design_option_candidates', 'complete', 'missing_inputs', 'ambiguous', 'reflux_condition_given', 'optimum_feed_plate_confirmed', 'status', 'message'}` -- Design Option A-D completeness, including reflux_condition and optimum-feed-plate confirmation). These are independent: 'feed_screening'['ready'] can be True while 'design_assessment'['complete'] is False, and vice versa. `calculate_current_binary_distillation_problem` is gated on 'feed_screening'['ready'] alone, not on 'design_assessment'['complete'] or the legacy 'status' field.
+        If `component_flows` or `component_flow_units` was malformed (e.g. `component_flows` given as a list instead of a name->flow mapping, with lengths/types that don't allow a safe automatic fix), returns `{'valid': False, 'error': 'invalid_tool_arguments', 'field', 'expected', 'received_type', 'message'}` instead -- relay `message` to the user and resend the SAME information in the correct shape; do not retry with a guessed shape.
+
+        Otherwise, a dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'would_calculate_details', 'calculation_performed' (always False), 'message', 'provenance'. When `status` is 'ready_for_calculation', use `would_calculate_details` (a list of `{'field', 'symbol', 'label'}` dicts) to describe each quantity -- it is the authoritative engineering meaning; see the ENGINEERING OUTPUT GROUNDING RULE below. `would_calculate` (bare strings, e.g. "QR") is kept only for backward compatibility -- do not define or explain a symbol from that field alone. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed. The dict ALSO always includes two independent branches: 'feed_screening' (`{'ready', 'missing_inputs', 'status', 'message'}` -- whether the feed-VLE calculation can run; depends only on component identity/quantity/units, pressure, and the feed's own thermal condition) and 'design_assessment' (`{'design_option', 'design_option_candidates', 'complete', 'missing_inputs', 'ambiguous', 'reflux_condition_given', 'optimum_feed_plate_confirmed', 'status', 'message'}` -- Design Option A-D completeness, including reflux_condition and optimum-feed-plate confirmation). These are independent: 'feed_screening'['ready'] can be True while 'design_assessment'['complete'] is False, and vice versa. `calculate_current_binary_distillation_problem` is gated on 'feed_screening'['ready'] alone, not on 'design_assessment'['complete'] or the legacy 'status' field.
     """
     global _last_calculation_result
+
+    # tools/binary-distillation-issues-9-1-2026-first.md Round 1 -- Qwen has
+    # been observed sending component_flows as a parallel list (paired
+    # against component_names) and/or component_flow_units as a list of
+    # repeated values, instead of the canonical dict[str, float] / str
+    # shapes the schema already declares. Normalize the unambiguous cases
+    # deterministically here, at the tool-argument boundary, before this
+    # malformed shape can ever reach feed_state.apply_user_update() (which
+    # assumes the canonical shape and would otherwise crash with a raw
+    # AttributeError). An ambiguous/invalid shape returns a structured
+    # 'invalid_tool_arguments' error dict instead of proceeding.
+    normalized_args, arg_error = normalize_write_arguments(
+        component_names, component_flows, component_flow_units,
+    )
+    if arg_error is not None:
+        return arg_error
+    component_flows = normalized_args['component_flows']
+    component_flow_units = normalized_args['component_flow_units']
 
     new_fields = dict(
         component_names=component_names, add_component_names=add_component_names,
@@ -1151,13 +1172,28 @@ tool-call arguments, never as chat text.
 
 
 def _run_tool_call(call):
+    # tools/binary-distillation-issues-9-1-2026-first.md Round 1 Step 1.2 --
+    # this except clause is a defense-in-depth safety net, not the primary
+    # fix (that's tool_argument_normalizer.normalize_write_arguments, called
+    # inside update_binary_distillation_problem itself). It exists for any
+    # OTHER malformed-argument shape that isn't one of the specific cases
+    # normalized there -- e.g. a wrong type on a field this round doesn't
+    # cover. Either way, a raw exception must never propagate out of a tool
+    # call as the user-facing failure mechanism; it is always reported back
+    # as a structured dict shaped like normalize_write_arguments' own
+    # 'invalid_tool_arguments' error.
     fn = TOOL_FUNCTIONS.get(call.function.name)
     if fn is None:
         return {'error': f'Unknown tool: {call.function.name}'}
     try:
         return fn(**call.function.arguments)
     except Exception as e:
-        return {'error': f'{type(e).__name__}: {e}'}
+        return {
+            'valid': False,
+            'error': 'tool_execution_error',
+            'tool': call.function.name,
+            'message': f'{type(e).__name__}: {e}',
+        }
 
 
 # tools/binary-distillation-read-loop-fix-plan.md -- without a bounded
