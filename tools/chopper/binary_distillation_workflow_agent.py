@@ -3,47 +3,58 @@ Isolated workflow-testing agent -- tools/binary-distillation-workflow.md
 section 18, Option C ("Expose only assess_binary_distillation_problem() to
 Qwen in a dedicated workflow-testing agent"), refactored per
 tools/binary-distillation-read-vs-append.md to split the single combined
-tool into separate READ and WRITE operations.
+tool into separate READ and WRITE operations, and again per
+tools/binary-distillation-issues-9-1-2026-fifth.md ("Round 2 Architecture
+Stabilization") to replace per-turn native tool-calling for engineering
+state with a schema-driven TurnIntent/TurnTransaction interpretation layer
+-- see that doc and `turn_intent.py`/`turn_transaction.py`/
+`problem_snapshot.py`/`problem_field_registry.py` for the new architecture.
 
-This agent exposes FIVE tools to the model:
+This module still owns FOUR plain Python operations against one canonical
+accumulated problem state:
   - `update_binary_distillation_problem` (WRITE) -- merges newly-stated
     engineering facts into the accumulated problem state, then returns the
-    deterministic assessment of the full accumulated state. Call this only
-    when the current user message provides new engineering information.
-  - `get_binary_distillation_problem` (READ) -- takes no engineering
-    arguments, never mutates state, and just returns the same deterministic
-    assessment of whatever is already known. Call this when the user asks
-    about information already supplied, derived, or still missing -- never
-    resubmit an existing or derived value through the WRITE tool merely to
-    answer a question about it.
+    deterministic assessment of the full accumulated state. This remains
+    the ONE canonical WRITE path (Round 2 invariant 3) -- both the
+    TurnTransaction executor and the old direct callers still go through it.
+  - `get_binary_distillation_problem` (READ) -- never mutates state, returns
+    the same deterministic assessment of whatever is already known.
   - `calculate_current_binary_distillation_problem` (CALCULATION EXECUTE) --
-    takes no arguments, reads the accumulated authoritative state directly,
-    and -- only once it is `ready_for_calculation` -- runs the deterministic
-    BioSTEAM feed-phase calculation from `binary_distillation_calculation.py`.
-    See `tools/binary-distillation-connecting-feed-calculation.md`.
-  - `get_binary_distillation_calculation_status` (CALCULATION READ) -- takes
-    no arguments, never mutates anything, and never runs BioSTEAM. Reports
-    the most recent calculation result (if any) and its calculation-progress
-    state -- what has been completed, what is next, and what remains. See
-    `tools/binary-distillation-whats-next.md`.
-  - `reset_workflow_session` (housekeeping) -- clears all accumulated state,
-    including the most recent calculation result.
+    reads the accumulated authoritative state directly and -- only once it
+    is `ready_for_calculation` -- runs the deterministic BioSTEAM feed-phase
+    calculation from `binary_distillation_calculation.py`. See
+    `tools/binary-distillation-connecting-feed-calculation.md`.
+  - `get_binary_distillation_calculation_status` / `get_precalculation_progress`
+    (CALCULATION READ) -- never mutates anything, never runs BioSTEAM.
+    Reports the most recent calculation result (if any) and calculation-
+    progress state.
+  - `reset_workflow_session` (housekeeping) -- clears all accumulated state.
 
-Both engineering (READ/WRITE) tools wrap the same underlying deterministic
-checker, `binary_distillation_workflow.assess_binary_distillation_problem()`.
+As of Round 2, NONE of these are exposed to the model as callable tools
+(`tools=[...]`) any more -- see `turn_intent.py`'s module docstring for why
+native tool-calling was dropped as the interpretation mechanism (Failure 4).
+The model's ONLY job each turn is to propose a `TurnIntent` via
+JSON-schema-constrained structured output (`format=`); Python validates that
+proposal (`turn_transaction.validate_turn_intent`), executes it atomically
+(`turn_transaction.execute_turn_transaction`, wired to the four operations
+above through `problem_field_registry.ACTION_REGISTRY`), and renders the
+result -- deterministically for a focused WRITE/READ turn (Part 11), or via
+one further un-tooled chat call for a calculation/progress action turn (same
+narration pattern as before, unchanged) or a genuinely broad/off-schema
+turn.
+
 This module deliberately does NOT import `separation_tool.py` /
 `case_design.py` / `optimizer.py` -- the sizing/optimization sweep layer is
 still out of scope here. It DOES import the deterministic feed-phase
 calculation layer (`binary_distillation_calculation.py`, which in turn
-imports BioSTEAM via `biosteam_feed.py`/`feed_phase.py`) for the CALCULATION
-tool above -- that layer is the sole place any BioSTEAM call happens; the
-LLM itself never infers feed phase, vapor fraction, or any other
-thermodynamic property from general knowledge. The calculation pipeline
-currently evaluates ONLY the feed phase -- no Design Option A-D sizing
-(reflux ratio, stage count, column diameter, etc.) is performed here yet.
-Feed-phase screening and Design Option A-D assessment are two independent
-deterministic branches (`feed_screening` / `design_assessment` in every
-engineering-tool result) -- see
+imports BioSTEAM via `biosteam_feed.py`/`feed_phase.py`) -- that layer is
+the sole place any BioSTEAM call happens; the LLM itself never infers feed
+phase, vapor fraction, or any other thermodynamic property from general
+knowledge. The calculation pipeline currently evaluates ONLY the feed phase
+-- no Design Option A-D sizing (reflux ratio, stage count, column diameter,
+etc.) is performed here yet. Feed-phase screening and Design Option A-D
+assessment are two independent deterministic branches (`feed_screening` /
+`design_assessment` in every engineering-tool result) -- see
 tools/binary-distillation-separating-feed-phase-from-options-a-d.md. The
 CALCULATION tool is gated on `feed_screening['ready']` alone, never on
 Design Option A-D completeness.
@@ -54,17 +65,24 @@ Run interactively:
 Or one-shot:
     python binary_distillation_workflow_agent.py "I want to separate methanol and water."
 """
+import argparse
+import difflib
+import itertools
 import json
-import pprint
 import re
 import sys
 
 import ollama
 
+import turn_diagnostics
 from binary_distillation_calculation import STEP_FEED_PHASE, calculate_binary_distillation_problem
 from binary_distillation_workflow import assess_binary_distillation_problem
 from feed_state import apply_user_update, empty_feed_state
+from problem_field_registry import ACTION_REGISTRY, ACTIVE_WORKFLOW_SCHEMA, PROBLEM_FIELD_REGISTRY, bind_action
+from problem_snapshot import build_problem_snapshot, read_problem_value
 from tool_argument_normalizer import normalize_write_arguments
+from turn_intent import TURN_INTENT_JSON_SCHEMA, build_field_catalog_prompt, parse_turn_intent_response, propose_turn_intent
+from turn_transaction import make_action_transaction, make_raw_update_transaction, validate_turn_intent
 
 MODEL = 'qwen3:8b'
 
@@ -108,6 +126,23 @@ _FEED_UPDATE_FIELDS = (
     'component_flow_units', 'total_flow', 'total_flow_units',
     'composition', 'composition_basis',
 )
+
+# tools/binary-distillation-turn-diagnostics-plan.md Step 5/6 -- one
+# monotonically increasing counter for diagnostic-record turn_ids across
+# the life of the process (REPL) or a single one-shot call.
+_turn_id_counter = itertools.count(1)
+
+
+def _next_turn_id():
+    return f'turn-{next(_turn_id_counter)}'
+
+
+def _state_snapshot():
+    """A JSON-safe, fully-detached copy of the accumulated `_workflow_state`
+    (flat fields plus its nested 'feed' dict) -- used ONLY to build a
+    before/after diagnostic state diff. Never returned to a caller as
+    authoritative state and never itself mutated."""
+    return turn_diagnostics.to_jsonable(_workflow_state)
 
 
 def _merge_into_state(new_fields):
@@ -372,20 +407,24 @@ def get_precalculation_progress() -> dict:
     }
 
 
-TOOLS = [
-    update_binary_distillation_problem,
-    get_binary_distillation_problem,
-    calculate_current_binary_distillation_problem,
-    get_binary_distillation_calculation_status,
-    reset_workflow_session,
-]
-TOOL_FUNCTIONS = {
-    'update_binary_distillation_problem': update_binary_distillation_problem,
-    'get_binary_distillation_problem': get_binary_distillation_problem,
-    'calculate_current_binary_distillation_problem': calculate_current_binary_distillation_problem,
-    'get_binary_distillation_calculation_status': get_binary_distillation_calculation_status,
-    'reset_workflow_session': reset_workflow_session,
-}
+def _read_calculation_status_action():
+    """Bound to the 'read_calculation_status' action verb -- reproduces the
+    same dual-path progress logic `_run_progress_query_and_finalize` used to
+    pick between directly: the real calculation-status READ once a
+    calculation has run, or the pre-calculation progress helper before
+    that. Read-only; never runs BioSTEAM."""
+    if _last_calculation_result is not None:
+        return get_binary_distillation_calculation_status()
+    return get_precalculation_progress()
+
+
+# tools/binary-distillation-issues-9-1-2026-fifth.md Part 8 -- wire this
+# module's own operations into the generic ACTION_REGISTRY verbs. Bound
+# here (not in problem_field_registry.py) to avoid a circular import --
+# that module is imported BY this one.
+bind_action('reset_current_problem', reset_workflow_session)
+bind_action('calculate_current_step', calculate_current_binary_distillation_problem)
+bind_action('read_calculation_status', _read_calculation_status_action)
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +648,21 @@ def is_calculation_progress_question(text):
     return normalized in _PROGRESS_PHRASES_EXACT
 
 
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-issues-9-1-2026-fifth.md Step H -- the entire
+# hand-alias-table system that used to live here (_FIELD_ALIAS_TABLE,
+# resolve_state_query, format_state_query_answer, resolve_explicit_field_write,
+# and their helpers) is RETIRED. It is superseded by the schema-driven
+# TurnIntent/TurnTransaction layer (`turn_intent.py`/`turn_transaction.py`/
+# `problem_snapshot.py`/`problem_field_registry.py`) plus the deterministic
+# formatter below (`format_transaction_response`) -- a new field now needs
+# only a `PROBLEM_FIELD_REGISTRY` entry, never a new hand-written phrase
+# list or template line. See that doc's "Adapter decision" for why: native
+# per-field alias matching does not scale past a fixed field list, and this
+# round's failures were exactly the alias table falling behind real phrasing.
+# ---------------------------------------------------------------------------
+
+
 def _matches_short_phrase(normalized, phrases):
     return normalized in phrases or any(normalized.startswith(p + ' ') for p in phrases)
 
@@ -683,33 +737,217 @@ def resolve_pending_reply(pending_request, user_text):
     # model-driven routing to restate the exact string.
     return None
 
+
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-issues-9-1-2026-fifth.md Part 11/12 --
+# deterministic, registry-driven rendering of a resolved TurnTransaction.
+# TERMINAL: called only for a transaction with no `action` (an action turn
+# is finalized through one further un-tooled Qwen call instead -- see
+# `_dispatch_transaction` below, same narration pattern the calculation/
+# progress paths always used). A focused WRITE/READ turn never reaches the
+# model at all, so it can never come back with unrelated Design Option
+# guidance, other stored variables, or a suggestion to proceed appended to
+# it (Failure 3/Part 11).
+# ---------------------------------------------------------------------------
+
+_YES_NO_QUESTION_PREFIXES = ('did', 'have', 'has', 'was', 'do', 'am', 'is', 'didnt', 'hadnt', 'hasnt')
+
+
+def _format_value(value):
+    """Render a stored value without a spurious trailing '.0' on an integral
+    float (e.g. `boilup_ratio_VB=2.0` -> '2', not '2.0'), while leaving a
+    genuinely fractional value (e.g. `xD=0.95`) untouched."""
+    if isinstance(value, bool):
+        return 'yes' if value else 'no'
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, list):
+        return ', '.join(str(v) for v in value)
+    return str(value)
+
+
+def _field_label(field, entity=None):
+    entry = PROBLEM_FIELD_REGISTRY.get(field)
+    if entry is None:
+        return field
+    if entry.get('keyed') and entity is not None:
+        base = 'feed flow' if field == 'component_flows' else entry['label']
+        return f'{entity} {base}'
+    return entry['label']
+
+
+def _units_suffix(units):
+    return f' {units}' if units else ''
+
+
+def _looks_like_yes_no_reference(raw_reference):
+    if not raw_reference:
+        return False
+    normalized = normalize_short_reply(raw_reference)
+    if not normalized:
+        return False
+    return normalized.split(' ', 1)[0] in _YES_NO_QUESTION_PREFIXES
+
+
+def _format_update_sentence(update):
+    field, entity, value, units = update['field'], update['entity'], update['value'], update['units']
+    entry = PROBLEM_FIELD_REGISTRY[field]
+    if not units:
+        units = entry.get('canonical_units')
+    return f'The {_field_label(field, entity)} is now {_format_value(value)}{_units_suffix(units)}.'
+
+
+def _group_invalid_updates(invalid_updates):
+    """Group rejected updates by (field, reason), preserving first-seen
+    order -- tools/binary-distillation-turn-diagnostics-plan.md Step 7. Two
+    missing-entity failures for the same keyed field must produce ONE
+    user-facing sentence; the full per-update detail (both rejected
+    entries, their update_index/field_metadata) still lives in the
+    TurnTransaction/diagnostic record untouched by this grouping."""
+    groups = {}
+    order = []
+    for invalid in invalid_updates:
+        raw_update = invalid['update']
+        field = raw_update.get('field', '<unknown>') if isinstance(raw_update, dict) else '<unknown>'
+        key = (field, invalid['reason'])
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(invalid)
+    return [(key, groups[key]) for key in order]
+
+
+def _format_invalid_update_note(field, reason, entries):
+    """One user-facing sentence for a whole GROUP of identically-rejected
+    updates (same field + reason). Uses registry metadata for a useful,
+    generic message rather than exposing a bare internal reason token --
+    Step 7: avoid blaming the user when their sentence was unambiguous,
+    state that nothing was saved because validation is atomic, and remain
+    generic enough to support any future keyed field (not special-cased to
+    component_flows)."""
+    entry = PROBLEM_FIELD_REGISTRY.get(field)
+    label = entry['label'] if entry else field
+    if reason == 'missing_entity' and entry and entry.get('keyed'):
+        return (
+            f'I failed to associate the stated {label} values with their '
+            f'component names, so none of the values from this message were saved.'
+        )
+    return (
+        f"I couldn't apply the stated value for {label} this turn "
+        f'({len(entries)} value(s) rejected), so nothing was saved for it.'
+    )
+
+
+def _format_conflict_note(conflict):
+    return f"Conflicting values were given for {_field_label(conflict['field'], conflict.get('entity'))}; nothing was changed."
+
+
+def _format_query_sentence(query, result):
+    if not result['valid']:
+        error = result['error']
+        if error == 'unknown_problem_field':
+            reference = query.get('raw_reference') or query['field']
+            text = f'{reference} is not a recognized variable in the current binary-distillation workflow.'
+            if result.get('near_matches'):
+                text += f" Did you mean {result['near_matches'][0]}?"
+            return text
+        if error == 'unknown_problem_entity':
+            return f"Which component's {_field_label(query['field'])} do you mean?"
+        if error == 'unknown_problem_subject':
+            return f"I don't have that subject on file for {_field_label(query['field'])}."
+        return f"I couldn't resolve {query['field']}."
+
+    found, value, units = result['found'], result['value'], result['units']
+    label = _field_label(query['field'], result.get('entity'))
+    if found:
+        base = f'The {label} is {_format_value(value)}{_units_suffix(units)}.'
+    else:
+        base = f'The {label} has not been specified yet.'
+    if _looks_like_yes_no_reference(query.get('raw_reference')):
+        return ('Yes. ' if found else 'No. ') + base
+    return base
+
+
+def format_transaction_response(transaction, execution_result):
+    """Render a resolved (action-free) TurnTransaction into the final
+    user-facing sentence(s) -- no model call involved. Preserves query
+    order and puts update confirmations first (Part 11's "Mixed update/
+    query" example)."""
+    sentences = []
+    # A rejected update whose field is ALSO being queried this same turn is
+    # a benign, common pattern (the model redundantly restated a value
+    # while also asking about it, e.g. a read-only field like total_flow,
+    # or the same value it just confirmed) -- the query answer already
+    # covers it, so no separate rejection note is surfaced for it.
+    queried_fields = {q['field'] for q in transaction['queries']}
+
+    for update in transaction.get('valid_updates', []):
+        sentences.append(_format_update_sentence(update))
+    unqueried_invalid = [
+        invalid for invalid in transaction['invalid_updates']
+        if invalid['update'].get('field') not in queried_fields
+    ]
+    for (field, reason), entries in _group_invalid_updates(unqueried_invalid):
+        sentences.append(_format_invalid_update_note(field, reason, entries))
+    for conflict in transaction['conflicts']:
+        if conflict['field'] in queried_fields:
+            continue
+        sentences.append(_format_conflict_note(conflict))
+    for query, result in zip(transaction['queries'], execution_result['query_results']):
+        sentences.append(_format_query_sentence(query, result))
+
+    # Engineering-output grounding (tools/chopper/binary-distillation-incorrect-symbol-reading-issue.md):
+    # a plain WRITE-only turn (no queries) that just reached
+    # 'ready_for_calculation' states exactly what a full design would
+    # calculate, using would_calculate_details' own symbol/label pairs --
+    # deterministically, so this can never be mis-narrated by the model.
+    assessment = execution_result['assessment']
+    if transaction.get('valid_updates') and not transaction['queries'] and assessment.get('status') == 'ready_for_calculation':
+        details = assessment.get('would_calculate_details') or []
+        if details:
+            case = assessment.get('case')
+            parts = ', '.join(f"{d['symbol']} ({d['label']})" for d in details)
+            sentences.append(
+                f'Your problem is fully specified as Design Option {case}. '
+                f'A full Design Option {case} design would calculate: {parts}.'
+            )
+
+    return ' '.join(sentences) if sentences else 'Understood.'
+
+
 # tools/binary-distillation-workflow.md section 17 -- "Important Behavioral
 # Requirement for Qwen".
 SYSTEM_PROMPT = """You are not the binary-distillation decision engine.
 
-You have access to two engineering-state tools, two calculation tools, and \
-one housekeeping tool:
-  - `update_binary_distillation_problem` (WRITE) -- use ONLY when the \
-current user message states NEW engineering information.
-  - `get_binary_distillation_problem` (READ) -- use when the user asks a \
-question about information already supplied, derived, stored, or still \
-missing. Takes no arguments and never changes anything.
+You do not have any callable tools this turn. Your ONLY job each turn is to \
+interpret the CURRENT user message (the final user message in the \
+conversation) into a `TurnIntent` JSON object -- `updates` (new engineering \
+facts to write), `queries` (questions about existing state), and `action` \
+(at most one of `calculate_current_step`, `read_calculation_status`, \
+`reset_current_problem`, or `null`). Python -- never you -- validates every \
+proposed update/query/action against the actual workflow schema, performs \
+the one atomic WRITE, and executes the action. You never invent a field, \
+guess which known field an unrecognized symbol means, or fabricate a \
+result -- if a symbol is not in the field catalog you were given, put it in \
+`queries` verbatim and Python will report it as unrecognized.
+
+Four underlying operations exist for reference (you never call them \
+directly; Python dispatches to them from your validated TurnIntent):
+  - `update_binary_distillation_problem` (WRITE) -- merges newly-stated \
+engineering facts into the accumulated problem state.
+  - `get_binary_distillation_problem` (READ) -- returns the current \
+accumulated state; never mutates anything.
   - `calculate_current_binary_distillation_problem` (CALCULATION EXECUTE) -- \
-use when the user asks for a calculated/derived thermodynamic result (feed \
-phase, vapor fraction, liquid fraction, etc.) about the CURRENT problem. \
-Takes no arguments -- it reads the accumulated state itself. Only runs the \
-actual calculation once the problem is `ready_for_calculation`; otherwise \
-it returns the same not-yet-ready assessment `get_binary_distillation_problem` \
-would.
-  - `get_binary_distillation_calculation_status` (CALCULATION READ) -- use \
-when the user asks about calculation PROGRESS: "what have we calculated?", \
-"what next?", "continue", "what remains?", "where are we?". Takes no \
-arguments, never mutates anything, and never runs a new calculation -- it \
-only reports the most recent calculation result (if any) and what is still \
-unimplemented. In most cases the orchestrator already answers these \
-questions deterministically before you see the message; see the \
-CALCULATION-PROGRESS TRUTH RULE below.
-  - `reset_workflow_session` (housekeeping) -- clears everything.
+runs the deterministic feed-phase calculation once the problem is \
+`ready_for_calculation`.
+  - `get_binary_distillation_calculation_status` (CALCULATION READ) -- \
+reports the most recent calculation result and calculation-progress state; \
+never runs a new calculation.
+
+For a turn Python routes to you for narration (an `action` turn, or a \
+broad/off-schema question), the result of that operation is already in the \
+conversation as a tool result -- describe it; never re-request the \
+operation yourself, since no tools are available to call.
 
 ## FEED SCREENING VS DESIGN OPTION RULE
 
@@ -742,37 +980,27 @@ performing feed-phase evaluation, and do not infer physical routing \
 yourself -- always use the deterministic `checks['feed_phase']`/ \
 `checks['routing']` result.
 
-## Deciding which tool to call: classify every user turn
+## Interpreting a turn into a TurnIntent
 
 1. **New engineering information** (e.g. "Water flow rate is 90 kmol/hr.", \
 "Column pressure is 101325 Pa.", "Use xD = 0.98.", "Yes, use the optimum \
-feed plate."): call `update_binary_distillation_problem` with ONLY the new \
-field(s) from this turn.
+feed plate."): put ONLY the new field(s) this turn actually states into \
+`updates`.
 2. **A question about existing state** (e.g. "What is the feed \
-composition?", "What is my total feed flow?", "What values have I given \
-you?", "What is still missing?", "Which Design Option does this match?", \
-"What pressure did I specify?"): call `get_binary_distillation_problem` \
-with no arguments. Do NOT call `update_binary_distillation_problem` for \
-these, even if you copy the answer's numbers into the call -- that would \
-fabricate a "new" input out of a value nobody just stated.
+composition?", "What is my total feed flow?", "What pressure did I \
+specify?"): put the field(s) asked about into `queries`. Never put an \
+existing/derived value into `updates` merely because you are about to \
+report it -- that would fabricate a "new" input out of a value nobody just \
+restated.
 3. **Both at once** (e.g. "Water flow is 90 kmol/hr. What is the resulting \
-feed composition?"): call `update_binary_distillation_problem` with just \
-the new fact first, then answer the question directly from THAT call's \
-returned state -- it already reflects the merge, so a follow-up \
-`get_binary_distillation_problem` call is unnecessary.
+feed composition?"): populate both `updates` and `queries` in the SAME \
+TurnIntent -- Python performs the WRITE first, then resolves every query \
+against the post-WRITE state, so you never need a separate follow-up turn.
 4. **A calculation-PROGRESS question** (e.g. "What next?", "Continue.", \
-"What have we calculated?", "What remains?", "Where are we?"): call \
-`get_binary_distillation_calculation_status` with no arguments. This is \
-NOT the same as category 2 -- it asks what has been CALCULATED, not what \
-inputs have been supplied. The orchestrator usually answers this \
-deterministically before you get a turn; see the CALCULATION-PROGRESS \
-TRUTH RULE below.
-
-Each user turn permits at most one operation from {WRITE, READ, \
-CALCULATION EXECUTE, CALCULATION READ}. All four return a self-contained \
-result. After any one of them runs, answer the user from that result; \
-never request another state or calculation tool during the same turn -- \
-the orchestrator will not run it anyway.
+"What have we calculated?", "What remains?", "Where are we?") or an \
+explicit calculation/reset request: set `action` to the matching name. In \
+most cases the orchestrator already recognizes these deterministically \
+before you see the turn; see the CALCULATION-PROGRESS TRUTH RULE below.
 
 ## CALCULATED ENGINEERING STATE RULE
 
@@ -835,6 +1063,16 @@ again unless the deterministic checker reports that they are missing, \
 inconsistent, or have been invalidated. A question such as "what next?" \
 does not mean the user is starting a new separation problem.
 
+## SPECIFIC STATE QUERY RULE (tools/binary-distillation-issues-9-1-2026-fifth.md Part 11)
+
+When the user asks whether a specific quantity was supplied, or asks for \
+its stored value (e.g. "did I already give the ethanol flow?", "what \
+pressure did I specify?", "what was the feed temperature?", "did I \
+specify xD?"), put that field in `queries`. Python resolves it from state \
+and formats the final reply itself -- this is a TERMINAL path and you will \
+never actually see the resolved answer or be asked to narrate it; your job \
+ends at proposing the TurnIntent.
+
 ## State-truth rule (tools/binary-distillation-pending-truth.md)
 
 The deterministic tool state is the SOLE authority for engineering facts. \
@@ -842,8 +1080,8 @@ Never say a field was supplied, confirmed, changed, or derived unless the \
 LATEST tool result actually shows that value in the state -- conversation \
 context may help you understand what the user means, but it never itself \
 changes engineering state. If a user's message answers a pending question, \
-you must call `update_binary_distillation_problem` and see the change in \
-its returned state BEFORE describing it as confirmed, updated, or stored. \
+your TurnIntent's `updates` must include it -- see the change reflected \
+BEFORE describing it as confirmed, updated, or stored. \
 Never output "confirmed", "updated", "stored", "specified", or an \
 equivalent claim about a field whose value in the latest tool result \
 disagrees with (or is still null/None compared to) what you are about to \
@@ -851,34 +1089,32 @@ say.
 
 ## `pending_request`: what the checker is currently asking for
 
-Every tool result includes a `pending_request` field: `None` when nothing \
+Every assessment includes a `pending_request` field: `None` when nothing \
 specific is outstanding, or a dict identifying the ONE field (or ordered \
 field group) the checker is currently waiting on -- e.g. `{'field': \
 'use_optimum_feed_plate', 'request_type': 'boolean_confirmation', \
 'prompt': ...}` or `{'fields': ['xD', 'xB'], 'request_type': \
 'ordered_float_group', ...}`. In most cases the orchestrator already \
-converts a short reply to a live `pending_request` into a \
-`update_binary_distillation_problem` call for you, deterministically, \
-before you see the message -- when that happens you will find the tool \
-result already reflects the new value; describe it from that result rather \
-than re-deriving it yourself. If you ever do see a user message that \
-plainly answers an active `pending_request` but no such WRITE has occurred \
-yet, call `update_binary_distillation_problem` with exactly that field set \
-before replying -- never describe the field as decided based on the user's \
-words alone.
+converts a short reply to a live `pending_request` into a real WRITE \
+deterministically before you see the message -- when that happens you will \
+find the tool result already reflects the new value; describe it from that \
+result rather than re-deriving it yourself. You are only ever asked to \
+narrate a result Python has already produced; you never decide on your own \
+that a field is now answered.
 
 **Reporting a value never makes it a new input.** If a value already exists \
 in state -- whether its provenance is `user_explicit` or `derived` -- \
 telling the user about it does not turn it into something the user just \
-supplied. Never pass an existing or derived value back through \
-`update_binary_distillation_problem`'s arguments merely because you are \
-about to state it or because the checker's message mentioned it. Only pass \
-values the CURRENT user message newly and explicitly states.
+supplied. Never put an existing or derived value into `updates` merely \
+because you are about to state it or because the checker's message \
+mentioned it. Only propose updates for what the CURRENT user message newly \
+and explicitly states.
 
 **Do not reconstruct the state from conversation history.** When asked what \
-is currently known, missing, or derived, call `get_binary_distillation_problem` \
-rather than searching your own earlier replies for a remembered number -- \
-the deterministic state is always the source of truth, not your prior text.
+is currently known, missing, or derived, put the relevant field(s) in \
+`queries` rather than searching your own earlier replies for a remembered \
+number -- the deterministic state is always the source of truth, not your \
+prior text.
 
 Never infer a Design Option (A, B, C, or D) yourself when the checker \
 has not identified one -- if `case`/`design_option` comes back null and \
@@ -893,31 +1129,31 @@ optimum feed plate -- these must come from the user's own words.
 
 Component identity and component amount are separate concepts. Naming a \
 component (e.g. "separate methanol and water") never implies a flow rate \
-for it -- pass ONLY `component_names` in that case, with no numbers. \
-Likewise, a single component's stated flow rate is never the total feed \
-flow rate -- pass it under `component_flows`, and never pass it as \
-`total_flow` unless the user explicitly says it is the total. Extract only \
-what the current message actually states; do not reconstruct or guess \
-feed information the user has not (yet) given, even partially.
+for it -- put ONLY a `component_names` update in that case, with no \
+numbers. Likewise, a single component's stated flow rate is never the \
+total feed flow rate -- put it under a keyed `component_flows` update, and \
+never write it as `total_flow` unless the user explicitly says it is the \
+total. Extract only what the current message actually states; do not \
+reconstruct or guess feed information the user has not (yet) given, even \
+partially.
 
 Do NOT perform, describe performing, or claim to have performed any \
 Design Option A-D distillation sizing or optimization (distillate/bottoms flow, \
 reflux ratio, reboiler/condenser duty, theoretical stage count, feed \
-stage, column diameter) during this conversation -- `update_binary_distillation_problem` \
-and `get_binary_distillation_problem` only check problem-definition \
-completeness, and their `calculation_performed` is always False. \
-`calculate_current_binary_distillation_problem` is the one exception: it \
-performs ONLY the deterministic feed-phase calculation described above -- \
-never describe its result as anything more than that.
+stage, column diameter) during this conversation -- WRITE/READ only check \
+problem-definition completeness, and `calculation_performed` is always \
+False for them. The `calculate_current_step` action is the one exception: \
+it performs ONLY the deterministic feed-phase calculation described above \
+-- never describe its result as anything more than that.
 
-Both engineering tools REMEMBER everything already given about the current \
-separation problem -- you do NOT need to repeat components, pressure, feed \
-condition, or anything else from an earlier call. When the user answers a \
-question you asked, call `update_binary_distillation_problem` again with \
-only the NEW field(s) they just gave; never just restate their answer as \
-text. Only call `reset_workflow_session` when the user is clearly switching \
-to a genuinely different, unrelated separation problem, never between \
-ordinary follow-up turns.
+State REMEMBERS everything already given about the current separation \
+problem -- you do NOT need to repeat components, pressure, feed condition, \
+or anything else from an earlier turn. When the user answers a question \
+you asked, propose an update with only the NEW field(s) they just gave; \
+never just restate their answer as text. Only set `action` to \
+`reset_current_problem` when the user is clearly switching to a genuinely \
+different, unrelated separation problem, never between ordinary follow-up \
+turns.
 
 ## Binary scope only
 
@@ -928,19 +1164,22 @@ two component) separations are supported right now and ask them to narrow \
 the request -- do NOT silently pick two of the three-or-more components \
 and drop the rest.
 
-## Naming components: `component_names` vs `add_component_names`
+## Naming components: `component_names`
 
-Use `component_names` (the FULL list) when the user states or restates the \
-whole separation, e.g. "Separate methanol and water" or "I want to separate \
-water" -- this replaces whatever component list (and any flows/composition) \
-was known before, since it describes what the feed IS, not an addition to \
-it. Use `add_component_names` instead when the user is answering a question \
-you asked for a missing component with just a bare name (e.g. you asked \
-"please specify the second component" and they replied "Methanol") -- this \
-appends to the existing list without discarding any flow/composition data \
-already known. When in doubt (a full new sentence describing the \
-separation vs. a short answer to your own question), prefer `component_names` \
-for the former and `add_component_names` for the latter.
+Use a `component_names` update with the FULL, current component list \
+whenever the user states, restates, or completes the separation's \
+identity -- e.g. "Separate methanol and water" gives the full list \
+directly. If the user instead answers a question you asked for a missing \
+component with just a bare name (e.g. you asked "please specify the second \
+component" and they replied "Methanol"), reconstruct the FULL list from \
+conversation context (the component(s) already established plus this new \
+one) and put that complete list in the update -- `component_names` always \
+REPLACES the previously-known list (and clears any previously-known flows/ \
+composition, since they described the OLD feed), so never send a partial \
+list. Only use `component_names` when NO quantity is given yet for the \
+newly-named component(s) in the same message -- if the user also gives a \
+flow rate, use a keyed `component_flows` update instead (it establishes \
+identity automatically) and do not also write `component_names`.
 
 ## Feed quantity: `component_flows` vs `total_flow` + `composition`
 
@@ -1166,98 +1405,15 @@ reflux ratio" or "L/D"), pass it as `external_reflux_ratio_LD`. Only use \
 minimum reflux" terms. Never convert one into the other yourself, and never \
 pass the same number for both.
 
-Never output a bare JSON object as your reply -- JSON only ever appears as \
-tool-call arguments, never as chat text.
+When Python routes you a turn to narrate (an action result, or a broad/off-\
+schema question), reply in ordinary prose -- never emit a raw JSON object \
+as that reply. (Your interpretation turn is a separate, structured-output \
+call you never see the raw mechanics of.)
 """
 
 
-def _run_tool_call(call):
-    # tools/binary-distillation-issues-9-1-2026-first.md Round 1 Step 1.2 --
-    # this except clause is a defense-in-depth safety net, not the primary
-    # fix (that's tool_argument_normalizer.normalize_write_arguments, called
-    # inside update_binary_distillation_problem itself). It exists for any
-    # OTHER malformed-argument shape that isn't one of the specific cases
-    # normalized there -- e.g. a wrong type on a field this round doesn't
-    # cover. Either way, a raw exception must never propagate out of a tool
-    # call as the user-facing failure mechanism; it is always reported back
-    # as a structured dict shaped like normalize_write_arguments' own
-    # 'invalid_tool_arguments' error.
-    fn = TOOL_FUNCTIONS.get(call.function.name)
-    if fn is None:
-        return {'error': f'Unknown tool: {call.function.name}'}
-    try:
-        return fn(**call.function.arguments)
-    except Exception as e:
-        return {
-            'valid': False,
-            'error': 'tool_execution_error',
-            'tool': call.function.name,
-            'message': f'{type(e).__name__}: {e}',
-        }
-
-
-# tools/binary-distillation-read-loop-fix-plan.md -- without a bounded
-# per-turn policy, the model can keep re-selecting `get_binary_distillation_problem`
-# (or any other tool) forever, since a READ result changes nothing about
-# which tools are on offer next. The controller below, not the prompt,
-# enforces termination: at most one engineering-state operation (READ or
-# WRITE) per user turn, optionally preceded by one RESET, then a
-# finalization call with no tools exposed so another tool call is
-# impossible.
-MAX_TOOL_CALLS_PER_TURN = 2
-
-_ENGINEERING_TOOLS = ('update_binary_distillation_problem', 'get_binary_distillation_problem')
 _CALCULATION_TOOL = 'calculate_current_binary_distillation_problem'
 _CALC_STATUS_TOOL = 'get_binary_distillation_calculation_status'
-
-
-def _fingerprint(call):
-    return (call.function.name, json.dumps(call.function.arguments, sort_keys=True))
-
-
-def _select_allowed_calls(tool_calls, reset_used, engineering_tool_used, fingerprints,
-                           calculation_used=False, calc_status_used=False):
-    """Pick which of this response's requested tool calls may actually run this round, per the per-turn policy: RESET first if not yet used, else at most one "primary operation" -- WRITE preferred over CALCULATION EXECUTE preferred over CALCULATION READ preferred over (state) READ -- skipping anything already run this turn (by fingerprint). tools/binary-distillation-connecting-feed-calculation.md Step 5 / tools/binary-distillation-whats-next.md Step 14: CALCULATION EXECUTE and CALCULATION READ are their own operation categories, but both still count toward the same one-primary-operation-per-turn budget as the engineering READ/WRITE pair, so a model cannot loop READ -> CALCULATION -> READ -> CALCULATION -> ... within one turn."""
-    reset_call = None
-    write_call = None
-    read_call = None
-    calculation_call = None
-    calc_status_call = None
-    for call in tool_calls:
-        name = call.function.name
-        if name == 'reset_workflow_session' and reset_call is None:
-            reset_call = call
-        elif name == 'update_binary_distillation_problem' and write_call is None:
-            write_call = call
-        elif name == 'get_binary_distillation_problem' and read_call is None:
-            read_call = call
-        elif name == _CALCULATION_TOOL and calculation_call is None:
-            calculation_call = call
-        elif name == _CALC_STATUS_TOOL and calc_status_call is None:
-            calc_status_call = call
-
-    primary_op_used = engineering_tool_used or calculation_used or calc_status_used
-
-    if reset_call is not None and not reset_used:
-        candidates = [reset_call]
-    elif primary_op_used:
-        candidates = []
-    elif write_call is not None:
-        candidates = [write_call]
-    elif calculation_call is not None:
-        candidates = [calculation_call]
-    elif calc_status_call is not None:
-        candidates = [calc_status_call]
-    elif read_call is not None:
-        candidates = [read_call]
-    else:
-        candidates = []
-
-    return [call for call in candidates if _fingerprint(call) not in fingerprints]
-
-
-def _chat_with_tools(client, messages):
-    return client.chat(model=MODEL, messages=messages, tools=TOOLS, think=False)
 
 
 def _chat_without_tools(client, messages):
@@ -1314,171 +1470,456 @@ def _run_progress_query_and_finalize(client, messages):
     return response.message.content
 
 
-def ask(client, messages):
-    """Send `messages` to the model, resolving any tool calls under the bounded per-turn policy above, and return the final assistant message text.
-
-    Before doing so, deterministic layers get first refusal at the current
-    turn, in this order (tools/binary-distillation-pending-truth.md section
-    4/17, tools/binary-distillation-connecting-feed-calculation.md Step 12,
-    tools/binary-distillation-whats-next.md Step 16,
-    tools/binary-distillation-temperature-issue.md Steps 5-7,
-    tools/binary-distillation-separating-feed-phase-from-options-a-d.md
-    Steps 20-23): it inspects the CURRENT authoritative state (never
-    conversation history) and --
-      1. ALWAYS first: if the user's message plainly resolves an
-         outstanding `pending_request`, converts it directly into a real
-         WRITE (this includes an explicit Kelvin-suffixed reply, e.g.
-         '355 K', when the live pending field is the feed thermal
-         condition). This runs regardless of feed-screening readiness --
-         a live pending question (e.g. an outstanding optimum-feed-plate
-         confirmation) must win over a bare "yes" being misread as "run
-         the calculation now."
-      1b. else, if the feed thermal condition is still missing (whether or
-         not anything else is currently pending) and the message explicitly
-         and unambiguously names the FEED's temperature in Kelvin (e.g.
-         'feed temperature is 355 K') -- as opposed to a bare number, or a
-         value tied to a different apparatus like a condenser or reboiler --
-         likewise converts it directly into a real WRITE;
-      2. else if `feed_screening['ready']` is True and the message is a
-         "proceed" request, runs the (currently feed-phase-only)
-         calculation layer and finalizes from its result -- this does NOT
-         require Design Option A-D completeness (reflux_condition, a fully
-         identified case, or optimum-feed-plate confirmation);
-      3. else if the message is a calculation-PROGRESS question
-         (`is_calculation_progress_question` -- "what next?", "continue",
-         "what remains?", ...), answers it deterministically from
-         `get_binary_distillation_calculation_status()` (if a calculation
-         has already run) or `get_precalculation_progress()` (if not) --
-         never from conversation history or generic LLM reasoning, and
-         never by re-asking for engineering inputs already on file;
-      4. else if the message explicitly asks a feed-phase/vapor-fraction
-         question (`is_feed_phase_question`) while `feed_screening['ready']`
-         is True, likewise runs the calculation layer deterministically
-         instead of letting the model decide whether to answer from
-         remembered chemical knowledge.
-    If none of these apply (including: a feed-phase question asked before
-    the feed screen is ready, which must not trigger a BioSTEAM call),
-    control falls through to normal model-driven tool selection below.
-    """
-    user_text = _current_user_text(messages)
-    if user_text is not None:
-        current_state = get_binary_distillation_problem()
-        # tools/binary-distillation-separating-feed-phase-from-options-a-d.md
-        # Steps 21-23 -- the CALCULATE trigger ("go ahead" / a feed-phase
-        # question) is gated on FEED SCREENING readiness alone, never on
-        # Design Option A-D completeness (`status == 'ready_for_calculation'`
-        # additionally requires reflux_condition + a fully identified case +
-        # optimum-feed-plate confirmation).
-        feed_ready = current_state.get('feed_screening', {}).get('ready', False)
-
-        # Pending-request resolution always runs first, regardless of
-        # feed-screening readiness -- a live outstanding question (e.g.
-        # optimum-feed-plate confirmation) must win over a bare "yes" being
-        # misread as "run the calculation now." This is a no-op whenever the
-        # legacy `status` was already 'ready_for_calculation', since
-        # `pending_request` is always None in that state.
-        resolved = resolve_pending_reply(current_state.get('pending_request'), user_text)
-        if resolved is None and _feed_thermal_condition_missing(current_state):
-            temperature_value = extract_explicit_feed_temperature_K(user_text)
-            if temperature_value is not None:
-                resolved = {'feed_temperature_K': temperature_value}
-        if resolved is not None:
-            print(f"  [pending-request resolved -> calling update_binary_distillation_problem({resolved})]")
-            messages.append({
-                'role': 'assistant',
-                'content': None,
-                'tool_calls': [{'function': {'name': 'update_binary_distillation_problem', 'arguments': resolved}}],
-            })
-            result = update_binary_distillation_problem(**resolved)
-            messages.append({
-                'role': 'tool',
-                'tool_name': 'update_binary_distillation_problem',
-                'content': json.dumps(result),
-            })
-            response = _chat_without_tools(client, messages)
-            messages.append(response.message)
-            return response.message.content
-
-        if feed_ready and normalize_short_reply(user_text) in _PROCEED_PHRASES:
-            return _run_calculation_and_finalize(client, messages)
-
-        if is_calculation_progress_question(user_text):
-            return _run_progress_query_and_finalize(client, messages)
-
-        if feed_ready and is_feed_phase_question(user_text):
-            return _run_calculation_and_finalize(client, messages)
-
-    response = _chat_with_tools(client, messages)
+def _run_write_and_finalize(client, messages, update_kwargs):
+    """Perform the one atomic WRITE deterministically, then finalize with
+    `_chat_without_tools` so the model narrates the resulting assessment --
+    the same synthetic tool-call/tool-result-plus-finalize pattern used
+    everywhere else in this module. Used for a plain WRITE-only
+    TurnTransaction (no queries, no action): Part 11's "terminal" (no
+    further model call) requirement is scoped to FOCUSED QUERIES, not to a
+    rich problem-status explanation, so this keeps every "When `status` is
+    X" section of SYSTEM_PROMPT -- including the ENGINEERING OUTPUT
+    GROUNDING RULE over `would_calculate_details` -- working exactly as
+    before Round 2."""
+    print(f"  [WRITE -> calling update_binary_distillation_problem({update_kwargs})]")
+    result = update_binary_distillation_problem(**update_kwargs)
+    messages.append({
+        'role': 'assistant',
+        'content': None,
+        'tool_calls': [{'function': {'name': 'update_binary_distillation_problem', 'arguments': update_kwargs}}],
+    })
+    messages.append({
+        'role': 'tool',
+        'tool_name': 'update_binary_distillation_problem',
+        'content': json.dumps(result),
+    })
+    response = _chat_without_tools(client, messages)
     messages.append(response.message)
-
-    reset_used = False
-    engineering_tool_used = False
-    calculation_used = False
-    calc_status_used = False
-    fingerprints = set()
-    calls_used = 0
-
-    while response.message.tool_calls and calls_used < MAX_TOOL_CALLS_PER_TURN:
-        selected_calls = _select_allowed_calls(
-            response.message.tool_calls,
-            reset_used=reset_used,
-            engineering_tool_used=engineering_tool_used,
-            fingerprints=fingerprints,
-            calculation_used=calculation_used,
-            calc_status_used=calc_status_used,
-        )
-
-        if not selected_calls:
-            # Nothing left is allowed to run this turn -- finalize from
-            # what we already have instead of looping.
-            break
-
-        for call in selected_calls:
-            if calls_used >= MAX_TOOL_CALLS_PER_TURN:
-                break
-            fingerprints.add(_fingerprint(call))
-            print(f"  [calling {call.function.name}({call.function.arguments})]")
-            result = _run_tool_call(call)
-            print("\n========== RAW TOOL RESULT ==========")
-            pprint.pprint(result, width=100)
-            print("=====================================\n")
-            messages.append({
-                'role': 'tool',
-                'tool_name': call.function.name,
-                'content': json.dumps(result),
-            })
-            calls_used += 1
-
-            if call.function.name == 'reset_workflow_session':
-                reset_used = True
-            elif call.function.name in _ENGINEERING_TOOLS:
-                engineering_tool_used = True
-            elif call.function.name == _CALCULATION_TOOL:
-                calculation_used = True
-            elif call.function.name == _CALC_STATUS_TOOL:
-                calc_status_used = True
-
-        if engineering_tool_used or calculation_used or calc_status_used:
-            # WRITE, READ, CALCULATION, and CALCULATION READ all return a
-            # self-contained result -- force a prose answer instead of
-            # offering another tool call.
-            response = _chat_without_tools(client, messages)
-        else:
-            # Only RESET ran so far; allow one more tool-enabled round so
-            # the model can submit the new problem via WRITE.
-            response = _chat_with_tools(client, messages)
-        messages.append(response.message)
-
-    if response.message.tool_calls:
-        # Hard-stop fallback: budget or policy exhausted but the model
-        # still wants to call something -- force a prose answer.
-        response = _chat_without_tools(client, messages)
-        messages.append(response.message)
-
     return response.message.content
 
 
-def run_repl():
+def _run_broad_conversation_and_finalize(client, messages):
+    """Fallback for a genuinely empty TurnTransaction (no updates, no
+    queries, no action, no reset -- small talk, or a broad question the
+    field schema doesn't naturally capture as a single field, e.g.
+    "summarize everything" or "what's still missing?"). Grounds the model's
+    one narration call in the current accumulated state, with no mutation
+    tools available -- Part 10/11: `get_binary_distillation_problem()`
+    remains the broad-question path, Qwen only elaborates on data Python
+    already supplied."""
+    print('  [broad/off-schema turn -> grounding in get_binary_distillation_problem()]')
+    state = get_binary_distillation_problem()
+    messages.append({
+        'role': 'assistant',
+        'content': None,
+        'tool_calls': [{'function': {'name': 'get_binary_distillation_problem', 'arguments': {}}}],
+    })
+    messages.append({
+        'role': 'tool',
+        'tool_name': 'get_binary_distillation_problem',
+        'content': json.dumps(state),
+    })
+    response = _chat_without_tools(client, messages)
+    messages.append(response.message)
+    return response.message.content
+
+
+def _diag_op(diagnostic, name):
+    """Record one exact dispatched Python operation name, in call order --
+    tools/binary-distillation-turn-diagnostics-plan.md Step 5 point 6. A
+    no-op when `diagnostic` is None (the default, non-debug path)."""
+    if diagnostic is not None:
+        diagnostic['execution']['operations'].append(name)
+
+
+def _diag_write(diagnostic, write_kwargs):
+    """Record whether a real (non-empty) WRITE ran this turn and its exact
+    kwargs -- Step 5 points 7/8. `write_performed` is True only for a
+    non-empty kwargs dict; the harmless unconditional no-op WRITE that
+    `update_binary_distillation_problem` still receives on a query-only or
+    fully-rejected turn is never reported as a performed write."""
+    if diagnostic is not None:
+        diagnostic['execution']['write_performed'] = bool(write_kwargs)
+        diagnostic['execution']['write_kwargs'] = turn_diagnostics.to_jsonable(write_kwargs)
+
+
+def _diag_action(diagnostic, name, arguments):
+    if diagnostic is not None:
+        diagnostic['execution']['action'] = {'name': name, 'arguments': turn_diagnostics.to_jsonable(arguments or {})}
+
+
+def _diag_query_results(diagnostic, query_results):
+    if diagnostic is not None:
+        diagnostic['execution']['query_results'] = turn_diagnostics.to_jsonable(query_results)
+
+
+def _dispatch_transaction(client, messages, transaction, diagnostic=None):
+    """Execute a validated TurnTransaction and produce the final response --
+    the one shared endpoint for both exclusive fast-path transactions and
+    model-proposed ones (tools/binary-distillation-issues-9-1-2026-fifth.md
+    Part 6/8). Branches, in order:
+
+    1. RESET, if requested (always runs before anything else -- Part 8).
+    2. An ACTION, if one validated (`calculate_current_step` /
+       `read_calculation_status`) -- any accompanying WRITE is applied
+       first, then the action's own existing narration helper finalizes
+       (unchanged from before Round 2 -- Part 17: preserve current
+       calculation behavior, including its rich feed-phase-routing prose).
+    3. Any QUERY, or a bounded rejection note (invalid updates/conflicts) --
+       TERMINAL, Python-rendered (`format_transaction_response`), no
+       further model call (Part 11) -- this is the fix for Failures 1-3.
+    4. A plain WRITE with nothing else -- Qwen narrates the resulting
+       assessment (`_run_write_and_finalize`), same as every WRITE did
+       before Round 2.
+    5. Otherwise (a genuinely empty transaction) -- broad, grounded
+       elaboration (`_run_broad_conversation_and_finalize`).
+
+    `diagnostic`, when given (tools/binary-distillation-turn-diagnostics-
+    plan.md Step 5), is filled in with the exact operations dispatched,
+    WRITE performed/kwargs, action, and query results -- purely observational,
+    never read back by this function, so passing it changes no routing,
+    validation, execution, or state (architectural invariant 7).
+    """
+    if transaction['action_error'] is not None:
+        print(f"  [rejected unrecognized action -> {transaction['action_error']}]")
+
+    if transaction['reset_first']:
+        print('  [RESET -> calling reset_workflow_session()]')
+        reset_workflow_session()
+        _diag_op(diagnostic, 'reset_workflow_session')
+
+    if transaction['action'] is not None:
+        name = transaction['action']['name']
+        if transaction['update_kwargs']:
+            print(f"  [WRITE before action -> calling update_binary_distillation_problem({transaction['update_kwargs']})]")
+            update_binary_distillation_problem(**transaction['update_kwargs'])
+            _diag_op(diagnostic, 'update_binary_distillation_problem')
+        _diag_write(diagnostic, transaction['update_kwargs'])
+        _diag_action(diagnostic, name, transaction['action'].get('arguments'))
+        if name == 'calculate_current_step':
+            _diag_op(diagnostic, 'calculate_current_binary_distillation_problem')
+            return _run_calculation_and_finalize(client, messages)
+        if name == 'read_calculation_status':
+            _diag_op(diagnostic, 'read_calculation_status')
+            return _run_progress_query_and_finalize(client, messages)
+        # No other action name can appear here -- 'reset_current_problem'
+        # is always folded into reset_first during validation.
+
+    if transaction['queries'] or transaction['invalid_updates'] or transaction['conflicts']:
+        assessment = update_binary_distillation_problem(**transaction['update_kwargs'])
+        _diag_op(diagnostic, 'update_binary_distillation_problem')
+        _diag_write(diagnostic, transaction['update_kwargs'])
+        snapshot = build_problem_snapshot(_workflow_state, assessment, _last_calculation_result)
+        query_results = [
+            read_problem_value(snapshot, q['field'], entity=q.get('entity'), subject=q.get('subject'))
+            for q in transaction['queries']
+        ]
+        _diag_query_results(diagnostic, query_results)
+        for query, result in zip(transaction['queries'], query_results):
+            print(f'  [state query resolved -> {query} -> {result}]')
+        answer = format_transaction_response(transaction, {'assessment': assessment, 'query_results': query_results})
+        messages.append({
+            'role': 'assistant',
+            'content': None,
+            'tool_calls': [{'function': {'name': 'update_binary_distillation_problem', 'arguments': transaction['update_kwargs']}}],
+        })
+        messages.append({
+            'role': 'tool',
+            'tool_name': 'update_binary_distillation_problem',
+            'content': json.dumps(assessment),
+        })
+        messages.append({'role': 'assistant', 'content': answer, 'tool_calls': []})
+        return answer
+
+    if transaction['update_kwargs']:
+        _diag_op(diagnostic, 'update_binary_distillation_problem')
+        _diag_write(diagnostic, transaction['update_kwargs'])
+        return _run_write_and_finalize(client, messages, transaction['update_kwargs'])
+
+    _diag_write(diagnostic, {})
+    _diag_op(diagnostic, 'get_binary_distillation_problem')
+    return _run_broad_conversation_and_finalize(client, messages)
+
+
+def _fast_path_transaction(user_text, current_state):
+    """Recognize an exclusive, whole-message-unambiguous intent WITHOUT
+    invoking the model at all (Part 6) -- pending-reply resolution, a
+    standalone explicit feed-temperature restatement, an explicit "proceed"
+    phrase, a calculation-progress phrase, or an explicit feed-phase
+    question. Each produces the SAME TurnTransaction shape the model-driven
+    path would (Part 6: "fast paths ... are optimizations, not a parallel
+    architecture") so both converge on `_dispatch_transaction`. Returns
+    `None` if nothing exclusive matches -- the turn goes through
+    `propose_turn_intent` instead.
+    """
+    feed_ready = current_state.get('feed_screening', {}).get('ready', False)
+
+    # Pending-request resolution always runs first, regardless of
+    # feed-screening readiness -- a live outstanding question (e.g. an
+    # optimum-feed-plate confirmation) must win over a bare "yes" being
+    # misread as "run the calculation now."
+    resolved = resolve_pending_reply(current_state.get('pending_request'), user_text)
+    if resolved is None and _feed_thermal_condition_missing(current_state):
+        temperature_value = extract_explicit_feed_temperature_K(user_text)
+        if temperature_value is not None:
+            resolved = {'feed_temperature_K': temperature_value}
+    if resolved is not None:
+        return make_raw_update_transaction(resolved)
+
+    if feed_ready and normalize_short_reply(user_text) in _PROCEED_PHRASES:
+        return make_action_transaction('calculate_current_step')
+
+    if is_calculation_progress_question(user_text):
+        return make_action_transaction('read_calculation_status')
+
+    if feed_ready and is_feed_phase_question(user_text):
+        return make_action_transaction('calculate_current_step')
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-turn-diagnostics-plan.md Step 10 -- a bounded
+# SEMANTIC retry, distinct from the structural malformed-JSON retry already
+# inside `propose_turn_intent`. Off by default (the `semantic_retry`
+# parameter on `ask()` defaults to False) -- gated behind the `--semantic
+# -retry` CLI flag until a live-Qwen acceptance run shows it reliably helps
+# (Step 10: "Do not enable semantic retry by default...").
+# ---------------------------------------------------------------------------
+
+_SEMANTIC_RETRY_REPAIRABLE_REASONS = {'missing_entity'}
+
+
+def _is_semantic_retry_eligible(transaction):
+    """Step 10 eligibility gate, checked on an already-parsed, already-
+    validated TurnTransaction: (1) JSON parsing succeeded -- implicit, this
+    is only ever called on a transaction built from a successful parse; (2)
+    semantic validation rejected the WHOLE update batch, i.e. zero writes
+    from it; (3) no mutation has happened yet this turn -- also implicit,
+    this runs before `_dispatch_transaction`; (4) every rejection reason is
+    in the small repairable allowlist, initially only `missing_entity` on a
+    keyed field."""
+    if transaction['update_kwargs']:
+        return False
+    if not transaction['invalid_updates']:
+        return False
+    for invalid in transaction['invalid_updates']:
+        if invalid['reason'] not in _SEMANTIC_RETRY_REPAIRABLE_REASONS:
+            return False
+        entry = PROBLEM_FIELD_REGISTRY.get(invalid['update'].get('field'))
+        if not entry or not entry.get('keyed'):
+            return False
+    return True
+
+
+def _build_semantic_repair_prompt(rejected_intent, invalid_updates):
+    return (
+        'Your previous JSON matched the required TurnIntent schema but FAILED semantic '
+        'validation, so NOTHING was saved. Correct the TurnIntent using ONLY the CURRENT '
+        'user message below -- never invent a fact the user did not state. Return a '
+        'COMPLETE replacement TurnIntent (not a partial patch) matching the required schema.\n\n'
+        f'Your rejected TurnIntent was: {json.dumps(rejected_intent)}\n'
+        f'Validator diagnostics explaining exactly why it was rejected: {json.dumps(invalid_updates)}\n\n'
+        + build_field_catalog_prompt()
+    )
+
+
+def _run_semantic_retry(client, user_text, rejected_intent, rejected_transaction, diagnostic):
+    """Issue ONE semantic-repair structured-output call. Revalidates the
+    entire replacement TurnIntent from scratch -- never merges pieces of
+    the rejected and repaired intents (Step 10). Returns the repaired
+    TurnTransaction (whether IT validates successfully or not -- a failed
+    repair still replaces the diagnostic trail with its own result, per
+    "retain both proposals and both validation results in diagnostics"),
+    or `None` if the repair response's JSON did not even parse -- callers
+    keep the original rejected transaction in that case, so zero writes
+    happen either way."""
+    print('  [semantic retry -> repairing rejected TurnIntent]')
+    repair_messages = [
+        {'role': 'system', 'content': _build_semantic_repair_prompt(rejected_intent, rejected_transaction['invalid_updates'])},
+        {'role': 'user', 'content': user_text},
+    ]
+    response = client.chat(model=MODEL, messages=repair_messages, format=TURN_INTENT_JSON_SCHEMA,
+                            think=False, options={'temperature': 0})
+    raw = response.message.content
+    parse_result = parse_turn_intent_response(raw)
+
+    if diagnostic is not None:
+        diagnostic['interpretation']['attempts'].append({
+            'raw': raw,
+            'parse_result': {k: v for k, v in parse_result.items() if k != 'raw'},
+        })
+
+    if not parse_result['ok']:
+        if diagnostic is not None:
+            diagnostic['validation']['semantic_retry'] = {
+                'attempted': True, 'repaired': False,
+                'reason': 'semantic_retry_response_malformed',
+                'original_invalid_updates': turn_diagnostics.to_jsonable(rejected_transaction['invalid_updates']),
+            }
+        return None
+
+    repaired_intent = parse_result['intent']
+    repaired_transaction = validate_turn_intent(repaired_intent, ACTIVE_WORKFLOW_SCHEMA, _workflow_state)
+
+    if diagnostic is not None:
+        diagnostic['interpretation']['final_intent'] = repaired_intent
+        diagnostic['validation']['semantic_retry'] = {
+            'attempted': True,
+            'repaired': bool(repaired_transaction['update_kwargs']),
+            'repaired_intent': repaired_intent,
+            'original_invalid_updates': turn_diagnostics.to_jsonable(rejected_transaction['invalid_updates']),
+            'repaired_invalid_updates': turn_diagnostics.to_jsonable(repaired_transaction['invalid_updates']),
+        }
+
+    return repaired_transaction
+
+
+def ask(client, messages, diagnostic=None, semantic_retry=False):
+    """Return the final assistant message text for the current turn.
+
+    tools/binary-distillation-issues-9-1-2026-fifth.md Part 6/8: an
+    exclusive deterministic fast path (`_fast_path_transaction`) gets first
+    refusal at the CURRENT authoritative state (never conversation
+    history); only if none applies does the model propose a `TurnIntent`
+    via schema-constrained structured output (`propose_turn_intent` --
+    no `tools=` exposed, so the model can never execute an engineering
+    operation itself). Either way, Python validates the result into one
+    TurnTransaction (`validate_turn_intent`) and executes it through the
+    single shared endpoint, `_dispatch_transaction`.
+
+    `diagnostic` (tools/binary-distillation-turn-diagnostics-plan.md Step 5),
+    when given, is filled in with the route taken, every raw interpretation
+    attempt, the validated transaction, the exact dispatched operations, and
+    a before/after state diff. It is purely observational: passing `None`
+    (the default) reproduces the exact pre-diagnostics behavior, and passing
+    a record never itself changes routing, validation, execution, or state
+    (architectural invariant 7).
+
+    `semantic_retry` (Step 10) enables one additional bounded repair call --
+    see `_is_semantic_retry_eligible`/`_run_semantic_retry` -- only when a
+    model-interpreted turn's whole update batch was rejected for a
+    repairable reason. Defaults to False (not enabled by default -- Step
+    10's "Do not enable semantic retry by default until the live-Qwen
+    acceptance run shows that it improves behavior reliably").
+    """
+    user_text = _current_user_text(messages)
+    if diagnostic is not None:
+        diagnostic['user_text'] = user_text
+        diagnostic['state']['before'] = _state_snapshot()
+
+    if user_text is None:
+        reply = _run_broad_conversation_and_finalize(client, messages)
+        if diagnostic is not None:
+            diagnostic['final_response'] = reply
+            diagnostic['state']['after'] = _state_snapshot()
+            diagnostic['state']['changed_fields'] = turn_diagnostics.compute_state_diff(
+                diagnostic['state']['before'], diagnostic['state']['after'])
+        return reply
+
+    current_state = get_binary_distillation_problem()
+    transaction = _fast_path_transaction(user_text, current_state)
+
+    if transaction is not None:
+        if diagnostic is not None:
+            diagnostic['route'] = 'fast_path'
+    else:
+        parse_result = propose_turn_intent(client, messages, MODEL)
+        if diagnostic is not None:
+            diagnostic['route'] = 'model_interpretation'
+            diagnostic['interpretation']['model'] = MODEL
+            diagnostic['interpretation']['attempts'] = list(parse_result.get('attempts', []))
+            diagnostic['interpretation']['retry_used'] = parse_result.get('retry_used', False)
+
+        if not parse_result['ok']:
+            print(f"  [TurnIntent parse failed -> {parse_result}]")
+            reply = (
+                "I couldn't interpret that as a valid engineering update or question. "
+                "Could you rephrase it as a specific value or a specific question?"
+            )
+            if diagnostic is not None:
+                diagnostic['final_response'] = reply
+                diagnostic['state']['after'] = _state_snapshot()
+                diagnostic['state']['changed_fields'] = turn_diagnostics.compute_state_diff(
+                    diagnostic['state']['before'], diagnostic['state']['after'])
+            return reply
+
+        if diagnostic is not None:
+            diagnostic['interpretation']['final_intent'] = parse_result['intent']
+
+        transaction = validate_turn_intent(parse_result['intent'], ACTIVE_WORKFLOW_SCHEMA, _workflow_state)
+
+        if semantic_retry and _is_semantic_retry_eligible(transaction):
+            if diagnostic is not None:
+                diagnostic['interpretation']['semantic_retry_used'] = True
+            repaired = _run_semantic_retry(client, user_text, parse_result['intent'], transaction, diagnostic)
+            if repaired is not None:
+                transaction = repaired
+
+    if diagnostic is not None:
+        diagnostic['validation']['transaction'] = {
+            'reset_first': transaction['reset_first'],
+            'update_kwargs': turn_diagnostics.to_jsonable(transaction['update_kwargs']),
+            'action': transaction['action'],
+            'action_error': transaction['action_error'],
+        }
+        diagnostic['validation']['normalized_updates'] = turn_diagnostics.to_jsonable(transaction.get('normalized_updates', []))
+        diagnostic['validation']['invalid_updates'] = turn_diagnostics.to_jsonable(transaction['invalid_updates'])
+        diagnostic['validation']['conflicts'] = turn_diagnostics.to_jsonable(transaction['conflicts'])
+
+    reply = _dispatch_transaction(client, messages, transaction, diagnostic=diagnostic)
+
+    if diagnostic is not None:
+        diagnostic['final_response'] = reply
+        diagnostic['state']['after'] = _state_snapshot()
+        diagnostic['state']['changed_fields'] = turn_diagnostics.compute_state_diff(
+            diagnostic['state']['before'], diagnostic['state']['after'])
+
+    return reply
+
+
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-turn-diagnostics-plan.md Step 6 -- CLI diagnostic
+# controls. `--debug` prints the bounded human-readable diagnostic after
+# each turn; `--debug-json PATH` appends one full JSON record per turn.
+# Neither flag changes conversation history: `messages` only ever receives
+# real user/assistant/tool content, exactly as before -- diagnostic output
+# is a side channel (stdout / a separate file), never inserted into it.
+# ---------------------------------------------------------------------------
+
+def _build_arg_parser():
+    parser = argparse.ArgumentParser(description='Binary-distillation workflow agent')
+    parser.add_argument('message', nargs='*', help='One-shot user message; if omitted, starts the interactive REPL')
+    parser.add_argument('--debug', action='store_true', help='Print a bounded human-readable diagnostic after each turn')
+    parser.add_argument('--debug-json', metavar='PATH', default=None, help='Append one JSON diagnostic record per turn to PATH')
+    parser.add_argument('--semantic-retry', action='store_true', help='Enable the bounded semantic TurnIntent repair retry (off by default)')
+    return parser
+
+
+def _run_turn_with_diagnostics(client, messages, debug=False, debug_json_path=None, semantic_retry=False):
+    """Run one turn through `ask()`, optionally building/rendering/persisting
+    a diagnostic record. `messages` must already have the current user turn
+    appended (same expectation `ask()` itself has) -- this wrapper never
+    appends to conversation history beyond what `ask()`'s own dispatch
+    helpers already do."""
+    user_text = _current_user_text(messages)
+    diagnostics_enabled = debug or bool(debug_json_path)
+    diagnostic = turn_diagnostics.new_turn_record(_next_turn_id(), user_text) if diagnostics_enabled else None
+
+    reply = ask(client, messages, diagnostic=diagnostic, semantic_retry=semantic_retry)
+
+    if debug and diagnostic is not None:
+        print(turn_diagnostics.render_human_readable(diagnostic))
+    if debug_json_path and diagnostic is not None:
+        try:
+            turn_diagnostics.append_jsonl(diagnostic, debug_json_path)
+        except OSError as e:
+            print(f'ERROR: could not write diagnostic JSONL to {debug_json_path!r}: {e}', file=sys.stderr)
+
+    return reply
+
+
+def run_repl(debug=False, debug_json_path=None, semantic_retry=False):
     client = ollama.Client()
     messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
 
@@ -1494,17 +1935,18 @@ def run_repl():
             continue
 
         messages.append({'role': 'user', 'content': user_input})
-        reply = ask(client, messages)
+        reply = _run_turn_with_diagnostics(client, messages, debug, debug_json_path, semantic_retry)
         print(f"\nAssistant: {reply}")
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
+    args = _build_arg_parser().parse_args()
+    if args.message:
         client = ollama.Client()
         messages = [
             {'role': 'system', 'content': SYSTEM_PROMPT},
-            {'role': 'user', 'content': ' '.join(sys.argv[1:])},
+            {'role': 'user', 'content': ' '.join(args.message)},
         ]
-        print(ask(client, messages))
+        print(_run_turn_with_diagnostics(client, messages, args.debug, args.debug_json, args.semantic_retry))
     else:
-        run_repl()
+        run_repl(debug=args.debug, debug_json_path=args.debug_json, semantic_retry=args.semantic_retry)

@@ -308,7 +308,7 @@ class ScriptedClient:
         self._responses = list(responses)
         self.calls = []
 
-    def chat(self, model, messages, tools=None, think=False):
+    def chat(self, model, messages, tools=None, think=False, format=None, options=None):
         self.calls.append(tools is not None)
         if not self._responses:
             raise AssertionError('ScriptedClient ran out of scripted responses')
@@ -356,14 +356,20 @@ def test_ask_resolves_pending_boolean_deterministically():
 
 
 def test_ask_falls_through_to_model_when_nothing_pending():
+    """"hello" matches no exclusive fast path and no field/action, so the
+    model's TurnIntent proposal comes back empty -- ask() then falls
+    through to the broad, grounded elaboration path (one further no-format
+    narration call)."""
+    import json
     client = ScriptedClient([
+        FakeResponse(FakeMessage(content=json.dumps({'version': 1, 'updates': [], 'queries': [], 'action': None}))),
         final('Please tell me the two components.'),
     ])
     messages = _base_messages() + [{'role': 'user', 'content': 'hello'}]
 
     result = agent.ask(client, messages)
 
-    assert _tool_result_names(messages) == []
+    assert _tool_result_names(messages) == ['get_binary_distillation_problem']
     assert result == 'Please tell me the two components.'
 
 

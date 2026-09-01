@@ -91,13 +91,14 @@ class ScriptedClient:
     """Returns responses from a fixed list, one per `.chat()` call. Raises
     if `ask()` calls `.chat()` more times than scripted -- proves a
     deterministically-routed turn never reaches the model for a tool-
-    selection decision."""
+    selection decision. Accepts (and ignores, for bookkeeping) the
+    `format=`/`options=` kwargs `ask()`'s interpretation call passes."""
 
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = []  # one bool per call: whether `tools` was exposed
 
-    def chat(self, model, messages, tools=None, think=False):
+    def chat(self, model, messages, tools=None, think=False, format=None, options=None):
         self.calls.append(tools is not None)
         if not self._responses:
             raise AssertionError('ScriptedClient ran out of scripted responses -- ask() called chat() more than expected')
@@ -105,19 +106,22 @@ class ScriptedClient:
 
 
 class StubbornCalculationClient:
-    """A pathological client that always tries to call the calculation tool
-    again, regardless of whether tools are exposed. Used to prove ask()
-    still terminates and runs the calculation at most once per turn."""
+    """A pathological client that always proposes the calculate_current_step
+    action on every interpretation call, regardless of context. Used to
+    prove ask() still terminates and runs the calculation at most once per
+    turn."""
 
     def __init__(self, max_calls=6):
         self.max_calls = max_calls
         self.n_calls = 0
 
-    def chat(self, model, messages, tools=None, think=False):
+    def chat(self, model, messages, tools=None, think=False, format=None, options=None):
         self.n_calls += 1
         if self.n_calls > self.max_calls:
             raise AssertionError(f'ask() called chat() more than {self.max_calls} times -- looks unbounded')
-        return with_calls(calc_call())
+        return FakeResponse(FakeMessage(content=json.dumps(
+            {'version': 1, 'updates': [], 'queries': [], 'action': {'name': 'calculate_current_step'}}
+        )))
 
 
 def _tool_result_names(messages):
@@ -214,11 +218,14 @@ def test_incomplete_problem_does_not_calculate():
     )
     assert agent.get_binary_distillation_problem()['status'] != 'ready_for_calculation'
 
-    # Not ready, so the deterministic feed-phase router does not intercept
-    # -- this reaches normal model-driven tool selection, where the
-    # (scripted) model decides to call the calculation tool anyway.
+    # Not ready, so the deterministic feed-phase fast path does not
+    # intercept -- this reaches the model's TurnIntent proposal, where the
+    # (scripted) model decides to propose the calculate_current_step action
+    # anyway.
     client = ScriptedClient([
-        with_calls(calc_call()),
+        FakeResponse(FakeMessage(content=json.dumps(
+            {'version': 1, 'updates': [], 'queries': [], 'action': {'name': 'calculate_current_step'}}
+        ))),
         final('The feed thermal condition is still missing, so I cannot determine the feed phase yet.'),
     ])
     messages = _base_messages() + [{'role': 'user', 'content': 'what is the feed phase?'}]
@@ -319,27 +326,34 @@ def test_pending_confirmation_wins_over_calculation():
 
 
 # ---------------------------------------------------------------------------
-# Test 8 -- the calculation tool's Qwen-facing schema takes zero arguments.
+# Test 8 -- the calculation operation takes zero arguments and is wired into
+# the ACTION_REGISTRY as 'calculate_current_step' (Round 2 -- native
+# tool-calling exposure is retired, so there is no more TOOLS/TOOL_FUNCTIONS
+# list to check against).
 # ---------------------------------------------------------------------------
 
 def test_calculation_tool_takes_zero_arguments():
     sig = inspect.signature(agent.calculate_current_binary_distillation_problem)
     assert list(sig.parameters) == []
-    assert agent.calculate_current_binary_distillation_problem in agent.TOOLS
-    assert agent.TOOL_FUNCTIONS['calculate_current_binary_distillation_problem'] is agent.calculate_current_binary_distillation_problem
+    assert agent.ACTION_REGISTRY['calculate_current_step']['run'] is agent.calculate_current_binary_distillation_problem
 
 
 # ---------------------------------------------------------------------------
-# Test 9 -- no repeated calculation loop within a single turn.
+# Test 9 -- no repeated calculation loop within a single turn. Round 2
+# retired the native-tool-calling loop entirely -- there is no longer a
+# mechanism by which the model could even ask to call the calculation
+# operation more than once per turn (at most one interpretation call and,
+# for an action turn, exactly one narration call follow it). This proves
+# that invariant holds even against a pathological client that always
+# proposes the same action.
 # ---------------------------------------------------------------------------
 
 def test_no_repeated_calculation_loop():
     _establish_ready_case_d()
 
-    # A user message that does NOT match the deterministic feed-phase
-    # phrase list or the proceed-phrase list, so this reaches normal
-    # model-driven tool selection -- where the pathological client keeps
-    # trying to call the calculation tool again every round.
+    # A user message that does NOT match any exclusive fast path, so this
+    # reaches the model's TurnIntent proposal -- where the pathological
+    # client keeps proposing the calculate_current_step action every round.
     client = StubbornCalculationClient(max_calls=6)
     messages = _base_messages() + [{'role': 'user', 'content': 'tell me something about this problem'}]
 
@@ -347,7 +361,7 @@ def test_no_repeated_calculation_loop():
 
     executed = _tool_result_names(messages)
     assert executed.count('calculate_current_binary_distillation_problem') <= 1
-    assert len(executed) <= agent.MAX_TOOL_CALLS_PER_TURN
+    assert client.n_calls <= 2
 
 
 # ---------------------------------------------------------------------------
@@ -446,18 +460,27 @@ def test_system_prompt_carries_flow_unit_extraction_rule():
 
 
 def test_write_call_with_flows_and_units_together_reaches_ready_immediately():
-    """A model that correctly follows the extraction rule -- passing
-    component_flows and component_flow_units in the SAME call, as if
+    """A model that correctly follows the extraction rule -- proposing
+    component_flows updates with units in the SAME TurnIntent, as if
     extracted from 'Each component has a flow rate of 50 kmol per hour' --
     must reach ready_for_calculation without any follow-up units request."""
+    proposed_intent = {
+        'version': 1,
+        'updates': [
+            {'field': 'component_flows', 'entity': 'Methanol', 'value': 50, 'units': 'kmol/hr'},
+            {'field': 'component_flows', 'entity': 'Water', 'value': 50, 'units': 'kmol/hr'},
+            {'field': 'pressure_Pa', 'value': PRESSURE},
+            {'field': 'feed_temperature_K', 'value': TEMP},
+            {'field': 'reflux_condition', 'value': REFLUX},
+            {'field': 'xD', 'value': 0.95},
+            {'field': 'xB', 'value': 0.01},
+            {'field': 'boilup_ratio_VB', 'value': 1.2},
+            {'field': 'use_optimum_feed_plate', 'value': True},
+        ],
+        'queries': [], 'action': None,
+    }
     client = ScriptedClient([
-        with_calls(write_call(
-            component_names=['Methanol', 'Water'],
-            component_flows={'Methanol': 50, 'Water': 50},
-            component_flow_units='kmol/hr',
-            pressure_Pa=PRESSURE, feed_temperature_K=TEMP, reflux_condition=REFLUX,
-            xD=0.95, xB=0.01, boilup_ratio_VB=1.2, use_optimum_feed_plate=True,
-        )),
+        FakeResponse(FakeMessage(content=json.dumps(proposed_intent))),
         final('Your problem is fully specified.'),
     ])
     messages = _base_messages() + [{

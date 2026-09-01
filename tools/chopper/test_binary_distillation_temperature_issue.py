@@ -20,6 +20,8 @@ Three layers are exercised, same split as
 Run with:
     pytest tools/chopper/test_binary_distillation_temperature_issue.py -v
 """
+import json
+
 import pytest
 
 import binary_distillation_workflow_agent as agent
@@ -205,7 +207,7 @@ class ScriptedClient:
         self._responses = list(responses)
         self.calls = []
 
-    def chat(self, model, messages, tools=None, think=False):
+    def chat(self, model, messages, tools=None, think=False, format=None, options=None):
         self.calls.append(tools is not None)
         if not self._responses:
             raise AssertionError('ScriptedClient ran out of scripted responses')
@@ -303,46 +305,61 @@ def test_ask_standalone_explicit_temperature_write_without_pending_request():
     assert client.calls == [False]
 
 
-def test_ask_read_question_about_temperature_falls_through_to_model():
-    """Step 11 -- a genuine question about stored state is not intercepted by
-    either deterministic layer; it falls through to normal model-driven
-    routing (which would call get_binary_distillation_problem)."""
+def test_ask_read_question_about_temperature_is_answered_by_state_query_resolver():
+    """Step 11, superseded by tools/binary-distillation-issues-9-1-2026-fifth.md
+    Round 2: a genuine question about stored state is resolved by the
+    generic TurnIntent/TurnTransaction query path
+    (`problem_snapshot.read_problem_value`), never left to the model to
+    verbalize freely -- reports `feed_temperature_K` as not yet given. No
+    WRITE is applied either way; the interpretation call's proposed
+    field-query is TERMINAL once resolved (no further narration call)."""
     agent.update_binary_distillation_problem(**ESSENTIALS_MINUS_TEMPERATURE)
 
-    client = ScriptedClient([final('You have not specified a feed temperature yet.')])
+    client = ScriptedClient([
+        FakeResponse(FakeMessage(content=json.dumps({
+            'version': 1, 'updates': [],
+            'queries': [{'field': 'feed_temperature_K', 'raw_reference': 'feed temperature'}],
+            'action': None,
+        }))),
+    ])
     messages = _base_messages() + [
         {'role': 'user', 'content': 'What feed temperature do you currently have stored?'},
     ]
 
     result = agent.ask(client, messages)
 
-    # Neither deterministic shortcut fired -- no synthetic WRITE was injected.
-    assert _tool_result_names(messages) == []
-    assert result == 'You have not specified a feed temperature yet.'
+    assert _tool_result_names(messages) == ['update_binary_distillation_problem']
+    assert result == 'The feed temperature has not been specified yet.'
 
 
 def test_ask_does_not_shortcut_the_rich_initial_problem_statement():
-    """The long multi-fact initial statement must fall through to normal
-    model-driven tool selection (where the improved prompt/docstring teaches
-    the model to extract feed_temperature_K alongside everything else in one
-    WRITE) rather than being deterministically shortcut to temperature alone."""
+    """The long multi-fact initial statement must fall through to the
+    model's TurnIntent proposal (where the field catalog/prompt teaches the
+    model to extract feed_temperature_K alongside everything else in one
+    set of updates) rather than being deterministically shortcut to
+    temperature alone -- `extract_explicit_feed_temperature_K`'s own word
+    cap and required feed-temperature phrasing already keep it from firing
+    on a message this long/rich."""
     text = (
         'Separate water and ethanol at 355 K and 101325 Pa pressure. '
         'The feed composition is 50 kmol/hr ethanol and 50 kmol/hr water, '
         'and the reflux is saturated liquid.'
     )
-    # Build a scripted WRITE call carrying the full extraction a correctly-
-    # prompted model would produce, to prove ask() lets it through untouched.
-    full_write = FakeToolCall('update_binary_distillation_problem', {
-        'component_names': ['Water', 'Ethanol'],
-        'component_flows': {'Ethanol': 50, 'Water': 50},
-        'component_flow_units': 'kmol/hr',
-        'feed_temperature_K': 355,
-        'pressure_Pa': 101325,
-        'reflux_condition': 'saturated_liquid',
-    })
+    assert agent.extract_explicit_feed_temperature_K(text) is None
+
+    proposed_intent = {
+        'version': 1,
+        'updates': [
+            {'field': 'feed_temperature_K', 'value': 355},
+            {'field': 'pressure_Pa', 'value': 101325},
+            {'field': 'component_flows', 'entity': 'Ethanol', 'value': 50, 'units': 'kmol/hr'},
+            {'field': 'component_flows', 'entity': 'Water', 'value': 50, 'units': 'kmol/hr'},
+            {'field': 'reflux_condition', 'value': 'saturated_liquid'},
+        ],
+        'queries': [], 'action': None,
+    }
     client = ScriptedClient([
-        FakeResponse(FakeMessage(content=None, tool_calls=[full_write])),
+        FakeResponse(FakeMessage(content=json.dumps(proposed_intent))),
         final('Got it.'),
     ])
     messages = _base_messages() + [{'role': 'user', 'content': text}]
@@ -350,7 +367,12 @@ def test_ask_does_not_shortcut_the_rich_initial_problem_statement():
     agent.ask(client, messages)
 
     assert _tool_result_names(messages) == ['update_binary_distillation_problem']
-    assert _tool_result_args(messages, 'update_binary_distillation_problem')['feed_temperature_K'] == 355
+    write_result = json.loads([
+        m for m in messages if isinstance(m, dict) and m.get('role') == 'tool'
+    ][0]['content'])
+    assert write_result['feed']['component_flows'] == {'Ethanol': 50.0, 'Water': 50.0}
+    post_state = agent.get_binary_distillation_problem()
+    assert post_state['essential_complete'] is True
 
 
 # ---------------------------------------------------------------------------

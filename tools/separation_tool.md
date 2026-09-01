@@ -74,7 +74,13 @@ in the `optimizer.py` section below.
 | `separation_agent.py` | Natural-language chat front end (Ollama + `qwen3:8b`) that calls `design_separation_case()`/`optimize_separation()` on the model's behalf. |
 | `feed_state.py` | `apply_user_update()`, `normalize_feed_state()`, `assess_feed_state()` — feed identity/quantity state layer with provenance tracking; sits ahead of the binary-scope gate in `binary_distillation_workflow.py`. |
 | `binary_distillation_workflow.py` | `assess_binary_distillation_problem()` — deterministic, LLM-free workflow/case-routing checker; never performs a calculation. Computes two independent branches on every call, `feed_screening` and `design_assessment` (Design Option A-D) — see "Feed screening vs. Design Option A-D assessment" below. |
-| `binary_distillation_workflow_agent.py` | Ollama tool-calling front end exposing `assess_binary_distillation_problem()` (WRITE/READ) plus `calculate_current_binary_distillation_problem()` (CALCULATE); the latter can only ever perform the deterministic feed-phase check, never Design Option A-D sizing, by construction, and is gated on `feed_screening['ready']` alone. |
+| `binary_distillation_workflow_agent.py` | Ollama tool-calling front end exposing `assess_binary_distillation_problem()` (WRITE/READ) plus `calculate_current_binary_distillation_problem()` (CALCULATE); the latter can only ever perform the deterministic feed-phase check, never Design Option A-D sizing, by construction, and is gated on `feed_screening['ready']` alone. Also owns the deterministic pre-model layers described in "Tool-argument boundary hardening", "Deterministic specific-state-query resolution", "Field-alias registry and explicit-fact WRITE detection", and "Terminal deterministic formatting for simple stored-field queries" below. |
+| `tool_argument_normalizer.py` | `normalize_write_arguments()` — normalizes/validates a malformed Qwen `update_binary_distillation_problem` payload (`component_flows` as a parallel list, `component_flow_units` as a list of repeated values) at the tool-argument boundary, before it can ever reach `feed_state.apply_user_update()`; returns a structured `invalid_tool_arguments` error instead of raising when the shape is ambiguous. See "Tool-argument boundary hardening" below. |
+| `turn_intent.py` | `TURN_INTENT_JSON_SCHEMA`, `build_field_catalog_prompt()`, `parse_turn_intent_response()`, `propose_turn_intent()` — the Round 2 `format=`-constrained structured-output interpretation adapter. See "Round 2 Architecture Stabilization" below. |
+| `turn_transaction.py` | `validate_turn_intent()`, `execute_turn_transaction()` — Round 2's atomic TurnIntent → TurnTransaction validator/executor; `normalize_turn_intent_updates()` (added by the multi-entity keyed-field fix) expands a scalar-or-collection update into flat per-(field, entity) entries before validation. See "Round 2 Architecture Stabilization" and "Multi-entity keyed field extraction" below. |
+| `problem_field_registry.py` | `PROBLEM_FIELD_REGISTRY`, `ACTION_REGISTRY`, `ACTIVE_WORKFLOW_SCHEMA` — the model-facing field/action metadata Round 2's validator, snapshot reader, and formatter all drive off of. See "Round 2 Architecture Stabilization" below. |
+| `problem_snapshot.py` | `build_problem_snapshot()`, `read_problem_value()` — Round 2's read-only per-transaction state view and generic field reader. See "Round 2 Architecture Stabilization" below. |
+| `turn_diagnostics.py` | `new_turn_record()`, `to_jsonable()`, `compute_state_diff()`, `render_human_readable()`, `append_jsonl()` — the per-turn diagnostic data model powering `binary_distillation_workflow_agent.py`'s `--debug`/`--debug-json` flags. See "Turn diagnostics, the duplicate-rejection fix, and a bounded semantic retry" below. |
 | `biosteam_feed.py` | `build_biosteam_feed()` — converts a `feed_screening`-ready workflow assessment into one canonical `bst.Stream`; no LLM involvement. |
 | `feed_phase.py` | `evaluate_feed_phase()` — deterministic VLE feed-phase evaluation (T/P, V/P, or H/P) and liquid/vapor/vapor_liquid classification. |
 | `feed_partial_condensation.py` | `evaluate_vapor_feed_at_reference_temperature()` — deterministic rigorous-BioSTEAM screen conditioning the overall feed to a fixed 313.15 K reference temperature; runs whenever `evaluate_feed_phase()` reports any vapor fraction (`vapor` or `vapor_liquid`), never for a `liquid` feed. |
@@ -1142,108 +1148,364 @@ pytest tools/chopper/test_binary_distillation_workflow.py -v
 
 ## `binary_distillation_workflow_agent.py`
 
-The isolated tool-calling agent from workflow doc section 18, Option C
-("Expose only `assess_binary_distillation_problem()` to Qwen in a
-dedicated workflow-testing agent"), refactored per
+The isolated agent from workflow doc section 18, Option C ("Expose only
+`assess_binary_distillation_problem()` to Qwen in a dedicated
+workflow-testing agent"), refactored per
 `tools/binary-distillation-read-vs-append.md` into separate READ and WRITE
-operations, per `tools/binary-distillation-read-loop-fix-plan.md` to
-enforce a bounded per-turn tool-call policy in Python rather than relying
-on the model to stop on its own, and per
-`tools/binary-distillation-connecting-feed-calculation.md` to connect the
-deterministic feed-phase calculation layer below as a fourth,
-CALCULATION-kind tool. It deliberately still does **not** import
-`separation_tool.py`, `case_design.py`, or `optimizer.py` — the sizing/
-optimization sweep layer remains out of scope here. It now **does** import
-`binary_distillation_calculation.py` (and, transitively, BioSTEAM via
-`biosteam_feed.py`/`feed_phase.py`/`feed_partial_condensation.py`) for that
-one CALCULATION tool — see "Four capabilities" below.
+operations, per `tools/binary-distillation-connecting-feed-calculation.md`
+to connect the deterministic feed-phase calculation layer below, and —
+most substantially — per
+`tools/binary-distillation-issues-9-1-2026-fifth.md` ("Round 2
+Architecture Stabilization") to replace per-turn native tool-calling and a
+growing hand-written alias-table system with a small, schema-driven
+TurnIntent/TurnTransaction interpretation layer. See "Round 2 Architecture
+Stabilization" below for the current architecture in full; the historical
+sections after it (pending-request resolution, feed-temperature
+extraction, tool-argument boundary hardening) describe lower layers that
+Round 2 left unchanged and still apply as written. It deliberately still
+does **not** import `separation_tool.py`, `case_design.py`, or
+`optimizer.py` — the sizing/optimization sweep layer remains out of scope
+here. It does import `binary_distillation_calculation.py` (and,
+transitively, BioSTEAM via `biosteam_feed.py`/`feed_phase.py`/
+`feed_partial_condensation.py`) for the `calculate_current_step` action —
+see "Four capabilities" below.
 
-Four tools are registered:
+As of Round 2, **no tools are exposed to the model at all** — see "Round 2
+Architecture Stabilization." Four plain Python operations still exist and
+remain the sole place any state changes or calculation happens:
 
-| Tool | Kind | Does |
+| Operation | Kind | Does |
 |---|---|---|
-| `update_binary_distillation_problem` | WRITE | Merges newly-stated engineering facts into the accumulated state, then returns `assess_binary_distillation_problem()`'s full assessment of that state. Call only when the current turn states new information. |
-| `get_binary_distillation_problem` | READ | Takes no arguments, mutates nothing, and returns the identical assessment schema computed from whatever is already accumulated. Call when the user asks about existing/derived/missing state. |
-| `calculate_current_binary_distillation_problem` | CALCULATION | Takes no arguments; reads the accumulated state via the same `_effective_spec()` WRITE/READ use, and calls `binary_distillation_calculation.calculate_binary_distillation_problem()` on it — only actually running BioSTEAM once the state is `ready_for_calculation`. See "Four capabilities" below. |
-| `reset_workflow_session` | housekeeping | Clears accumulated state, same discipline as `reset_separation_session()` in `separation_tool.py`. |
+| `update_binary_distillation_problem` | WRITE | Merges newly-stated engineering facts into the accumulated state, then returns `assess_binary_distillation_problem()`'s full assessment of that state. This remains the ONE canonical WRITE path — every route into the agent (fast path or model-proposed TurnIntent) goes through it. |
+| `get_binary_distillation_problem` | READ | Takes no arguments, mutates nothing, and returns the identical assessment schema computed from whatever is already accumulated. |
+| `calculate_current_binary_distillation_problem` | CALCULATION | Takes no arguments; reads the accumulated state and calls `binary_distillation_calculation.calculate_binary_distillation_problem()` on it — only actually running BioSTEAM once the state is `ready_for_calculation`. Bound into `ACTION_REGISTRY['calculate_current_step']`. See "Four capabilities" below. |
+| `reset_workflow_session` | housekeeping | Clears accumulated state. Bound into `ACTION_REGISTRY['reset_current_problem']`. |
 
-`update_binary_distillation_problem` and `get_binary_distillation_problem`
-wrap the same underlying deterministic checker and return the same schema —
-WRITE returns it post-merge, READ returns it as-is.
-`calculate_current_binary_distillation_problem` wraps a second, downstream
-deterministic layer (the calculation pipeline below) and is documented in
-full in the "Four capabilities" subsection after the controller.
+### Round 2 Architecture Stabilization: TurnIntent / TurnTransaction
 
-### The per-turn tool-call controller (loop fix)
+Per `tools/binary-distillation-issues-9-1-2026-fifth.md`. The prior
+architecture (documented for context in the historical sections after this
+one, and in the "Field-alias registry"/"Terminal deterministic formatting"
+sections that USED to follow — now retired) exposed `update_binary_distillation_problem`/
+`get_binary_distillation_problem`/`calculate_current_binary_distillation_problem`/
+`get_binary_distillation_calculation_status`/`reset_workflow_session` as
+native Ollama tools (`tools=TOOLS`) and, on top of that, grew a
+hand-written `_FIELD_ALIAS_TABLE` regex/phrase-matching engine (four
+rounds of point-fixes: `resolve_state_query`, `format_state_query_answer`,
+`resolve_explicit_field_write`, and their helpers) to route around the
+model's unreliable native tool-calling. Round 2 replaces BOTH mechanisms —
+the alias table doesn't scale past a fixed field list, and native
+tool-calling itself was the deeper problem: live-probed against the actual
+local Ollama server, an ambiguous/corrective turn ("Sorry, I meant xB"
+answering a prior "did you mean xB?" with no live pending question) made
+the model call no tool at all and answer in free prose, silently losing
+engineering meaning — the same failure class as observed literal
+tool-call-shaped JSON leaking into chat content.
 
-`ask()` no longer offers the full tool list to the model after every tool
-result — doing so let the model re-select `get_binary_distillation_problem`
-indefinitely, since a READ result changes nothing about which tools are on
-offer next (see `tools/binary-distillation-read-loop-fix-plan.md` for the
-failure mode this caused). Termination is now enforced by Python, not the
-prompt, via a small per-turn policy:
+**Adapter decision (live-probed, not assumed).** `ollama.Client.chat`
+supports `format: dict` — JSON-schema-constrained structured output,
+independent of native tool calling. Probed against the real server with
+`tools=` NOT exposed at all: reliable, reproducible (once pinned to
+`options={'temperature': 0}`) TurnIntent JSON across mixed WRITE+READ,
+unknown-field preservation, multi-turn corrections, keyed multi-entity
+writes, and explicit action requests — see `turn_intent.py`'s module
+docstring for the full probe writeup. **Decision: `format`-constrained
+structured output is the sole interpretation mechanism; no `tools=` list
+is ever exposed to the model.** This satisfies the invariant "assistant
+content never directly invokes a tool" by construction — there is no
+tool-calling channel left for content to be confused with.
 
-- At most **one "primary operation"** — `update_binary_distillation_problem`,
-  `get_binary_distillation_problem`, or (per
-  `tools/binary-distillation-connecting-feed-calculation.md` Step 5)
-  `calculate_current_binary_distillation_problem` — runs per user turn. If
-  a model response requests more than one, WRITE is preferred over READ,
-  and READ over CALCULATION (WRITE's/READ's return value already reflects
-  the full state, so a further op afterward cannot add information). This
-  is what prevents an uncontrolled `READ -> CALCULATION -> READ ->
-  CALCULATION -> ...` loop within one turn.
-- `reset_workflow_session` may run once, before the one primary operation,
-  permitting the sequence `RESET -> WRITE/READ/CALCULATION`. RESET does not
-  itself count as "using" the turn's one primary operation.
-- After the primary operation (or the `RESET -> primary` pair) executes,
-  the next model call is made **without exposing any tools**
-  (`_chat_without_tools`), forcing a prose answer from the tool result
-  instead of another tool call.
-- `MAX_TOOL_CALLS_PER_TURN = 2` is a hard ceiling on how many tool calls
-  `ask()` will ever execute in one turn, regardless of what the model
-  requests — a defensive backstop independent of the policy above.
-- A `(tool_name, canonicalized_args)` fingerprint set suppresses exact
-  duplicate calls within a turn (`_fingerprint`, `_select_allowed_calls`).
+**New modules:**
 
-This logic lives in `_select_allowed_calls()` (decides which of a
-response's requested tool calls may run this round) and `ask()` (the state
-machine driving execution and the with-tools/without-tools model calls).
-`tools/chopper/test_binary_distillation_workflow_agent.py` is a pytest
-suite exercising this controller against a fake/scripted Ollama client —
-WRITE-only finalization, READ-only finalization, a model that always
-requests READ, a mixed update+question turn, `RESET -> WRITE`, WRITE+READ
-in one response (READ suppressed), duplicate-fingerprint suppression, and
-the hard call budget under a pathological client that never stops
-requesting tool calls. No running Ollama server is required. Run with:
+| Module | Owns |
+|---|---|
+| `problem_field_registry.py` | `PROBLEM_FIELD_REGISTRY` — one entry per readable/writable field (every WRITE-tool argument, plus the derived/keyed reads `total_flow`/`component_flows`/`composition`/`component_names`), each with callable `read_accessor`/`units_accessor`/`provenance_accessor` functions (not string paths), `value_type`/`constraints`/`allowed_values`, `keyed`/`entity_type`, and `write_binding` (the exact WRITE kwarg name). `ACTION_REGISTRY` — the 3 stable verbs (`reset_current_problem`, `calculate_current_step`, `read_calculation_status`), bound to this module's own functions via `bind_action()` at import time (avoids a circular import). `ACTIVE_WORKFLOW_SCHEMA` bundles both. |
+| `problem_snapshot.py` | `build_problem_snapshot(workflow_state, assessment, calculation, units=None)` — one read-only per-transaction view; never a second mutable store. `read_problem_value(snapshot, field, entity=None, subject=None)` — the generic reader: found/missing/`unknown_problem_field` (with `difflib` near-matches)/`unknown_problem_entity`/`unknown_problem_subject`, all without ever raising. |
+| `turn_intent.py` | `TURN_INTENT_JSON_SCHEMA` (the `format=` schema); `build_field_catalog_prompt()` — generates the model-facing field catalog FROM the registry at call time, including a worked keyed-entity example and (critically, live-tuned) a worked example teaching the model that a "didn't I"/"did I already"/"haven't I" confirmation question is always a query, never an update; `parse_turn_intent_response()` — structural validation only, never raises, never executes anything; `propose_turn_intent(client, messages, model)` — issues the interpretation call (conversation history kept, but the large narration-oriented `SYSTEM_PROMPT` is deliberately swapped out for the lean catalog prompt — live-probed to matter: combined with the full `SYSTEM_PROMPT`, the interpretation call produced a fixed, hallucinated TurnIntent regardless of the actual message), plus one strict-schema retry on a malformed response. |
+| `turn_transaction.py` | `validate_turn_intent(intent, schema, workflow_state)` — structural + semantic validation, value coercion/range-checking, keyed-entity compilation into one WRITE kwargs dict; if ANY proposed update is invalid or two conflict, the WHOLE update batch is dropped (zero WRITE) — queries and the action validate independently and are never blocked by a bad update. `execute_turn_transaction(transaction, runtime)` — the Part 8 fixed order (RESET → one atomic WRITE → one snapshot → every query in order → at most one action), decoupled from the agent/Ollama via a plain `runtime` dict of callables so it's unit-testable with a fake in-memory state. |
+
+**`ask()`'s dispatch** (unchanged in spirit from before Round 2 — exclusive
+deterministic layers still get first refusal):
+
+```text
+USER MESSAGE
+     │
+_fast_path_transaction()  -- pending-reply resolution, standalone explicit
+     │                        feed-temperature restatement, "proceed"
+     │                        phrases, calculation-progress phrases: each
+     │                        builds a TurnTransaction directly (Part 6 --
+     │                        "fast paths are optimizations, not a
+     │                        parallel architecture")
+     │ None (nothing exclusive matched)
+     ▼
+propose_turn_intent()  -- ONE format=-constrained chat() call, no tools=
+     │
+validate_turn_intent()  -- Python owns truth from here on
+     ▼
+_dispatch_transaction():
+  1. RESET, if requested
+  2. an ACTION (calculate_current_step / read_calculation_status), if any --
+     any accompanying WRITE applies first, then the SAME narration helpers
+     as before Round 2 (_run_calculation_and_finalize /
+     _run_progress_query_and_finalize) finalize -- unchanged rich
+     feed-phase-routing prose, per "preserve current calculation behavior"
+  3. any QUERY, or a bounded rejection note -- TERMINAL, rendered by
+     format_transaction_response(), NO further model call (this is the fix
+     for mixed-WRITE+READ turns losing the WRITE, unreliable total_flow
+     reads, and unknown symbols being answered from model knowledge)
+  4. a plain WRITE with nothing else -- narrated by the model from the
+     resulting assessment (_run_write_and_finalize), same pattern every
+     WRITE used before Round 2, so every existing "When `status` is X"
+     SYSTEM_PROMPT section (including the ENGINEERING OUTPUT GROUNDING
+     RULE over `would_calculate_details`) still applies verbatim
+  5. otherwise (genuinely empty) -- broad, grounded elaboration
+     (_run_broad_conversation_and_finalize), Qwen narrates
+     get_binary_distillation_problem() with no mutation tools available
+```
+
+`format_transaction_response(transaction, execution_result)`
+(`binary_distillation_workflow_agent.py`) is the deterministic, registry-
+driven replacement for the old `_FIELD_DISPLAY_TEMPLATES`/
+`format_state_query_answer` — a field's label/units come straight from
+`PROBLEM_FIELD_REGISTRY`, so a new field needs only a registry entry, never
+a new template line. It renders update confirmations first, then query
+answers, in the user's own order (preserving the doc's "Mixed update/query"
+example verbatim: `"The reflux condition is now saturated_liquid. The
+total feed flow rate is 100 kmol/hr."`); a rejected update whose field is
+ALSO being queried the same turn is absorbed silently rather than
+surfaced as a separate "I couldn't apply that" note (live-probed pattern:
+the model sometimes redundantly "writes" a read-only field it's also
+asking about).
+
+**Live-probed residual limitation.** Corrective/confirmation phrasing
+right after a dense prior turn ("I just told you the reflux condition,
+didn't I?") can still misfire at the LLM layer — the model may query the
+wrong field, or redundantly re-propose a value, in a way three rounds of
+catalog-prompt tuning narrowed but didn't fully eliminate. This is an
+inherent 8B-model interpretation-quality limit, not an architecture gap —
+`turn_transaction.py`'s validator still prevents any resulting WRITE from
+corrupting state in a way that can't be corrected on the next turn.
+
+**Retired.** `TOOLS`/`TOOL_FUNCTIONS`, `_chat_with_tools`, `_run_tool_call`,
+`_select_allowed_calls`/`_fingerprint`/`MAX_TOOL_CALLS_PER_TURN` (the
+native per-turn tool-call controller and its duplicate-call/hard-budget
+guards), `_FIELD_ALIAS_TABLE` and everything built on it
+(`resolve_state_query`, `format_state_query_answer`,
+`resolve_explicit_field_write`, `_run_state_query_and_finalize`, and their
+helpers), and the raw-tool-result `pprint` debug block (there is no tool
+loop left to print a "raw tool result" from — `_dispatch_transaction`
+prints its own bounded `[...]` debug lines at each branch instead, same
+convention as the pre-Round-2 pending-reply resolver's own
+`print(f"  [...]")` lines).
+
+New test files: `test_problem_field_registry.py` (registry shape, action
+binding, a "registry extension" test proving a brand-new field/action work
+through the generic validator/reader with zero turn-routing edits),
+`test_problem_snapshot.py` (the generic reader's every outcome, plus a
+4-component multicomponent-keyed-access fixture and an artificial D1/D2
+subject-aware fixture — neither claims live multicomponent/multicolumn
+support), `test_turn_intent_parser.py` (structural parsing, malformed/
+tool-call-shaped content rejected, the retry, `propose_turn_intent` never
+exposing `tools=`), `test_turn_transaction.py` (atomicity, duplicate
+collapsing/conflict rejection, keyed-write compilation, action/reset
+ordering, side-reads never mutating state). `test_binary_distillation_workflow_agent.py`
+was rewritten in full against the new `ask()` (its old native-tool-calling-
+loop tests no longer applied); `turn_intent_test_fakes.py` is the shared
+fake-Ollama-client helper module these and other agent-level test files
+import (`ScriptedClient`/`intent_response`/`StubbornInterpretationClient`)
+— no running Ollama server is required for any of them. Run with:
 ```bash
-pytest tools/chopper/test_binary_distillation_workflow_agent.py -v
-```
-`tools/chopper/test_binary_distillation_workflow_agent_calculation.py`
-extends this coverage to the CALCULATION tool specifically — see "Four
-capabilities" below.
-
-### Raw tool result debug printing (diagnostic only)
-
-Per `tools/chopper/binary-distillation-debugging-prints.md`, the tool-call
-loop inside `ask()` prints the complete raw result of every tool call to
-the terminal, immediately after `_run_tool_call(call)` returns and before
-that result is JSON-serialized into `messages` for Qwen — the exact point
-between steps 3 and 4 of "receive the tool call → invoke the tool → receive
-the return value → pass it back to Qwen." Implemented at
-`binary_distillation_workflow_agent.py:1170-1173`:
-
-```python
-result = _run_tool_call(call)
-print("\n========== RAW TOOL RESULT ==========")
-pprint.pprint(result, width=100)
-print("=====================================\n")
+pytest tools/chopper -v
 ```
 
-`pprint` is imported at the top of the file (`binary_distillation_workflow_agent.py:52`).
-This is temporary diagnostic logging only — it doesn't touch workflow
-state, tool schemas, prompts, calculation behavior, case-selection logic,
-or the model's own behavior; it only makes the literal dict/JSON a tool
-returns visible in the terminal before it's stringified for Qwen.
+### Turn diagnostics, the duplicate-rejection fix, and a bounded semantic retry
+
+Per `tools/binary-distillation-turn-diagnostics-plan.md`. Reported failure:
+"Separate water and ethanol at 355 K and 101325 Pa pressure. The feed
+composition is 50 kmol/hr ethanol and 50 kmol/hr water" produced
+
+```text
+I couldn't apply that value for component_flows (missing_entity). I couldn't
+apply that value for component_flows (missing_entity).
+```
+
+**Confirmed root cause (live-probed against the real local `qwen3:8b`
+server, before touching any code).** The architecture in "Round 2
+Architecture Stabilization" above was already correct — Qwen proposed two
+`component_flows` updates with `entity: null`, `validate_turn_intent()`
+correctly rejected the whole batch atomically (zero WRITE), and the only
+bug was that `format_transaction_response()` rendered one identical
+rejection sentence per rejected update instead of one per (field, reason)
+group. Follow-up live probing narrowed the failure further: **single**-
+entity keyed writes ("the ethanol flow is 50 kmol/hr") extract correctly
+every time; the failure is specific to a turn asking for **multiple**
+keyed updates to the **same** field in one message — reproduced on both
+the exact reported phrasing and an alternate phrasing ("the ethanol flow
+is 50 kmol/hr and the water flow is 50 kmol/hr"), and it survived one
+bounded semantic-repair retry attempt (see below), which returned
+byte-for-byte the same broken output. This is a live 8B-model
+interpretation-quality limit, not an architecture gap — the same category
+of residual limitation already documented above for corrective/
+confirmation phrasing.
+
+**New module:**
+
+| Module | Owns |
+|---|---|
+| `turn_diagnostics.py` | Independent of Ollama and BioSTEAM; never executes a workflow operation. `new_turn_record(turn_id, user_text)` — an empty per-turn diagnostic record matching the plan's documented shape (`route`, `interpretation{model,attempts,retry_used,final_intent}`, `validation{transaction,invalid_updates,conflicts,semantic_retry}`, `execution{operations,write_performed,write_kwargs,action,query_results}`, `state{before,after,changed_fields}`, `final_response`). `to_jsonable(value)` — safe recursive conversion to JSON-serializable data; a callable, exception, or otherwise non-serializable object (an Ollama client, a BioSTEAM unit) becomes a short `<callable:...>`/`<non_serializable:...>` marker rather than raising or leaking. `compute_state_diff(before, after)` — flattens nested dicts to dotted paths (e.g. `feed.component_flows.Ethanol`) and reports only leaves that actually changed. `render_human_readable(record)` — the bounded `[TURN]`/`[ROUTE]`/`[INTERPRETATION ATTEMPT N]`/`[PARSED INTENT]`/`[VALIDATION]`/`[EXECUTION]`/`[STATE DIFF]`/`[FINAL RESPONSE]` console renderer; deliberately never prints the complete workflow assessment. `append_jsonl(record, path)` — appends one JSON line; raises (never silently swallows) on a write failure. |
+
+**Changes to existing Round 2 modules:**
+
+- `turn_intent.py` — `propose_turn_intent()` now returns
+  `{'ok', 'intent', 'attempts': [{'raw', 'parse_result'}, ...], 'retry_used'}`
+  on both a successful and a failed parse (previously the raw response was
+  discarded on success, and a failed parse returned only
+  `{'ok': False, 'error', 'detail', 'raw'}` for the LAST attempt, losing
+  the first). Each `attempt['parse_result']` has its own `'raw'` key
+  stripped to avoid duplicating the sibling `attempt['raw']` field.
+  Existing callers reading only `ok`/`intent` are unaffected.
+- `turn_transaction.py` — `validate_turn_intent()`'s `invalid_updates`
+  entries gained `update_index` (position in the proposed `updates` list),
+  `field_metadata` (a small allowlisted subset of the registry entry —
+  `keyed`/`entity_type`/`value_type`/`write_binding`; `None` for an
+  `unknown_field` rejection, since there is no registry entry to draw
+  from), and `effect` (always `'entire_update_batch_rejected'`, reflecting
+  the existing atomicity rule). The pre-existing `update`/`reason` keys are
+  unchanged. No callable registry accessor (`read_accessor`/
+  `units_accessor`/`provenance_accessor`) is ever copied into
+  `field_metadata` — only plain JSON-safe values.
+- `binary_distillation_workflow_agent.py`:
+  - `format_transaction_response()` now groups `invalid_updates` by
+    `(field, reason)` before rendering (`_group_invalid_updates()`), so N
+    identical `missing_entity` rejections for the same field produce ONE
+    sentence — the direct fix for the reported duplicate.
+    `_format_invalid_update_note(field, reason, entries)` replaces the old
+    per-update formatter; for `missing_entity` on a keyed field it renders
+    a generic, registry-driven sentence ("I failed to associate the stated
+    `{label}` values with their component names, so none of the values
+    from this message were saved.") that never exposes the bare internal
+    reason token and states plainly that nothing was saved (the batch is
+    atomic) — worded generically enough to cover any future keyed field,
+    not special-cased to `component_flows`.
+  - `ask(client, messages, diagnostic=None, semantic_retry=False)` and
+    `_dispatch_transaction(client, messages, transaction, diagnostic=None)`
+    both gained an optional `diagnostic` parameter (a
+    `turn_diagnostics.new_turn_record()`-shaped dict). Passing one is
+    purely observational — it records the route taken
+    (`'fast_path'`/`'model_interpretation'`), every raw interpretation
+    attempt, the validated transaction, the exact dispatched operation
+    names (`_diag_op()`), whether a WRITE actually ran and its exact
+    kwargs (`_diag_write()` — `write_performed` is `True` only for a
+    non-empty kwargs dict, never for the harmless unconditional no-op
+    WRITE a query-only or fully-rejected turn still issues), the action
+    and its arguments (`_diag_action()`), query results
+    (`_diag_query_results()`), and a before/after state diff — but never
+    changes routing, validation, execution, or state; passing `None` (the
+    default) reproduces the exact pre-diagnostics behavior.
+  - CLI: `--debug` prints the bounded human-readable diagnostic after each
+    turn; `--debug-json PATH` appends one full JSON record per turn (via
+    `turn_diagnostics.append_jsonl`, raising a clear error to stderr on a
+    write failure rather than silently proceeding); both work in
+    interactive REPL and one-shot mode (`_run_turn_with_diagnostics()`).
+    Diagnostic output is a side channel (stdout / a separate file) — it is
+    never inserted into `messages`, so it can never reach the model's own
+    conversation history.
+  - `--semantic-retry` enables one additional, bounded repair call
+    (`_run_semantic_retry()`), off by default. Eligibility
+    (`_is_semantic_retry_eligible()`) requires: the whole update batch was
+    rejected (`update_kwargs` empty — atomicity means this is equivalent
+    to "no mutation has happened yet this turn"), and every rejection
+    reason is in a small allowlist (currently only `missing_entity` on a
+    keyed field). The repair call sends the current user message, the
+    rejected TurnIntent, and its exact validator diagnostics, and asks for
+    a COMPLETE replacement TurnIntent — never a partial patch; the
+    replacement is revalidated from scratch (`validate_turn_intent()`
+    again), never merged piecewise with the rejected one. Capped at one
+    retry per turn by construction (no loop). **Live-probed to NOT
+    reliably fix the reported failure** — the repair call reproduced the
+    identical broken (still-`entity: null`) output on the real local
+    `qwen3:8b` server — so it remains gated behind the flag rather than
+    enabled by default, per the plan's "do not enable by default until a
+    live-Qwen run shows it improves behavior reliably."
+
+**Live acceptance results.** A multi-turn conversation (one component's
+flow per turn, avoiding the multi-entity-same-turn failure mode) reached
+the documented successful state exactly:
+`component_flows={'Ethanol': 50.0, 'Water': 50.0}`,
+`component_flow_units='kmol/hr'`, `feed_temperature_K=355.0`,
+`pressure_Pa=101325.0`, `feed_screening['ready']=True` — confirming the
+rest of the pipeline (interpretation → validation → transaction →
+dispatch → state → response) is correct once entities are present; the
+residual limitation is specifically Qwen's multi-entity-same-field
+extraction, not this architecture.
+
+New test files: `test_turn_diagnostics.py` (raw-attempt preservation on
+success/retry/full-failure, `field_metadata`/`update_index` on invalid
+updates with no callable leakage, `write_performed`/`write_kwargs` for
+both a fully-rejected and a valid batch, the state diff, fast-path vs.
+model-interpretation `route`, debug mode never changing final state/
+response, JSONL round-tripping including a write-failure error path, the
+duplicate-sentence fix end-to-end, and diagnostic content never reaching
+`messages`), `test_binary_distillation_semantic_retry.py` (a known
+missing-entity failure repaired, retry capped at one, retry ineligible
+whenever any update already validated, a non-allowlisted reason never
+retries, a failed repair leaves state unchanged, and the flag defaulting
+to off preserves the pre-Step-10 behavior exactly). Run with:
+```bash
+pytest tools/chopper/test_turn_diagnostics.py tools/chopper/test_binary_distillation_semantic_retry.py -v
+```
+
+### Multi-entity keyed field extraction (`items` collection updates)
+
+Per `tools/binary-distillation-issues-9-1-2026-sixth.md`. Reported failure:
+"Separate water and ethanol at 355 K and 101325 Pa pressure. The feed
+composition is 50 kmol/hr ethanol and 50 kmol/hr water" (and the shorter
+"the ethanol flow is 50 kmol/hr and the water flow is 50 kmol/hr") reliably
+produced two `component_flows` updates with `entity: null`, which
+`validate_turn_intent()` correctly rejected (atomic zero-WRITE), but Qwen
+never reliably re-associated each value with its component name across
+several live-probed rounds (the duplicate-rejection-message fix above, and
+a bounded semantic retry, both left the underlying `entity: null` extraction
+failure unchanged). Root cause: the TurnIntent schema had no way to express
+"these N values all belong to the same keyed field" other than N separate
+scalar updates, which requires the model to correctly split multi-entity
+recognition across independent JSON objects — a harder task than emitting
+one array in one place.
+
+**Fix: a second, optional TurnIntent update shape for keyed fields.**
+Alongside the existing scalar shape (`{"field", "entity", "value", "units",
+"basis"}`), an update may now be a collection shape:
+`{"field", "subject", "items": [{"entity", "value", "units", "basis"}, ...]}`
+— one update, one `items` array, one entry per component. Both shapes are
+valid TurnIntent JSON simultaneously (`TURN_INTENT_JSON_SCHEMA`'s `updates`
+item is `anyOf: [scalar, collection]`); a single-entity write may still use
+either shape.
+
+| Module | Change |
+|---|---|
+| `turn_intent.py` | `TURN_INTENT_JSON_SCHEMA`'s update entry is now `anyOf` over `_SCALAR_UPDATE_SCHEMA` (unchanged) and a new `_COLLECTION_UPDATE_SCHEMA` (`field` + `subject` + `items`, each item requiring an explicit `entity` + `value`). `_is_valid_update_shape()`/`parse_turn_intent_response()` accept either shape structurally and preserve `items` verbatim in the parsed `TurnIntent` (never collapsed into a scalar `entity`/`value` here) — a malformed item (e.g. missing its own `entity`) still parses successfully so it can be rejected as one specific, atomic invalid update downstream rather than sinking the whole TurnIntent as `malformed_turn_intent`. `build_field_catalog_prompt()`'s keyed-field worked example and a new "Rules" bullet now teach the model the `items` shape explicitly, and tell it not to emit multiple scalar updates for the same keyed field with `entity: null`. |
+| `turn_transaction.py` | New `normalize_turn_intent_updates(updates)` — a pure, registry-independent function that expands each update into flat, scalar-shaped entries: a scalar update passes through as one entry; a collection update expands to one entry per item, all sharing the parent update's `update_index` (so a later rejection still points at the one original proposed update). A structurally malformed shape (`items` coexisting with a top-level `value`/`entity`, an empty/non-list `items`, or an item missing its own `entity`) normalizes to a single entry carrying `_shape_error` instead of a usable value. `validate_turn_intent()` now normalizes FIRST, then runs its existing per-update loop over the flat entries unchanged (field lookup, writable check, keyed/missing-entity check, value coercion) — no second validation path was created for collections, per the fix plan's explicit constraint. One addition to that loop: an entry expanded `_from_items` against a field that isn't `keyed` is rejected as `items_not_supported_for_field` (a collection is structurally meaningless for a non-keyed field). Entity/value conflict detection (existing) and a new units/basis conflict check (a keyed field's shared side-channel argument — `component_flow_units` from `component_flows`, `composition_basis` from `composition` — silently overwriting a different unit/basis from another entry in the same batch is now its own conflict, not silent last-write-wins) both run over the flattened entries, so a multi-item collection is validated with exactly the same atomicity rules as multiple scalar updates always were. The returned transaction gained a `normalized_updates` key (the flattened list) for diagnostics; existing keys are unchanged. |
+| `turn_diagnostics.py` | `new_turn_record()`'s `validation` block gained a `normalized_updates` key (default `[]`); `render_human_readable()` prints it in `[VALIDATION]`. The model-proposed collection form was already preserved via existing `interpretation.attempts[].raw`/`final_intent` fields (now genuinely collection-shaped, since `turn_intent.py` no longer flattens `items` away during parsing) — so the diagnostic trace shows the full chain: raw Qwen JSON (collection form) → parsed `TurnIntent` (collection form retained) → `normalized_updates` (flat per-entity form) → validated transaction → WRITE kwargs → state diff. |
+| `binary_distillation_workflow_agent.py` | `ask()` populates the new `diagnostic['validation']['normalized_updates']` field. `_group_invalid_updates()` is hardened to not raise if a rejected update's raw source is ever non-dict (a pre-existing latent gap, exposed by `normalize_turn_intent_updates`'s own defensive handling of a non-dict update entry). No behavior change to dispatch, `format_transaction_response()`, or any fast path. |
+
+**Compilation into the canonical WRITE is unchanged.** `_compile_update_kwargs()` was not modified — a multi-item collection, once expanded and validated, produces exactly the same list of per-entity valid-update dicts a set of scalar updates would have, so it merges into one `component_flows` dict (+ `component_flow_units`) exactly as before, and `execute_turn_transaction()` still calls `update_binary_distillation_problem(...)` exactly once.
+
+**Live acceptance (real local `qwen3:8b`, fresh session per case, `--debug`).** All 5 required prompts from the fix plan now resolve correctly in ONE turn each, and Qwen reliably chose the `items` shape (even for the single-entity case) without further prompt tuning beyond the catalog changes above:
+
+| Prompt | Result |
+|---|---|
+| "The ethanol flow is 50 kmol/hr." | `component_flows={'Ethanol': 50.0}` (Qwen used a one-item `items` collection) |
+| "The ethanol flow is 50 kmol/hr and the water flow is 50 kmol/hr." | `component_flows={'Ethanol': 50.0, 'Water': 50.0}` — the originally-reported failure, now fixed |
+| "The flow rates of ethanol and water are both 50 kmol/hr." | Same result |
+| "The flow rate is 50 kmol/hr each for water and ethanol." | Same result |
+| "Separate water and ethanol at 355 K and 101325 Pa pressure. The feed flow rates are 50 kmol/hr ethanol and 50 kmol/hr water." | `component_flows={'Ethanol': 50.0, 'Water': 50.0}`, `component_flow_units='kmol/hr'`, `feed_temperature_K=355.0`, `pressure_Pa=101325.0` in ONE atomic WRITE; a follow-up `get_binary_distillation_problem` query in the same session confirmed `total_flow` derives to `100.0 kmol/hr` |
+
+New test files: `test_keyed_collection_updates.py` (`normalize_turn_intent_updates()`'s shape expansion and every Part 11 semantic case — single keyed scalar, multi-item collection, invalid item atomicity, conflicting duplicate entity within one collection, mixed-units-within-one-collection conflict, collection on a non-keyed field), `test_keyed_collection_agent.py` (Part 12's scripted-model end-to-end case: one collection update + two scalar updates produce exactly one `update_binary_distillation_problem` call with the fully-compiled kwargs), plus three additions to `test_turn_intent_parser.py` (collection `items` preserved verbatim through parsing, a malformed item not sinking the whole TurnIntent, empty `items` rejected as malformed). Run with:
+```bash
+pytest tools/chopper/test_keyed_collection_updates.py tools/chopper/test_keyed_collection_agent.py tools/chopper/test_turn_intent_parser.py -v
+```
+
+**Semantic retry remains untouched and off by default** — this round's fix is the schema/normalization change above, not a retry-based repair; no eligibility or behavior change was made to `_is_semantic_retry_eligible()`/`_run_semantic_retry()`.
 
 ### Deterministic pending-request resolution and the state-truth rule
 
@@ -1282,13 +1544,16 @@ doc):
      "No, actually let's start over with ethanol and water" (which starts
      with a negative word) from being misread as a `False` answer to an
      unrelated pending field.
-4. If it resolves, `ask()` calls `update_binary_distillation_problem(**resolved)`
-   directly — a real WRITE, in Python, before the model ever produces a
-   token — appends the synthetic assistant-tool-call/tool-result pair to
-   `messages` for conversation-history consistency, then finalizes with
-   `_chat_without_tools` so the model can only describe the (now-updated)
-   returned state, never mutate it further. If it doesn't resolve, `ask()`
-   falls through unchanged to the per-turn controller described above.
+4. If it resolves, `ask()`'s `_fast_path_transaction()` wraps it in a
+   TurnTransaction (`make_raw_update_transaction()`, Round 2 — see "Round 2
+   Architecture Stabilization" above) and `_dispatch_transaction()` performs
+   the real WRITE, in Python, before the model ever produces a token —
+   appends the synthetic assistant-tool-call/tool-result pair to `messages`
+   for conversation-history consistency, then finalizes with
+   `_chat_without_tools` (`_run_write_and_finalize()`) so the model can only
+   describe the (now-updated) returned state, never mutate it further. If
+   it doesn't resolve, `ask()` falls through unchanged to the model's
+   `TurnIntent` proposal (`propose_turn_intent()`, Round 2).
 
 Separately, once `feed_screening['ready']` is True (per
 "Feed screening vs. Design Option A-D assessment" above — this pending-
@@ -1439,6 +1704,119 @@ server is required. Run with:
 pytest tools/chopper/test_binary_distillation_temperature_issue.py -v
 ```
 
+### Tool-argument boundary hardening (malformed WRITE payloads)
+
+Per `tools/binary-distillation-issues-9-1-2026-first.md` Round 1: live
+testing showed Qwen occasionally sending a malformed
+`update_binary_distillation_problem` payload — `component_names =
+["Water", "Ethanol"]` paired with `component_flows = [50, 50]` (a parallel
+list instead of a `{"Water": 50, "Ethanol": 50}` mapping) and/or
+`component_flow_units = ["kmol/hr", "kmol/hr"]` (a list of repeated values
+instead of a bare string). The generated Ollama tool schema for
+`update_binary_distillation_problem` was inspected directly (via
+`ollama._utils.convert_function_to_tool`) and confirmed already correct —
+`component_flows` is `object`, `component_flow_units` is `string` — so this
+is a Qwen schema-adherence failure, not a schema-generation bug. Passed
+straight through, the list form crashed inside
+`feed_state.apply_user_update()`'s `update['component_flows'].items()` with
+a raw `AttributeError: 'list' object has no attribute 'items'`.
+
+`tool_argument_normalizer.py` sits directly in front of that call, inside
+`update_binary_distillation_problem` itself (before `new_fields` is built):
+
+- `normalize_component_flows(component_names, component_flows)` — if
+  `component_flows` is already a valid `dict[str, float]`, returns
+  unchanged. If it's a `list`/`tuple`, deterministically zips it against
+  `component_names` positionally **only** when `component_names` is also a
+  list/tuple of unique strings of the SAME length and every flow value is
+  numeric — this is the one unambiguous recoverable case. Anything else
+  (length mismatch, no `component_names` to pair against, a non-numeric
+  value, duplicate/non-string names, or a wrong type entirely) returns a
+  structured error instead of guessing.
+- `normalize_component_flow_units(component_flow_units)` — if it's already
+  a `str`, returns unchanged. If it's a `list`/`tuple`, collapses it to one
+  string ONLY when every entry normalizes to the same canonical unit (a
+  small fixed alias table, e.g. `"KMOL/HR"`/`"kmol per hour"` both →
+  `"kmol/hr"`) — an empty list or genuinely conflicting units (`["kmol/hr",
+  "kg/hr"]`) returns a structured error.
+- `normalize_write_arguments(component_names, component_flows,
+  component_flow_units)` combines both and is what
+  `update_binary_distillation_problem` actually calls; on success it
+  returns the (possibly normalized) `component_flows`/`component_flow_units`
+  to assign back into the function's own locals before proceeding to
+  `apply_user_update()` as before. `feed_state.py`'s canonical schema is
+  untouched — the repair happens only at this LLM/tool-argument boundary.
+
+The structured error shape (returned as the WRITE tool's result, not
+raised) is:
+
+```python
+{
+    'valid': False,
+    'error': 'invalid_tool_arguments',
+    'field': 'component_flows',            # or 'component_flow_units'
+    'expected': 'mapping of component name to numeric flow',
+    'received_type': 'list',
+    'message': '...',
+}
+```
+
+`update_binary_distillation_problem`'s docstring documents this return
+shape so the model relays `message` and resends the same information
+correctly shaped, rather than retrying with another guess. As a
+defense-in-depth backstop (not the primary fix) at the time this was
+written, the (since-retired) native-tool-calling loop's catch-all
+`except Exception` in `_run_tool_call()` was also changed to return a
+similarly structured `{'valid': False, 'error': 'tool_execution_error',
+'tool', 'message'}` dict instead of a bare `f'{type(e).__name__}: {e}'`
+string. `_run_tool_call()` no longer exists (Round 2 retired the whole
+native-tool-calling loop — see "Round 2 Architecture Stabilization"
+above); the same discipline lives on in
+`update_binary_distillation_problem` itself, which
+`normalize_write_arguments()` guards directly, and in `turn_intent.py`'s
+`parse_turn_intent_response()`, which never raises on malformed model
+output either.
+
+`tools/chopper/test_tool_argument_normalizer.py` is a pytest suite
+covering: the valid-canonical-form no-op case; the recoverable
+parallel-array `component_flows` case; the recoverable repeated-units case
+(including unit aliasing); every structured-error case (length mismatch,
+non-numeric flow, no `component_names` to pair against, wrong type
+entirely, conflicting units, empty units list); and agent-level integration
+tests confirming `update_binary_distillation_problem` normalizes instead of
+crashing, returns the structured error instead of raising for the
+ambiguous cases, and an exact reproduction of the issue doc's original bug
+report (full malformed payload, including `pressure_Pa`/
+`feed_temperature_K`/`reflux_condition` alongside it, all in one call).
+Run with:
+```bash
+pytest tools/chopper/test_tool_argument_normalizer.py -v
+```
+
+### Retired: the alias-table state-query system (Round 1/1-Follow-up/Finalization)
+
+`tools/binary-distillation-issues-9-1-2026-first.md` Round 2,
+`-second.md` (Round 2 Follow-up), and `-fourth.md` ("Round 2 Finalization")
+introduced and then hardened `resolve_state_query()`, `_FIELD_ALIAS_TABLE`,
+`resolve_explicit_field_write()`, and `format_state_query_answer()` — a
+hand-written phrase/token alias table (with a parallel anchored-regex WRITE
+side) that grew by three successive rounds of point-fixes as coverage gaps
+turned up in live testing (e.g. "what is the temperature?" not matching
+because every `feed_temperature_K` alias was multi-word). All of it is
+**retired** as of `tools/binary-distillation-issues-9-1-2026-fifth.md`
+("Round 2 Architecture Stabilization" — see that section above) — superseded
+by `PROBLEM_FIELD_REGISTRY` + `TurnIntent`/`TurnTransaction` +
+`format_transaction_response()`, which reads a field's phrasing knowledge
+from one registry entry instead of a hand-maintained alias list per field.
+The corresponding test files (`test_state_query_resolver.py`,
+`test_state_query_alias_and_write_routing.py`,
+`test_state_query_terminal_formatting.py`) were deleted; their coverage is
+now in `test_turn_intent_parser.py`/`test_turn_transaction.py`/
+`test_binary_distillation_workflow_agent.py` (see the Round 2 section
+above for exactly what each covers). This subsection is kept only as a
+historical pointer — see `git log` for the full prior text if the alias
+table's exact old matching rules are ever needed for reference.
+
 **Cross-call accumulation** works the same way as `separation_tool.py`'s
 `_spec_state` (see that section above): every call merges its non-`None`
 arguments into a module-level `_workflow_state` dict, clearing a stale
@@ -1457,7 +1835,13 @@ separately, in a nested `feed_state`-shaped dict under
 `feed_state.py` section above) rather than the flat non-`None` overwrite
 used for every other field — this is what gives `component_names` its
 REPLACE semantics and `add_component_names` its APPEND semantics (issue
-doc section 12). Only ever-`'user_explicit'` values are kept in this
+doc section 12). `add_component_names` remains a valid direct
+`update_binary_distillation_problem` argument, but `PROBLEM_FIELD_REGISTRY`
+(Round 2 — see above) does not register it as a separately writable
+TurnIntent field; the model is instead taught to reconstruct and send the
+FULL `component_names` list (using conversation context for an
+answer-with-a-bare-name turn), so live routing through `ask()` only ever
+uses the REPLACE form today. Only ever-`'user_explicit'` values are kept in this
 accumulator; `_effective_spec()` strips out anything already `'derived'`
 before building the flat spec passed to
 `assess_binary_distillation_problem()`, so that function — the sole place
@@ -1485,27 +1869,28 @@ normalizer).
 
 `SYSTEM_PROMPT` implements workflow doc section 17 verbatim in spirit: it
 tells the model it is "not the binary-distillation decision engine",
-instructs it to extract information and pass it to the checker rather than
-inferring a case itself, to never invent pressure/feed condition/reflux
-condition/purity/recovery/reflux ratio/boilup ratio/product flow/optimum-
-feed-plate use, to never claim a calculation was performed (there is no
-calculation tool available to this agent), and to stop — reporting
-`would_calculate_details` (see "The `BINARY_DISTILLATION_QUANTITIES`
-registry" above) — once `status` comes back `ready_for_calculation`. An
-**ENGINEERING OUTPUT GROUNDING RULE** block tells the model to use each
-`would_calculate_details` entry's `label` verbatim for its `symbol`'s
-meaning and never redefine it from its own knowledge (the QR ≠ "reflux flow
-rate" fix).
+instructs it to extract information and propose it via `TurnIntent` rather
+than inferring a case itself, to never invent pressure/feed condition/
+reflux condition/purity/recovery/reflux ratio/boilup ratio/product flow/
+optimum-feed-plate use, to never claim a calculation was performed unless
+the `calculate_current_step` action's result is already in context, and to
+stop — reporting `would_calculate_details` (see "The
+`BINARY_DISTILLATION_QUANTITIES` registry" above) — once `status` comes
+back `ready_for_calculation`. An **ENGINEERING OUTPUT GROUNDING RULE**
+block tells the model to use each `would_calculate_details` entry's
+`label` verbatim for its `symbol`'s meaning and never redefine it from its
+own knowledge (the QR ≠ "reflux flow rate" fix).
 Separate guidance blocks cover each `status` value the checker can return
 (`need_components`/`unsupported_multicomponent`/`inconsistent_input`/
 `need_essential_inputs`/`need_case_definition`/`need_case_inputs`/
-`ambiguous`/`ready_for_calculation`), plus a block distinguishing
-`component_names` (full replace) from `add_component_names` (append) and
-one distinguishing `component_flows` from `total_flow`+`composition`.
+`ambiguous`/`ready_for_calculation`), plus a "Naming components:
+`component_names`" block (Round 2 — reconstruct the full list from context
+rather than append; see above) and one distinguishing `component_flows`
+from `total_flow`+`composition`.
 
 **Prerequisites:** same as `separation_agent.py` — a local Ollama server
-running `qwen3:8b` — but does **not** need `biosteam` to be importable, since
-this module never imports it.
+running `qwen3:8b`, plus `biosteam` importable (needed transitively, for
+the `calculate_current_step` action — see "Four capabilities" below).
 
 **Run it:**
 ```bash
@@ -1909,8 +2294,10 @@ Option):
   deterministic router makes it structural rather than advisory whenever
   the phrasing is unambiguous. A feed-phase question asked while
   `feed_screening['ready']` is **not yet** True deliberately does NOT
-  trigger this router — it falls through to normal model-driven tool
-  selection, where the tool itself (if the model calls it) reports
+  trigger this router — it falls through to the model's `TurnIntent`
+  proposal (Round 2 — see "Round 2 Architecture Stabilization" above),
+  where if the model still proposes the `calculate_current_step` action
+  anyway, `calculate_current_binary_distillation_problem()` itself reports
   `calculation_performed: False` and the missing inputs, without ever
   touching BioSTEAM.
 
@@ -1919,12 +2306,13 @@ the calculation, appends a synthetic assistant-tool-call/tool-result pair
 to `messages` (matching the pending-reply resolver's own pattern), then
 finalizes with `_chat_without_tools` so the model can only explain the
 already-fixed result, never call another tool that turn. When neither
-router fires, the model may still choose
-`calculate_current_binary_distillation_problem` itself through normal
-tool selection (e.g. "please calculate the feed phase" doesn't match the
-narrow phrase list) — it participates in the same per-turn controller as
-WRITE/READ described above, so it is still capped at one calculation per
-turn and still forces a no-tools finalization call afterward.
+fast-path router fires, the model may still propose the
+`calculate_current_step` action itself via `TurnIntent` (e.g. "please
+calculate the feed phase" doesn't match the narrow phrase list) —
+`validate_turn_intent` compiles at most one action per transaction by
+construction, so it is still capped at one calculation per turn, and
+`_dispatch_transaction` still routes it through this same
+`_run_calculation_and_finalize()` helper afterward.
 
 **Scope stays explicit at every layer.** Because
 `calculate_binary_distillation_problem()` only ever populates
@@ -2084,13 +2472,14 @@ This reuses the same synthetic-message pattern as
 gets a tool-selection turn for a progress question, so it cannot invent a
 completed step or re-ask for stored inputs.
 
-**Controller precedence (`_select_allowed_calls`).** The per-turn policy
-described above now orders model-selected primary operations as
-`WRITE > CALCULATION EXECUTE > CALCULATION READ > (state) READ` (RESET
-still runs first, once, if requested), and `get_binary_distillation_calculation_status`
-counts toward the same one-primary-operation-per-turn budget as
-WRITE/READ/CALCULATE — so a model cannot loop READ ↔ CALCULATION READ
-within one turn any more than it could loop READ ↔ CALCULATE before.
+**Controller precedence — retired.** The paragraph that used to live here
+described `_select_allowed_calls()`'s native-tool-calling precedence
+ordering; that whole controller was retired in Round 2 (see "Round 2
+Architecture Stabilization" above). `read_calculation_status` is now one of
+exactly 3 entries in `ACTION_REGISTRY`, and a TurnTransaction carries **at
+most one** action by construction (`validate_turn_intent` only ever
+compiles a single `action` field) — there is no multi-call-per-turn loop
+left to bound.
 
 **`SYSTEM_PROMPT` additions.** A `CALCULATION-PROGRESS TRUTH RULE` block
 states that the deterministic calculation state is the sole authority for
