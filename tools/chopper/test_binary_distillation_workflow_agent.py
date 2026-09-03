@@ -333,17 +333,19 @@ def test_legacy_bare_would_calculate_symbol_has_no_details_entry_mismatch():
 
 # ---------------------------------------------------------------------------
 # Part 15 -- never require Design Option selection. A feed-ready/design-
-# incomplete conversation (Water/Ethanol, 355 K, 101325 Pa, no Design
-# Option fields at all) must never produce a deterministic message asking
-# the user to pick a Design Option letter -- and the prompt-level
-# instruction forbidding it must still be present.
+# incomplete conversation (Water/Ethanol, 355 K, 101325 Pa, reflux_condition
+# given, no OTHER Design Option field at all) must never produce a
+# deterministic message asking the user to pick a Design Option letter --
+# and the prompt-level instruction forbidding it must still be present.
+# (reflux_condition is included here per tools/binary-distillation-issues-
+# 9-1-2026-eighth.md Step 2 -- feed screening now requires it too.)
 # ---------------------------------------------------------------------------
 
 def test_feed_ready_design_incomplete_never_asks_for_a_design_option_letter():
     state = agent.update_binary_distillation_problem(
         component_names=['Water', 'Ethanol'],
         component_flows={'Water': 50, 'Ethanol': 50}, component_flow_units='kmol/hr',
-        pressure_Pa=101325, feed_temperature_K=355.0,
+        pressure_Pa=101325, feed_temperature_K=355.0, reflux_condition='saturated_liquid',
     )
     assert state['feed_screening']['ready'] is True
     assert state['design_assessment']['complete'] is False

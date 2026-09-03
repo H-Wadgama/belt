@@ -328,6 +328,7 @@ def validate_turn_intent(intent, schema, workflow_state=None):
         'queries': list(intent.get('queries', [])),
         'action': action,
         'action_error': action_error,
+        'pending_reask': None,
     }
 
 
@@ -343,6 +344,7 @@ def is_empty_transaction(transaction):
         and not transaction['queries']
         and transaction['action'] is None
         and transaction['action_error'] is None
+        and transaction.get('pending_reask') is None
     )
 
 
@@ -358,7 +360,7 @@ def make_raw_update_transaction(update_kwargs):
     return {
         'reset_first': False, 'update_kwargs': dict(update_kwargs), 'valid_updates': [],
         'normalized_updates': [], 'invalid_updates': [], 'conflicts': [],
-        'queries': [], 'action': None, 'action_error': None,
+        'queries': [], 'action': None, 'action_error': None, 'pending_reask': None,
     }
 
 
@@ -378,7 +380,7 @@ def make_single_update_transaction(field, value, entity=None, units=None):
         'update_kwargs': update_kwargs,
         'valid_updates': [{'field': field, 'entity': entity, 'value': value, 'units': units, 'basis': None}],
         'normalized_updates': [], 'invalid_updates': [], 'conflicts': [],
-        'queries': [], 'action': None, 'action_error': None,
+        'queries': [], 'action': None, 'action_error': None, 'pending_reask': None,
     }
 
 
@@ -389,7 +391,43 @@ def make_action_transaction(action_name, arguments=None):
         'reset_first': False, 'update_kwargs': {}, 'valid_updates': [],
         'normalized_updates': [], 'invalid_updates': [], 'conflicts': [],
         'queries': [], 'action': {'name': action_name, 'arguments': arguments or {}},
-        'action_error': None,
+        'action_error': None, 'pending_reask': None,
+    }
+
+
+def make_query_transaction(field, entity=None, subject=None, raw_reference=None):
+    """Build a query-only TurnTransaction -- used by an exclusive fast-path
+    detector whose target field is unambiguous from phrasing alone (same
+    spirit as `make_action_transaction`), e.g. a workflow-definition
+    question like "what are the inputs for the four cases?"
+    (tools/binary-distillation-issues-9-1-2026-eighth.md Step 4/5). Routes
+    through the SAME terminal, Python-rendered query pipeline
+    (`format_transaction_response`) as a model-proposed query -- no special
+    casing downstream."""
+    return {
+        'reset_first': False, 'update_kwargs': {}, 'valid_updates': [],
+        'normalized_updates': [], 'invalid_updates': [], 'conflicts': [],
+        'queries': [{'field': field, 'entity': entity, 'subject': subject, 'raw_reference': raw_reference}],
+        'action': None, 'action_error': None, 'pending_reask': None,
+    }
+
+
+def make_pending_reask_transaction(pending_request):
+    """Build a terminal, Python-only TurnTransaction that re-asks for the
+    live `pending_request` instead of executing anything --
+    tools/binary-distillation-issues-9-1-2026-eighth.md Step 1: a generic
+    short reply ("yes", "sure", "go ahead", ...) must never be read as
+    answering -- or as permission to bypass -- a specific outstanding
+    question Python could not already resolve it against. Carries no
+    updates/queries/action; `_dispatch_transaction` reads `pending_reask`
+    directly and renders its `prompt` with no model call and no state
+    change, so this can never accidentally trigger a calculation or a
+    write."""
+    return {
+        'reset_first': False, 'update_kwargs': {}, 'valid_updates': [],
+        'normalized_updates': [], 'invalid_updates': [], 'conflicts': [],
+        'queries': [], 'action': None, 'action_error': None,
+        'pending_reask': pending_request,
     }
 
 

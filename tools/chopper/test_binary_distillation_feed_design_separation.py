@@ -2,7 +2,18 @@
 Acceptance tests for
 tools/binary-distillation-separating-feed-phase-from-options-a-d.md --
 feed-phase screening and Design Option A-D assessment are independent
-deterministic branches, neither gating the other.
+deterministic branches over the CASE-DEFINING fields (xD/xB/Lr/Hr, a
+product flow, a boilup ratio) and `use_optimum_feed_plate` -- neither
+gates the other over those.
+
+Updated by tools/binary-distillation-issues-9-1-2026-eighth.md Step 2:
+`reflux_condition` is no longer exclusive to `design_assessment` -- feed
+screening now also requires it (a report must never say feed screening is
+"ready" while elsewhere still asking for reflux condition). See
+`test_binary_distillation_issues_eighth.py` for the dedicated regression
+tests covering that change; this file's fixtures below all supply
+`reflux_condition` for that reason, except where a test is specifically
+about its absence.
 
 Run with:
     pytest tools/chopper/test_binary_distillation_feed_design_separation.py -v
@@ -18,13 +29,15 @@ PRESSURE = 101325
 REFLUX = 'saturated_liquid'
 
 # The exact worked example from the task doc's Step 30/Step 31 -- feed
-# fully specified, NO Design Option fields at all.
+# fully specified, reflux condition given, NO other Design Option field at
+# all.
 WATER_ETHANOL_355K = {
     'component_names': ['Water', 'Ethanol'],
     'component_flows': {'Water': 50, 'Ethanol': 50},
     'component_flow_units': 'kmol/hr',
     'pressure_Pa': PRESSURE,
     'feed_temperature_K': 355.0,
+    'reflux_condition': REFLUX,
 }
 
 # Case D worked example from the task doc's Step 34 -- feed AND design both
@@ -119,15 +132,20 @@ def test_design_complete_feed_incomplete_missing_units():
 
 
 # ---------------------------------------------------------------------------
-# 6 -- feed ready + missing reflux_condition -- Step 36.
+# 6 -- missing reflux_condition blocks BOTH branches -- Step 36, updated by
+# tools/binary-distillation-issues-9-1-2026-eighth.md Step 2 (feed screening
+# and design assessment must never disagree about reflux_condition).
 # ---------------------------------------------------------------------------
 
-def test_feed_ready_missing_reflux_condition():
+def test_feed_and_design_both_blocked_by_missing_reflux_condition():
     spec = dict(METHANOL_WATER_400K_CASE_D)
     del spec['reflux_condition']
     result = assess_binary_distillation_problem(spec)
 
-    assert result['feed_screening']['ready'] is True
+    fs = result['feed_screening']
+    assert fs['ready'] is False
+    assert 'reflux_condition' in fs['missing_inputs']
+
     da = result['design_assessment']
     assert da['design_option'] == 'D'
     assert da['complete'] is False
@@ -235,10 +253,20 @@ def test_early_design_facts_retained_across_turns():
     spec.update(boilup_ratio_VB=1.2)
 
     result = assess_binary_distillation_problem(spec)
-    assert result['feed_screening']['ready'] is True
+    # No reflux_condition given yet -- feed screening is NOT ready (Step 2).
+    assert result['feed_screening']['ready'] is False
+    assert 'reflux_condition' in result['feed_screening']['missing_inputs']
     assert result['design_assessment']['design_option'] == 'D'
     # Still not complete -- reflux_condition and optimum-feed-plate remain.
     assert result['design_assessment']['complete'] is False
+
+    result = assess_binary_distillation_problem(dict(spec, reflux_condition=REFLUX))
+    # Once reflux_condition is supplied, feed screening becomes ready even
+    # though optimum-feed-plate confirmation (a design-only field) is still
+    # missing -- the two branches remain independent over THAT dimension.
+    assert result['feed_screening']['ready'] is True
+    assert result['design_assessment']['complete'] is False
+    assert result['design_assessment']['optimum_feed_plate_confirmed'] is None
 
 
 # ---------------------------------------------------------------------------

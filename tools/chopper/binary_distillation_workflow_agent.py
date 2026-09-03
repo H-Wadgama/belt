@@ -82,7 +82,13 @@ from problem_field_registry import ACTION_REGISTRY, ACTIVE_WORKFLOW_SCHEMA, PROB
 from problem_snapshot import build_problem_snapshot, read_problem_value
 from tool_argument_normalizer import normalize_write_arguments
 from turn_intent import TURN_INTENT_JSON_SCHEMA, build_field_catalog_prompt, parse_turn_intent_response, propose_turn_intent
-from turn_transaction import make_action_transaction, make_raw_update_transaction, validate_turn_intent
+from turn_transaction import (
+    make_action_transaction,
+    make_pending_reask_transaction,
+    make_query_transaction,
+    make_raw_update_transaction,
+    validate_turn_intent,
+)
 
 MODEL = 'qwen3:8b'
 
@@ -260,7 +266,7 @@ def update_binary_distillation_problem(
     Returns:
         If `component_flows` or `component_flow_units` was malformed (e.g. `component_flows` given as a list instead of a name->flow mapping, with lengths/types that don't allow a safe automatic fix), returns `{'valid': False, 'error': 'invalid_tool_arguments', 'field', 'expected', 'received_type', 'message'}` instead -- relay `message` to the user and resend the SAME information in the correct shape; do not retry with a guessed shape.
 
-        Otherwise, a dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'would_calculate_details', 'calculation_performed' (always False), 'message', 'provenance'. When `status` is 'ready_for_calculation', use `would_calculate_details` (a list of `{'field', 'symbol', 'label'}` dicts) to describe each quantity -- it is the authoritative engineering meaning; see the ENGINEERING OUTPUT GROUNDING RULE below. `would_calculate` (bare strings, e.g. "QR") is kept only for backward compatibility -- do not define or explain a symbol from that field alone. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed. The dict ALSO always includes two independent branches: 'feed_screening' (`{'ready', 'missing_inputs', 'status', 'message'}` -- whether the feed-VLE calculation can run; depends only on component identity/quantity/units, pressure, and the feed's own thermal condition) and 'design_assessment' (`{'design_option', 'design_option_candidates', 'complete', 'missing_inputs', 'ambiguous', 'reflux_condition_given', 'optimum_feed_plate_confirmed', 'status', 'message'}` -- Design Option A-D completeness, including reflux_condition and optimum-feed-plate confirmation). These are independent: 'feed_screening'['ready'] can be True while 'design_assessment'['complete'] is False, and vice versa. `calculate_current_binary_distillation_problem` is gated on 'feed_screening'['ready'] alone, not on 'design_assessment'['complete'] or the legacy 'status' field.
+        Otherwise, a dict (see binary_distillation_workflow.assess_binary_distillation_problem for the full schema): 'valid_binary_scope', 'component_count', 'feed_flow_complete', 'feed_composition_complete', 'essential_complete', 'missing_essential_inputs', 'case', 'case_candidates', 'case_complete', 'missing_case_inputs', 'optimum_feed_plate_confirmed', 'calculation_inputs_complete', 'missing_calculation_inputs', 'status', 'would_calculate', 'would_calculate_details', 'calculation_performed' (always False), 'message', 'provenance'. When `status` is 'ready_for_calculation', use `would_calculate_details` (a list of `{'field', 'symbol', 'label'}` dicts) to describe each quantity -- it is the authoritative engineering meaning; see the ENGINEERING OUTPUT GROUNDING RULE below. `would_calculate` (bare strings, e.g. "QR") is kept only for backward compatibility -- do not define or explain a symbol from that field alone. `status` can be 'inconsistent_input' if redundant information disagreed (e.g. component flows don't sum to a stated total) -- relay the conflict in 'message' and ask the user to resolve it rather than picking a value yourself. `status` can also be 'need_calculation_inputs': the engineering problem definition is otherwise complete, but flow-rate units (`component_flow_units` or `total_flow_units`, named in `missing_calculation_inputs`) are still needed before the calculation layer can run -- ask only for that, and do NOT claim the problem is `ready_for_calculation` while this status shows. Relay 'message' (and the relevant missing_*/case_candidates fields) to the user rather than reproducing this logic yourself -- never infer a case, never invent a missing value or a missing unit, and never claim a calculation was performed. The dict ALSO always includes two branches: 'feed_screening' (`{'ready', 'missing_inputs', 'status', 'message'}` -- whether the feed-VLE calculation can run; depends on component identity/quantity/units, pressure, the feed's own thermal condition, AND a valid reflux_condition) and 'design_assessment' (`{'design_option', 'design_option_candidates', 'complete', 'missing_inputs', 'ambiguous', 'reflux_condition_given', 'optimum_feed_plate_confirmed', 'status', 'message'}` -- Design Option A-D completeness: case-defining fields + reflux_condition + optimum-feed-plate confirmation). 'feed_screening'['ready'] can still be True while 'design_assessment'['complete'] is False (e.g. reflux_condition given but no case-defining field/optimum-feed-plate confirmation yet) -- but never the reverse for reflux_condition specifically: feed_screening can never be 'ready' while reflux_condition is still missing or invalid. `calculate_current_binary_distillation_problem` is gated on 'feed_screening'['ready'] alone, not on 'design_assessment'['complete'] or the legacy 'status' field.
     """
     global _last_calculation_result
 
@@ -638,6 +644,34 @@ _PROGRESS_PHRASES = (
 _PROGRESS_PHRASES_EXACT = ('next', 'continue')
 
 
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-issues-9-1-2026-eighth.md Step 4/5 --
+# deterministic fast-path for the workflow-DEFINITION question "what does
+# Design Option/Case A-D need?" asked about ALL FOUR options at once (the
+# common phrasing from the live-Qwen failure). A single-option question
+# ("what does Case A need?") is intentionally NOT fast-pathed here -- it is
+# left to the model + the `design_option_requirements` field catalog entry
+# (see `problem_field_registry.py`), the same way any other keyed/entity
+# lookup is, since determining WHICH letter was asked about from arbitrary
+# phrasing is exactly what the interpretation model is for.
+# ---------------------------------------------------------------------------
+
+_DESIGN_OPTION_OVERVIEW_QUESTION_PHRASES = (
+    'four cases', 'four design options',
+    'inputs for the four', 'inputs required for the four',
+    'requirements for the four',
+)
+
+
+def is_design_option_overview_question(text):
+    """True if `text` asks about all four Design Options/Cases at once
+    (e.g. "What are the inputs required for the four cases?") -- routed to
+    the static `design_option_requirements` workflow-definition field,
+    never treated as a query for a nonexistent stored variable."""
+    normalized = normalize_short_reply(text)
+    return any(phrase in normalized for phrase in _DESIGN_OPTION_OVERVIEW_QUESTION_PHRASES)
+
+
 def is_calculation_progress_question(text):
     """True if `text` is asking about calculation PROGRESS ("what next?", "continue", "what remains?", "where are we?", "what have we calculated?", ...) -- routed to `get_binary_distillation_calculation_status`/`get_precalculation_progress`, never answered from conversation history or generic LLM reasoning. Deliberately narrow (section: 'Do not make this detector overly broad')."""
     normalized = normalize_short_reply(text)
@@ -673,6 +707,36 @@ def _resolve_boolean_reply(normalized):
     if _matches_short_phrase(normalized, _NEGATIVE_PHRASES):
         return False
     return None
+
+
+# ---------------------------------------------------------------------------
+# tools/binary-distillation-issues-9-1-2026-eighth.md Step 1 -- a live,
+# unresolved `pending_request` must always win over a generic short reply
+# ("yes", "sure", "go ahead", ...) being misread as permission to proceed.
+# This is a GENERAL rule over `pending_request` itself (see
+# `_fast_path_transaction` below) -- never specific to which field happens
+# to be pending (e.g. reflux_condition); the same logic applies whether
+# Python is waiting on a case-defining field, a flow unit, or anything else
+# a future workflow might introduce a `pending_request` for.
+# ---------------------------------------------------------------------------
+
+
+def _is_generic_short_reply(user_text):
+    """True if `user_text` normalizes to one of the small, fixed set of
+    generic affirmative/negative/proceed phrases -- the specific shape of
+    reply that must never be treated as answering a pending question Python
+    could not already resolve it against via `resolve_pending_reply`. A
+    genuine restatement of the requested value (e.g. "reflux is saturated
+    liquid") does not match this and is left to normal model-driven
+    routing, which resolves it through the field catalog instead."""
+    normalized = normalize_short_reply(user_text)
+    if not normalized:
+        return False
+    if _matches_short_phrase(normalized, _AFFIRMATIVE_PHRASES):
+        return True
+    if _matches_short_phrase(normalized, _NEGATIVE_PHRASES):
+        return True
+    return normalized in _PROCEED_PHRASES
 
 
 def resolve_pending_reply(pending_request, user_text):
@@ -858,6 +922,18 @@ def _format_query_sentence(query, result):
         return f"I couldn't resolve {query['field']}."
 
     found, value, units = result['found'], result['value'], result['units']
+
+    # tools/binary-distillation-issues-9-1-2026-eighth.md Step 4/5 -- a
+    # workflow-DEFINITION field (currently just design_option_requirements)
+    # already carries a complete, self-describing sentence as its 'value'
+    # (built from problem_spec.CASE_FIELD_SUMMARY) -- render it verbatim
+    # rather than wrapping it in the generic "The X is Y." template built
+    # for engineering STATE fields below.
+    if query['field'] == 'design_option_requirements':
+        if found:
+            return value
+        return f"Design Option {query.get('entity')!r} is not a recognized Design Option (only A, B, C, D exist)."
+
     label = _field_label(query['field'], result.get('entity'))
     if found:
         base = f'The {label} is {_format_value(value)}{_units_suffix(units)}.'
@@ -952,33 +1028,37 @@ operation yourself, since no tools are available to call.
 ## FEED SCREENING VS DESIGN OPTION RULE
 
 Feed-phase screening and Design Option A-D identification are two \
-separate, independent deterministic workflows, both computed on every \
-WRITE/READ call and reported as two independent top-level fields:
+separate deterministic workflows, both computed on every WRITE/READ call \
+and reported as two top-level fields:
   - `feed_screening` (`{'ready', 'missing_inputs', 'status', 'message'}`) -- \
 whether the feed-VLE/reference-temperature-conditioning calculation can \
-run. Depends ONLY on: component identity, feed quantity/composition, flow-\
-rate units, column pressure, and the feed's own thermal condition. Never \
-depends on `reflux_condition`, xD/xB/Lr/Hr, a product flow, a boilup \
-ratio, an external reflux ratio, or optimum-feed-plate confirmation.
+run. Depends on: component identity, feed quantity/composition, flow-rate \
+units, column pressure, the feed's own thermal condition, AND a valid \
+`reflux_condition` (stated explicitly -- today only 'saturated_liquid' is \
+supported). Never depends on xD/xB/Lr/Hr, a product flow, a boilup ratio, \
+an external reflux ratio, or optimum-feed-plate confirmation -- those are \
+exclusive to `design_assessment` below.
   - `design_assessment` (`{'design_option', 'design_option_candidates', \
 'complete', 'missing_inputs', 'ambiguous', 'reflux_condition_given', \
 'optimum_feed_plate_confirmed', 'status', 'message'}`) -- Design Option \
-A-D completeness. Independent of feed-screening readiness in both \
-directions.
+A-D completeness (case-defining fields + reflux_condition + \
+optimum-feed-plate confirmation).
 
 These two are never conflated. All explicit user facts are stored \
 immediately regardless of which branch they belong to -- storage order is \
 never the same thing as execution order. `calculate_current_binary_distillation_problem` \
 is gated ONLY on `feed_screening['ready']`; it never waits on \
-`design_assessment['complete']`, `reflux_condition`, or optimum-feed-plate \
-confirmation. A problem can be simultaneously `feed_screening['ready'] == \
-True` and `design_assessment['complete'] == False` -- that combination is \
-valid and expected, and you should offer/perform the feed-phase check \
-immediately rather than first asking the user to complete a Design \
-Option. Do NOT require a complete Design Option before offering or \
-performing feed-phase evaluation, and do not infer physical routing \
-yourself -- always use the deterministic `checks['feed_phase']`/ \
-`checks['routing']` result.
+`design_assessment['complete']` or a case-defining field, and \
+`reflux_condition` alone is never sufficient by itself either -- it is one \
+of several things `feed_screening` checks. A problem can be simultaneously \
+`feed_screening['ready'] == True` and `design_assessment['complete'] == \
+False` -- e.g. reflux_condition is given but no case-defining field or \
+optimum-feed-plate confirmation has been -- that combination is valid and \
+expected, and you should offer/perform the feed-phase check immediately \
+rather than first asking the user to complete a Design Option. Do NOT \
+require a complete Design Option before offering or performing feed-phase \
+evaluation, and do not infer physical routing yourself -- always use the \
+deterministic `checks['feed_phase']`/`checks['routing']` result.
 
 ## Interpreting a turn into a TurnIntent
 
@@ -1317,16 +1397,16 @@ have already found `would_calculate_details`'s values.
 ## When `feed_screening['ready']` is True but `status` is NOT `ready_for_calculation`
 
 This is expected and valid -- it means the feed has enough information for \
-the feed-phase calculation, but the Design Option A-D specification \
-(`design_assessment`) is still incomplete (e.g. `reflux_condition`, a \
-case-defining field, or optimum-feed-plate confirmation is still missing). \
-Tell the user the feed information is sufficient for feed-phase screening, \
-and separately state what `design_assessment` still needs -- but do NOT \
-withhold or delay the feed-phase check waiting on that. If the user asks \
-to proceed, or asks a feed-phase/vapor-fraction question, the calculation \
-runs the same way it does when `status` is `ready_for_calculation` (see \
-below) -- never tell the user they must first specify `reflux_condition` \
-or complete a Design Option before you can check the feed phase.
+the feed-phase calculation (including a valid `reflux_condition`), but the \
+Design Option A-D specification (`design_assessment`) is still incomplete \
+(e.g. a case-defining field or optimum-feed-plate confirmation is still \
+missing). Tell the user the feed information is sufficient for feed-phase \
+screening, and separately state what `design_assessment` still needs -- \
+but do NOT withhold or delay the feed-phase check waiting on that. If the \
+user asks to proceed, or asks a feed-phase/vapor-fraction question, the \
+calculation runs the same way it does when `status` is \
+`ready_for_calculation` (see below) -- never tell the user they must first \
+complete a Design Option before you can check the feed phase.
 
 ## ENGINEERING OUTPUT GROUNDING RULE
 
@@ -1559,6 +1639,13 @@ def _dispatch_transaction(client, messages, transaction, diagnostic=None):
     model-proposed ones (tools/binary-distillation-issues-9-1-2026-fifth.md
     Part 6/8). Branches, in order:
 
+    0. A PENDING RE-ASK (`pending_reask` set -- tools/binary-distillation-
+       issues-9-1-2026-eighth.md Step 1), if one was fast-pathed -- TERMINAL,
+       re-states the live `pending_request`'s own prompt with NO model call
+       and NO state change (not even the harmless no-op WRITE branches 3/4
+       below perform); this is the fix for a generic "yes"/"sure"/"go ahead"
+       being misread as permission to calculate or as an answer to a
+       different specific question.
     1. RESET, if requested (always runs before anything else -- Part 8).
     2. An ACTION, if one validated (`calculate_current_step` /
        `read_calculation_status`) -- any accompanying WRITE is applied
@@ -1580,6 +1667,14 @@ def _dispatch_transaction(client, messages, transaction, diagnostic=None):
     never read back by this function, so passing it changes no routing,
     validation, execution, or state (architectural invariant 7).
     """
+    if transaction.get('pending_reask') is not None:
+        pending_request = transaction['pending_reask']
+        reply = pending_request.get('prompt') or 'Could you answer the specific question I just asked?'
+        print(f"  [pending question unresolved by a generic reply -> re-asking {pending_request.get('field') or pending_request.get('fields')}]")
+        _diag_op(diagnostic, 'pending_reask')
+        messages.append({'role': 'assistant', 'content': reply, 'tool_calls': []})
+        return reply
+
     if transaction['action_error'] is not None:
         print(f"  [rejected unrecognized action -> {transaction['action_error']}]")
 
@@ -1653,18 +1748,30 @@ def _fast_path_transaction(user_text, current_state):
     `propose_turn_intent` instead.
     """
     feed_ready = current_state.get('feed_screening', {}).get('ready', False)
+    pending_request = current_state.get('pending_request')
 
     # Pending-request resolution always runs first, regardless of
     # feed-screening readiness -- a live outstanding question (e.g. an
     # optimum-feed-plate confirmation) must win over a bare "yes" being
     # misread as "run the calculation now."
-    resolved = resolve_pending_reply(current_state.get('pending_request'), user_text)
+    resolved = resolve_pending_reply(pending_request, user_text)
     if resolved is None and _feed_thermal_condition_missing(current_state):
         temperature_value = extract_explicit_feed_temperature_K(user_text)
         if temperature_value is not None:
             resolved = {'feed_temperature_K': temperature_value}
     if resolved is not None:
         return make_raw_update_transaction(resolved)
+
+    # tools/binary-distillation-issues-9-1-2026-eighth.md Step 1 -- a live
+    # pending_request Python could NOT resolve the reply against (the branch
+    # above) still wins over every other fast path below when the reply is
+    # merely a generic "yes"/"sure"/"go ahead" -- never run the calculation,
+    # never invent the requested value; just re-ask for it. A reply that
+    # isn't one of these generic phrases (e.g. a genuine restatement, or an
+    # unrelated question) is NOT intercepted here and falls through to
+    # normal routing below/the model, same as before.
+    if pending_request is not None and _is_generic_short_reply(user_text):
+        return make_pending_reask_transaction(pending_request)
 
     if feed_ready and normalize_short_reply(user_text) in _PROCEED_PHRASES:
         return make_action_transaction('calculate_current_step')
@@ -1674,6 +1781,9 @@ def _fast_path_transaction(user_text, current_state):
 
     if feed_ready and is_feed_phase_question(user_text):
         return make_action_transaction('calculate_current_step')
+
+    if is_design_option_overview_question(user_text):
+        return make_query_transaction('design_option_requirements', raw_reference=user_text)
 
     return None
 

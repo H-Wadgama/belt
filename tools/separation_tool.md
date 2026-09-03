@@ -781,19 +781,27 @@ result['design_assessment'] # {'design_option', 'design_option_candidates',
                              #  'message'}
 ```
 
-**`feed_screening`** (computed by `_compute_feed_screening()`) requires
-ONLY what `biosteam_feed.build_biosteam_feed()` +
+**`feed_screening`** (computed by `_compute_feed_screening()`) originally
+required ONLY what `biosteam_feed.build_biosteam_feed()` +
 `feed_phase.evaluate_feed_phase()` physically need: exactly two components,
 complete feed quantity/composition, flow-rate units, `pressure_Pa`, and
-exactly one feed thermal condition. It never looks at `reflux_condition`,
-`xD`/`xB`/`Lr`/`Hr`, a product flow, a boilup ratio, an external reflux
-ratio, or `use_optimum_feed_plate`. `status` is one of `need_components` /
-`unsupported_multicomponent` (from the existing scope gate) /
-`inconsistent_feed` / `need_feed_quantity` / `need_pressure` /
-`need_feed_thermal_condition` / `need_feed_units` / `ready` — checked in
-that priority order (quantity, then pressure, then thermal condition, then
-flow units last, since the units check depends on the feed already being
-complete; reuses `check_calculation_inputs()` from the subsection above).
+exactly one feed thermal condition — and never looked at `reflux_condition`
+at all. **Updated by `tools/binary-distillation-issues-9-1-2026-eighth.md`
+Step 2 (see "Issues eighth.md: pending-question priority, feed-screening/
+reflux agreement, action-name hiding, workflow-definition questions"
+below): `feed_screening` now ALSO requires a valid `reflux_condition`** —
+a report must never say feed screening is "ready" while elsewhere still
+asking the user for reflux condition, which read as a direct contradiction
+in practice. It still never looks at `xD`/`xB`/`Lr`/`Hr`, a product flow, a
+boilup ratio, an external reflux ratio, or `use_optimum_feed_plate` — those
+remain exclusive to `design_assessment` below. `status` is one of
+`need_components` / `unsupported_multicomponent` (from the existing scope
+gate) / `inconsistent_feed` / `need_feed_quantity` / `need_pressure` /
+`need_feed_thermal_condition` / `need_reflux_condition` / `need_feed_units`
+/ `ready` — checked in that priority order (quantity, then pressure, then
+thermal condition, then reflux condition, then flow units last, since the
+units check depends on the feed already being complete; reuses
+`check_calculation_inputs()` from the subsection above).
 
 **`design_assessment`** (computed by `_compute_design_assessment()`) is
 built from `identify_case()` (already design-field-only — Table 3-2) plus
@@ -808,23 +816,31 @@ same no-default-to-Design-Option-A rule) — they are simply reported
 independently of whether the feed is ready. `status` is one of
 `need_design_definition` / `need_design_inputs` / `ambiguous` / `complete`.
 
-**The two branches are genuinely independent in both directions** — all
-four combinations are valid and occur in practice:
+**The two branches remain independent over the CASE-DEFINING fields and
+`use_optimum_feed_plate`** — but, since Step 2 above, `reflux_condition` is
+required by both, so a combination where `feed_screening['ready']` is
+`True` while `design_assessment` is still missing `reflux_condition`
+specifically can no longer occur. Three combinations remain valid and occur
+in practice:
 
 | `feed_screening['ready']` | `design_assessment['complete']` | Example |
 |---|---|---|
-| `True` | `False` | Water/Ethanol, 50/50 kmol/hr, 355 K, 101325 Pa, no Design Option fields at all — the worked example below. |
+| `True` | `False` | Water/Ethanol, 50/50 kmol/hr, 355 K, 101325 Pa, `reflux_condition` given, no OTHER Design Option field at all — the worked example below. |
 | `True` | `True` | A fully specified Case D problem — also `status == 'ready_for_calculation'` (legacy field agrees). |
-| `False` | `True` | The same Case D problem with `reflux_condition`/`xD`/`xB`/`boilup_ratio_VB`/`use_optimum_feed_plate` all given, but `feed_temperature_K` (or flow units) missing. |
+| `False` | `True` | The same Case D problem with `reflux_condition`/`xD`/`xB`/`boilup_ratio_VB`/`use_optimum_feed_plate` all given, but `feed_temperature_K` (or flow units) missing — `reflux_condition` itself is present here, just not the OTHER thing `feed_screening` needs. |
 | `False` | `False` | Nothing given yet. |
+
+(The row that no longer occurs: `feed_screening['ready'] == True` with
+`design_assessment['reflux_condition_given'] == False` — that was exactly
+the user-visible contradiction Step 2 fixed.)
 
 **The new gate.** `biosteam_feed.build_biosteam_feed()` and
 `binary_distillation_calculation.calculate_binary_distillation_problem()`
-(see the section below) now check `assessment['feed_screening']['ready']`
-instead of `assessment['status'] == 'ready_for_calculation'` — this is the
-one functional change; every other field above is unaffected. A
-feed-ready/Design-Option-incomplete problem can now run the real BioSTEAM
-feed-phase calculation:
+(see the section below) check `assessment['feed_screening']['ready']`
+instead of `assessment['status'] == 'ready_for_calculation'` — a
+feed-ready/Design-Option-incomplete problem can run the real BioSTEAM
+feed-phase calculation as soon as `reflux_condition` (and the other feed
+fields) are given, with no other Design Option field required:
 
 ```python
 spec = {
@@ -832,7 +848,8 @@ spec = {
     'component_flows': {'Water': 50, 'Ethanol': 50},
     'component_flow_units': 'kmol/hr',
     'pressure_Pa': 101325, 'feed_temperature_K': 355.0,
-    # NOTE: no reflux_condition, xD, xB, or any other Design Option field.
+    'reflux_condition': 'saturated_liquid',
+    # NOTE: no xD, xB, or any other Design Option field.
 }
 assessment = assess_binary_distillation_problem(spec)
 assessment['feed_screening']['ready']       # True
@@ -877,10 +894,13 @@ the pending question."
 
 `tools/chopper/test_binary_distillation_feed_design_separation.py` is the
 pytest suite for this refactor: `feed_screening`/`design_assessment`
-independence in all four directions from the table above (including the
-exact Water/Ethanol 355 K worked example and a complete Case D problem
-with each of `feed_temperature_K`/`component_flow_units`/
-`reflux_condition`/`use_optimum_feed_plate` individually removed); no
+independence over the case-defining fields and `use_optimum_feed_plate`
+(including the Water/Ethanol 355 K worked example — its fixture now
+includes `reflux_condition`, per Step 2 below — and a complete Case D
+problem with each of `feed_temperature_K`/`component_flow_units`/
+`use_optimum_feed_plate` individually removed, plus one test asserting
+`reflux_condition`'s absence now blocks BOTH branches together rather than
+only `design_assessment`); no
 default to Design Option A; early Design Option facts retained once the
 feed later completes; `calculate_binary_distillation_problem()` actually
 running real BioSTEAM for a feed-ready/no-Design-Option spec (and NOT
@@ -1219,10 +1239,10 @@ tool-calling channel left for content to be confused with.
 
 | Module | Owns |
 |---|---|
-| `problem_field_registry.py` | `PROBLEM_FIELD_REGISTRY` — one entry per readable/writable field (every WRITE-tool argument, plus the derived/keyed reads `total_flow`/`component_flows`/`composition`/`component_names`), each with callable `read_accessor`/`units_accessor`/`provenance_accessor` functions (not string paths), `value_type`/`constraints`/`allowed_values`, `keyed`/`entity_type`, and `write_binding` (the exact WRITE kwarg name). `ACTION_REGISTRY` — the 3 stable verbs (`reset_current_problem`, `calculate_current_step`, `read_calculation_status`), bound to this module's own functions via `bind_action()` at import time (avoids a circular import). `ACTIVE_WORKFLOW_SCHEMA` bundles both. |
+| `problem_field_registry.py` | `PROBLEM_FIELD_REGISTRY` — one entry per readable/writable field (every WRITE-tool argument, plus the derived/keyed reads `total_flow`/`component_flows`/`composition`/`component_names`, plus the read-only, non-state `design_option_requirements` — see "Issues eighth.md" below), each with callable `read_accessor`/`units_accessor`/`provenance_accessor` functions (not string paths), `value_type`/`constraints`/`allowed_values`, `keyed`/`entity_type`, and `write_binding` (the exact WRITE kwarg name, or `None` for a read-only field). `ACTION_REGISTRY` — the 3 stable verbs (`reset_current_problem`, `calculate_current_step`, `read_calculation_status`), bound to this module's own functions via `bind_action()` at import time (avoids a circular import). `ACTIVE_WORKFLOW_SCHEMA` bundles both. |
 | `problem_snapshot.py` | `build_problem_snapshot(workflow_state, assessment, calculation, units=None)` — one read-only per-transaction view; never a second mutable store. `read_problem_value(snapshot, field, entity=None, subject=None)` — the generic reader: found/missing/`unknown_problem_field` (with `difflib` near-matches)/`unknown_problem_entity`/`unknown_problem_subject`, all without ever raising. |
 | `turn_intent.py` | `TURN_INTENT_JSON_SCHEMA` (the `format=` schema); `build_field_catalog_prompt()` — generates the model-facing field catalog FROM the registry at call time, including a worked keyed-entity example and (critically, live-tuned) a worked example teaching the model that a "didn't I"/"did I already"/"haven't I" confirmation question is always a query, never an update; `parse_turn_intent_response()` — structural validation only, never raises, never executes anything; `propose_turn_intent(client, messages, model)` — issues the interpretation call (conversation history kept, but the large narration-oriented `SYSTEM_PROMPT` is deliberately swapped out for the lean catalog prompt — live-probed to matter: combined with the full `SYSTEM_PROMPT`, the interpretation call produced a fixed, hallucinated TurnIntent regardless of the actual message), plus one strict-schema retry on a malformed response. |
-| `turn_transaction.py` | `validate_turn_intent(intent, schema, workflow_state)` — structural + semantic validation, value coercion/range-checking, keyed-entity compilation into one WRITE kwargs dict; if ANY proposed update is invalid or two conflict, the WHOLE update batch is dropped (zero WRITE) — queries and the action validate independently and are never blocked by a bad update. `execute_turn_transaction(transaction, runtime)` — the Part 8 fixed order (RESET → one atomic WRITE → one snapshot → every query in order → at most one action), decoupled from the agent/Ollama via a plain `runtime` dict of callables so it's unit-testable with a fake in-memory state. |
+| `turn_transaction.py` | `validate_turn_intent(intent, schema, workflow_state)` — structural + semantic validation, value coercion/range-checking, keyed-entity compilation into one WRITE kwargs dict; if ANY proposed update is invalid or two conflict, the WHOLE update batch is dropped (zero WRITE) — queries and the action validate independently and are never blocked by a bad update. `execute_turn_transaction(transaction, runtime)` — the Part 8 fixed order (RESET → one atomic WRITE → one snapshot → every query in order → at most one action), decoupled from the agent/Ollama via a plain `runtime` dict of callables so it's unit-testable with a fake in-memory state. Every `TurnTransaction` shape (validated or fast-path-built) carries a `pending_reask` key (`None` unless a fast path set it — see "Issues eighth.md" below); fast-path builders: `make_raw_update_transaction()`, `make_single_update_transaction()`, `make_action_transaction()`, `make_query_transaction()` (added by "Issues eighth.md" Step 4/5, for a fast-pathed workflow-definition question), `make_pending_reask_transaction()` (added by Step 1). |
 
 **`ask()`'s dispatch** (unchanged in spirit from before Round 2 — exclusive
 deterministic layers still get first refusal):
@@ -1231,11 +1251,14 @@ deterministic layers still get first refusal):
 USER MESSAGE
      │
 _fast_path_transaction()  -- pending-reply resolution, standalone explicit
-     │                        feed-temperature restatement, "proceed"
-     │                        phrases, calculation-progress phrases: each
-     │                        builds a TurnTransaction directly (Part 6 --
-     │                        "fast paths are optimizations, not a
-     │                        parallel architecture")
+     │                        feed-temperature restatement, a pending-reask
+     │                        (Step 1, "Issues eighth.md" below), "proceed"
+     │                        phrases, calculation-progress phrases, a
+     │                        Design-Option-overview question (Step 4/5,
+     │                        "Issues eighth.md" below): each builds a
+     │                        TurnTransaction directly (Part 6 -- "fast
+     │                        paths are optimizations, not a parallel
+     │                        architecture")
      │ None (nothing exclusive matched)
      ▼
 propose_turn_intent()  -- ONE format=-constrained chat() call, no tools=
@@ -1243,6 +1266,9 @@ propose_turn_intent()  -- ONE format=-constrained chat() call, no tools=
 validate_turn_intent()  -- Python owns truth from here on
      ▼
 _dispatch_transaction():
+  0. a PENDING RE-ASK (`pending_reask` set), if fast-pathed -- TERMINAL,
+     re-states pending_request['prompt'] verbatim, NO model call, NO WRITE,
+     NO calculation (Step 1, "Issues eighth.md" below)
   1. RESET, if requested
   2. an ACTION (calculate_current_step / read_calculation_status), if any --
      any accompanying WRITE applies first, then the SAME narration helpers
@@ -1507,6 +1533,160 @@ pytest tools/chopper/test_keyed_collection_updates.py tools/chopper/test_keyed_c
 
 **Semantic retry remains untouched and off by default** — this round's fix is the schema/normalization change above, not a retry-based repair; no eligibility or behavior change was made to `_is_semantic_retry_eligible()`/`_run_semantic_retry()`.
 
+### Issues eighth.md: pending-question priority, feed-screening/reflux agreement, action-name hiding, workflow-definition questions
+
+`tools/binary-distillation-issues-9-1-2026-seventh.md` (a broader
+architecture-scalability framing) and `tools/binary-distillation-issues-9-1-2026-eighth.md`
+(the concrete step-by-step implementation plan actually followed) target
+four issues that were still live after the round above. All four are now
+implemented.
+
+**1. A bare affirmative reply could bypass a still-open specific question.**
+Previously, `resolve_pending_reply()` deliberately never resolves a
+`string_choice` `pending_request` (e.g. `reflux_condition`) from a bare
+"yes" — correctly so, since a generic affirmative doesn't say WHICH string
+was meant — but nothing then stopped `_fast_path_transaction`'s
+`feed_ready and normalize_short_reply(text) in _PROCEED_PHRASES` check from
+firing on that same "yes" a moment later, misreading it as "run the
+calculation now." `binary_distillation_workflow_agent.py` gained a new,
+field-agnostic guard between those two checks:
+
+```python
+resolved = resolve_pending_reply(pending_request, user_text)
+...
+if resolved is None:
+    ...
+if resolved is not None:
+    return make_raw_update_transaction(resolved)
+
+# NEW -- a live, unresolved pending_request always wins over a generic
+# short reply, regardless of which field happens to be pending.
+if pending_request is not None and _is_generic_short_reply(user_text):
+    return make_pending_reask_transaction(pending_request)
+
+if feed_ready and normalize_short_reply(user_text) in _PROCEED_PHRASES:
+    return make_action_transaction('calculate_current_step')
+```
+
+`_is_generic_short_reply()` matches the SAME fixed phrase sets already used
+elsewhere (`_AFFIRMATIVE_PHRASES`/`_NEGATIVE_PHRASES`/`_PROCEED_PHRASES`) —
+no new phrase list, and no field-specific branching (`if
+missing_reflux_condition and ...` does not appear anywhere): the same code
+path applies whether the checker is waiting on `reflux_condition`, a
+case-defining field, a flow unit, or any future workflow's own
+`pending_request`. `turn_transaction.py` gained a matching
+`make_pending_reask_transaction(pending_request)` builder and a
+`pending_reask` key on every `TurnTransaction` shape;
+`_dispatch_transaction()` checks it FIRST (before RESET, before an ACTION)
+and, when set, re-states `pending_request['prompt']` directly — **no model
+call, no WRITE, no calculation** — so this fix is fully deterministic and
+unit-testable without a live LLM. A genuine restatement of the requested
+value (e.g. "reflux is saturated liquid") does not match
+`_is_generic_short_reply()` and falls through to normal model-driven
+routing exactly as before; existing `boolean_confirmation`/`float`/
+`ordered_float_group`/`flow_units`/`temperature_K` pending-reply resolution
+(these DO resolve some generic phrases, e.g. "yes" → `True`) is unaffected,
+since a successful `resolve_pending_reply()` short-circuits before reaching
+the new guard.
+
+**2. `feed_screening['ready']` could contradict its own report's
+`pending_request`.** `feed_screening` previously never looked at
+`reflux_condition` at all (see "Feed screening vs. Design Option A-D
+assessment" above) — a deliberate choice at the time, since the feed-phase
+calculation itself never needs it, but it meant a single result could say
+`feed_screening: {'ready': True}` while the same result's
+`pending_request`/`design_assessment` was still asking the user for
+`reflux_condition`, which reads as a direct contradiction.
+`_compute_feed_screening()` (`binary_distillation_workflow.py`) now also
+requires a valid `reflux_condition`, with a new `need_reflux_condition`
+status/message and `'reflux_condition'`/`'reflux_condition_invalid'` in
+`missing_inputs` (an unsupported value, e.g. `'total_reflux'`, is never
+silently substituted with the one supported value). It still never looks at
+case-defining fields or `use_optimum_feed_plate` — see the updated
+independence table above.
+
+**3. Model-facing action names vs. internal Python function names.** This
+was already correctly separated by the Round 2 `TurnIntent`/
+`ACTION_REGISTRY` design above (`ACTION_REGISTRY` only ever contains the 3
+stable verbs; `validate_turn_intent()` rejects any other proposed action
+name as `{'error': 'unknown_action', 'name': ...}`; the interpretation
+call's own system prompt is built entirely from
+`build_field_catalog_prompt()`, which lists only `ACTION_REGISTRY`'s keys
+and never an internal Python function name) — this issue asked to make that
+separation explicit and tested rather than incidental, which the new test
+file below now does directly against the exact internal name from the live
+failure (`calculate_current_binary_distillation_problem`).
+
+**4. A workflow-DEFINITION question was answered as a broken state lookup.**
+"What are the inputs required for the four cases?" was previously
+translated by the model into a `queries` entry against a nonexistent
+`problem_field` (e.g. `missing_case_inputs`), which `problem_snapshot.py`
+correctly — but unhelpfully — rejected as `unknown_problem_field`. The fix
+distinguishes two kinds of question without inventing any fake engineering-
+state field:
+  - **Type A** ("what pressure did I give?", "what is xD?") — a question
+    about a value already supplied/derived — unchanged, still answered from
+    `PROBLEM_FIELD_REGISTRY`'s existing state-backed fields.
+  - **Type B** ("what does Design Option A need?", "what are the inputs for
+    the four cases?") — a question about how the workflow works — now
+    answered from ONE new READ-ONLY (`writable: False`) registry entry,
+    `design_option_requirements`, whose accessor reads
+    `problem_spec.CASE_FIELD_SUMMARY` (the SAME static definition
+    `identify_case()`/`_compute_design_assessment()` already use — Step 5's
+    "one authoritative definition" requirement) fresh on every call. It is
+    deliberately never read from `snapshot['inputs']`/accumulated state, so
+    there is nothing to store, invalidate, or accidentally WRITE into —
+    `entity` (optional) is a Design Option letter ("A"/"B"/"C"/"D") into
+    that static table, not a per-instance state key, so this field is
+    `keyed: False` even though it takes an optional `entity` (a genuinely
+    keyed field like `component_flows` REQUIRES one). A deterministic fast
+    path (`is_design_option_overview_question()`) also recognizes the exact
+    "four cases"/"four Design Options" overview phrasing and answers it
+    without any model call at all; a single-letter question ("what does
+    Case A need?") is left to the model + this same registry entry, the
+    same way any other keyed/entity lookup already is.
+
+**New test file:** `tools/chopper/test_binary_distillation_issues_eighth.py`
+— one group per issue above (pending-question priority; feed-screening/
+reflux agreement; action-name allowlist/hiding; Type A vs. Type B
+questions), plus a scripted end-to-end replay of the doc's Step 9
+acceptance conversation (the one turn that genuinely requires
+interpretation — "reflux is saturated liquid" — is scripted rather than
+live-Qwen, same convention as every other test file in this folder). Also
+updated: `test_binary_distillation_feed_design_separation.py` and
+`test_turn_diagnostics.py` (two pre-existing assertions specifically
+encoded the pre-Step-2 "feed screening ready without reflux_condition"
+behavior; both now assert the corrected behavior instead — no other test
+in the suite needed to change). Run with:
+```bash
+pytest tools/chopper/test_binary_distillation_issues_eighth.py -v
+```
+
+**No change to the core state/update architecture.**
+`update_binary_distillation_problem` remains the sole WRITE path, updates
+stay atomic, and the Round 2 `TurnIntent`/`TurnTransaction`/registry design
+is unchanged in shape — this round only added one new `TurnTransaction`
+variant (`pending_reask`) and one new read-only registry entry.
+
+**Live-Qwen acceptance run:** not yet performed — a running Ollama server
+was not available at implementation time, so the exact live-model
+conversation from the doc's Step 9 was instead replayed deterministically
+with a scripted fake client covering every Python-owned decision point.
+Whoever runs this against the real `qwen3:8b` server should update this
+paragraph with the result.
+
+**Remaining scalability note:** Step 2's fix is a deliberate reversal of
+part of "Feed screening vs. Design Option A-D assessment" above (that
+section's own doc, `tools/binary-distillation-separating-feed-phase-from-options-a-d.md`,
+made feed screening reflux-independent on purpose, for an unrelated reason
+— letting the feed-phase VLE check run before ANY Design Option field
+exists). That still holds for every OTHER Design Option field; only
+`reflux_condition` specifically moved. That source doc's own prose is now
+stale on this one point and hasn't been edited to match (out of scope for
+this round, which touched only `.py` files) — read it as historical context
+for why `reflux_condition` gets special treatment here, not as the current
+behavior.
+
 ### Deterministic pending-request resolution and the state-truth rule
 
 `tools/binary-distillation-pending-truth.md` fixes an observed failure
@@ -1538,7 +1718,12 @@ doc):
      many numbers as `pending_request['fields']`; they're mapped in order
      (`"0.99 and 0.01"` → `{'xD': 0.99, 'xB': 0.01}`).
    - `string_choice` (e.g. `reflux_condition`) is deliberately never
-     auto-resolved from a bare "yes" — left to normal model-driven routing.
+     auto-resolved from a bare "yes" — left to normal model-driven routing
+     for a genuine restatement of the value (e.g. "reflux is saturated
+     liquid"). A bare generic reply that ISN'T a genuine restatement (a
+     plain "yes"/"sure"/"go ahead") no longer falls through to normal
+     routing, though — see the `_is_generic_short_reply()` guard below,
+     added by `tools/binary-distillation-issues-9-1-2026-eighth.md` Step 1.
    - A reply longer than `_MAX_SHORT_REPLY_WORDS` (6) is never resolved,
      even if it happens to start with a matching word — this is what keeps
      "No, actually let's start over with ethanol and water" (which starts
@@ -1551,16 +1736,27 @@ doc):
    appends the synthetic assistant-tool-call/tool-result pair to `messages`
    for conversation-history consistency, then finalizes with
    `_chat_without_tools` (`_run_write_and_finalize()`) so the model can only
-   describe the (now-updated) returned state, never mutate it further. If
-   it doesn't resolve, `ask()` falls through unchanged to the model's
-   `TurnIntent` proposal (`propose_turn_intent()`, Round 2).
+   describe the (now-updated) returned state, never mutate it further.
+   **If it does NOT resolve, and `pending_request` is still not `None`, and
+   the message is one of the small fixed generic reply phrases
+   (`_is_generic_short_reply()`) — added by Step 1 above, see "Issues
+   eighth.md" below — `_fast_path_transaction()` returns a
+   `make_pending_reask_transaction(pending_request)` instead: `ask()`
+   re-states `pending_request['prompt']` directly, with NO model call and
+   NO state change, rather than falling through to the proceed-trigger
+   check next.** Only once THAT guard also doesn't apply does `ask()` fall
+   through to the model's `TurnIntent` proposal (`propose_turn_intent()`,
+   Round 2).
 
 Separately, once `feed_screening['ready']` is True (per
 "Feed screening vs. Design Option A-D assessment" above — this pending-
 reply layer and the resolution order it participates in were updated by
 that refactor to run before this proceed-trigger check, and this trigger
 no longer requires the legacy `status == 'ready_for_calculation'` — Design
-Option A-D completeness is not required) and the (normalized) message is
+Option A-D completeness is not required) — **and, per "Issues eighth.md"
+below, only once the pending-reask guard immediately above has ALSO not
+intercepted the message (i.e. `pending_request` is `None`, or the message
+isn't one of the generic reply phrases)** — and the (normalized) message is
 either an exact match against a small "proceed" phrase set (`yes`, `go
 ahead`, `proceed`, `calculate it`, `yes boss`, ...) or an explicit
 feed-phase/vapor-fraction question (`is_feed_phase_question` — see "Four
@@ -2275,8 +2471,10 @@ Two deterministic (non-model) routing layers decide when this tool runs
 without waiting for the model to choose it, in `ask()`, both gated on
 `feed_screening['ready']` (per "Feed screening vs. Design Option A-D
 assessment" above — NOT the legacy `status == 'ready_for_calculation'`,
-which additionally requires `reflux_condition` and a complete Design
-Option):
+which additionally requires a complete Design Option, i.e. case-defining
+fields and `use_optimum_feed_plate`; `reflux_condition` itself is required
+by BOTH since "Issues eighth.md" Step 2 below, so it's no longer a point of
+difference between the two gates):
 
 - **The existing "proceed" trigger** (`yes`, `go ahead`, `proceed`,
   `calculate it`, ...) — previously a fixed refusal message (see the

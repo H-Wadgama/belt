@@ -378,7 +378,13 @@ def test_reported_prompt_valid_proposal_writes_exact_expected_state():
     }
     state = agent.get_binary_distillation_problem()
     assert state['feed']['component_flows'] == {'Ethanol': 50.0, 'Water': 50.0}
-    assert state['feed_screening']['ready'] is True
+    # feed_screening is not yet ready -- reflux_condition was never part of
+    # this scripted proposal (tools/binary-distillation-issues-9-1-2026-
+    # eighth.md Step 2 folded it into feed screening); the WRITE itself is
+    # this test's actual subject, so nothing else about the scripted intent
+    # changes.
+    assert state['feed_screening']['ready'] is False
+    assert 'reflux_condition' in state['feed_screening']['missing_inputs']
 
 
 def test_diagnostic_content_never_appended_to_conversation_history():

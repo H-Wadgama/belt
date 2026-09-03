@@ -293,16 +293,22 @@ def _calculation_pending_request(missing_calculation_inputs):
 
 
 # ---------------------------------------------------------------------------
-# tools/binary-distillation-separating-feed-phase-from-options-a-d.md --
+# tools/binary-distillation-separating-feed-phase-from-options-a-d.md,
+# updated by tools/binary-distillation-issues-9-1-2026-eighth.md Step 2 --
 # feed screening and Design Option A-D assessment are two independent
-# deterministic branches over the same accumulated state. Neither gates the
-# other: feed screening depends only on what the feed-VLE/reference-
-# temperature-conditioning calculation physically needs (component identity,
-# quantity, flow units, pressure, and the feed's own thermal condition);
-# Design Option assessment depends only on `identify_case()`'s design-field
-# presence logic plus `reflux_condition` and `use_optimum_feed_plate`
-# (common to all four cases). `assess_binary_distillation_problem()` below
-# computes both, unconditionally, on every call.
+# deterministic branches over the same accumulated state, and neither GATES
+# the other's calculation-readiness (`feed_screening['ready']` alone still
+# gates `calculate_current_binary_distillation_problem`, never
+# `design_assessment['complete']`). They are no longer fully field-disjoint,
+# though: `reflux_condition` is required by BOTH, since a report can never
+# say feed screening is "ready" while elsewhere asking the user for reflux
+# condition -- that reads as a direct contradiction. Feed screening depends
+# on component identity, feed quantity/composition, flow units, pressure,
+# the feed's own thermal condition, AND `reflux_condition` -- but never on
+# case-defining fields (xD/xB/Lr/Hr, a product flow, a boilup ratio) or
+# `use_optimum_feed_plate`, which remain exclusive to Design Option
+# assessment. `assess_binary_distillation_problem()` below computes both,
+# unconditionally, on every call.
 # ---------------------------------------------------------------------------
 
 _FEED_SCREENING_MESSAGES = {
@@ -316,19 +322,34 @@ _FEED_SCREENING_MESSAGES = {
         'feed_quality, feed_enthalpy_kJ_per_hr are mutually exclusive) -- '
         'supply exactly one.'
     ),
+    # tools/binary-distillation-issues-9-1-2026-eighth.md Step 2 -- reflux
+    # condition is part of feed-phase screening in this project (feed
+    # screening must never report 'ready' while still asking for it
+    # elsewhere in the same result).
+    'reflux_condition': (
+        "The reflux thermal condition (reflux_condition) has not been given "
+        "yet -- please state it explicitly (currently only 'saturated_liquid' "
+        "is supported)."
+    ),
+    'reflux_condition_invalid': (
+        "The reflux_condition given is not supported -- only "
+        "{'saturated_liquid'} is implemented today."
+    ),
 }
 
 
 def _feed_screening_status(missing):
     """First-priority missing item decides the reported status -- quantity
-    before pressure before thermal condition before units, matching the
-    order `_compute_feed_screening` checks them in."""
+    before pressure before thermal condition before reflux condition before
+    units, matching the order `_compute_feed_screening` checks them in."""
     if 'feed_quantity' in missing:
         return 'need_feed_quantity'
     if 'pressure_Pa' in missing:
         return 'need_pressure'
     if 'feed_thermal_condition' in missing or 'feed_thermal_condition_ambiguous' in missing:
         return 'need_feed_thermal_condition'
+    if 'reflux_condition' in missing or 'reflux_condition_invalid' in missing:
+        return 'need_reflux_condition'
     if any(m in ('component_flow_units', 'total_flow_units') for m in missing):
         return 'need_feed_units'
     return 'ready'
@@ -346,13 +367,17 @@ def _feed_screening_message(missing, feed_state):
 
 def _compute_feed_screening(spec, scope, assessed):
     """
-    Independent feed-screening readiness -- ONLY what
-    `biosteam_feed.build_biosteam_feed` + `feed_phase.evaluate_feed_phase`
-    physically need: exactly two components, complete feed quantity/
-    composition, flow-rate units, pressure, and exactly one feed thermal
-    condition. Never looks at `reflux_condition`, case-defining fields, or
-    `use_optimum_feed_plate` -- those belong to `_compute_design_assessment`
-    below and must never block this.
+    Independent feed-screening readiness: exactly two components, complete
+    feed quantity/composition, flow-rate units, pressure, exactly one feed
+    thermal condition, and a valid `reflux_condition`.
+    tools/binary-distillation-issues-9-1-2026-eighth.md Step 2 folded
+    `reflux_condition` into this readiness check -- feed screening must
+    never report `ready=True` while a report's own `pending_request` (or
+    `design_assessment`) is still asking for it, since that reads as a
+    direct contradiction. Still never looks at case-defining fields (xD/xB/
+    Lr/Hr, a product flow, a boilup ratio) or `use_optimum_feed_plate` --
+    those remain exclusive to `_compute_design_assessment` below and must
+    never block this.
 
     Parameters
     ----------
@@ -392,6 +417,12 @@ def _compute_feed_screening(spec, scope, assessed):
         missing.append('feed_thermal_condition')
     elif len(given_thermal) > 1:
         missing.append('feed_thermal_condition_ambiguous')
+
+    reflux_condition = spec.get('reflux_condition')
+    if reflux_condition is None:
+        missing.append('reflux_condition')
+    elif reflux_condition not in SUPPORTED_REFLUX_CONDITIONS:
+        missing.append('reflux_condition_invalid')
 
     if missing:
         return {

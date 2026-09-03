@@ -25,7 +25,20 @@ value (missing => `(False, None)`); a genuinely programmer-error case (an
 accessor called for a subject it was never registered against) is a bug, not
 a data condition, and is guarded against by `problem_snapshot.read_problem_value`
 before any accessor is ever invoked for an unsupported subject.
+
+tools/binary-distillation-issues-9-1-2026-eighth.md Step 4/5 adds one
+READ-ONLY, non-state entry -- `design_option_requirements` -- that answers a
+WORKFLOW-DEFINITION question ("what does Case A need?", "what are the
+inputs for the four cases?") from the same static
+`problem_spec.CASE_FIELD_SUMMARY` the deterministic checker itself uses,
+rather than the accumulated engineering problem state. This is
+deliberately NOT a fake engineering-state field: its 'value' is never read
+from `snapshot['inputs']`/`snapshot['assessment']['feed']` the way every
+other entry above is -- it is computed fresh from the static registry every
+call, so there is nothing to store, invalidate, or accidentally leak into a
+WRITE.
 """
+from problem_spec import CASE_FIELD_SUMMARY
 
 # ---------------------------------------------------------------------------
 # Scalar "current_problem" fields -- read from snapshot['inputs'] (the flat
@@ -147,6 +160,27 @@ def _component_names_read(snapshot, entity=None):
 def _component_names_provenance(snapshot, entity=None):
     feed = snapshot['assessment'].get('feed') or {}
     return 'user_explicit' if feed.get('component_names') else None
+
+
+# ---------------------------------------------------------------------------
+# Workflow-definition field -- reads the STATIC CASE_FIELD_SUMMARY, never
+# the accumulated problem state. `entity`, when given, is the Design Option
+# letter ('A'/'B'/'C'/'D'), NOT a component name -- this field is
+# deliberately `keyed: False` in the registry entry below (see that entry's
+# comment) so `problem_snapshot.read_problem_value` never tries to
+# normalize it against the feed's own component names.
+# ---------------------------------------------------------------------------
+
+
+def _design_option_requirements_read(snapshot, entity=None):
+    if entity:
+        key = str(entity).strip().upper()
+        summary = CASE_FIELD_SUMMARY.get(key)
+        if summary is None:
+            return (False, None)
+        return (True, f'Design Option {key} requires: {summary}.')
+    parts = '; '.join(f'Design Option {c} = {d}' for c, d in CASE_FIELD_SUMMARY.items())
+    return (True, f'The four Design Options and what each requires: {parts}.')
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +409,34 @@ PROBLEM_FIELD_REGISTRY = {
         'units_accessor': lambda snapshot, entity=None: None,
         'provenance_accessor': _component_names_provenance,
         'allowed_subject_kinds': ['feed', 'current_problem'],
+    },
+    'design_option_requirements': {
+        'readable': True, 'writable': False,
+        # NOT `keyed: True` -- `keyed` means "entity is a per-instance key
+        # into accumulated STATE" (e.g. a component name into
+        # component_flows) and requires an entity be given at all;
+        # `entity` here is an OPTIONAL Design Option letter into a static
+        # lookup table, and "all four" (entity omitted) is a fully valid
+        # question.
+        'keyed': False,
+        'label': 'Design Option A-D requirements', 'value_type': 'string',
+        'canonical_units': None,
+        'description': (
+            'STATIC definition of what each Design Option (Wankat Case) A-D '
+            'requires -- NOT part of the engineering problem state, and never '
+            'affected by what has been supplied so far. Query this for a '
+            'WORKFLOW question about what a Design Option needs in general '
+            '(e.g. "what are the inputs for the four cases?", "what does '
+            'Design Option A need?", "what do I still need for Design Option '
+            'D?") -- never guess these requirements from your own knowledge. '
+            'Pass the Design Option letter ("A"/"B"/"C"/"D") as "entity" to '
+            'ask about ONE option, or omit "entity" to ask about all four.'
+        ),
+        'write_binding': None,
+        'read_accessor': _design_option_requirements_read,
+        'units_accessor': lambda snapshot, entity=None: None,
+        'provenance_accessor': lambda snapshot, entity=None: 'workflow_definition',
+        'allowed_subject_kinds': ['current_problem'],
     },
 }
 
