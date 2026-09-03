@@ -7,6 +7,11 @@ tools are wired in yet, so the model can only chat, it cannot design or
 size anything. Tools will be added once the multicomponent engineering
 layer exists.
 
+See ../multicomponent-distillation-context.md for the domain vocabulary,
+scope, inherited/non-inherited rules from the binary chopper toolkit, and
+the BioSTEAM ShortcutColumn engineering layer this agent is meant to
+eventually wrap.
+
 Requires a running local Ollama server with the model pulled:
     ollama pull qwen3:8b
 
