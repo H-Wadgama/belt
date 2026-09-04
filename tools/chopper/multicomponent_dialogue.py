@@ -314,7 +314,9 @@ def _identity_clarification(session, candidate):
     if not names or candidate.get('component_identity_op'):
         return None
     current = session['feed_state']['component_names']
-    if not current or set(names) == set(current):
+    name_keys = {n.strip().casefold() for n in names if isinstance(n, str)}
+    current_keys = {n.strip().casefold() for n in current if isinstance(n, str)}
+    if not current or name_keys == current_keys:
         return None
     return (
         'The feed already has these components: ' + ', '.join(current) + '. '

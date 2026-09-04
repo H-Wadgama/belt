@@ -161,6 +161,42 @@ def test_flow_only_statement_does_not_shrink_established_identity():
     assert record_value(session['feed_state']['component_flows']['Methanol']) == 30
 
 
+def test_partial_flows_with_changed_capitalization_advance_past_quantity():
+    """Regression for the live loop where initial ``ethanol`` and a later
+    model key ``Ethanol`` were stored as two different components."""
+    session = dlg.create_session()
+
+    client0 = ScriptedClient([_resp(
+        target_field='component_names', component_identity_action='add',
+        component_names=['methanol', 'ethanol', 'water'],
+    )])
+    agent.process_turn(client0, session, 'separate methanol, ethanol, water')
+
+    client1 = ScriptedClient([_resp(
+        target_field='component_flows',
+        component_flows={'water': 50, 'Ethanol': 20},
+        component_flow_units='kmol/hr',
+    )])
+    agent.process_turn(client1, session, 'water = 50 kmol/hr, Ethanol = 20 kmol/hr')
+
+    # Match the noisy live proposal: it copied earlier flow values even
+    # though only methanol was stated in this message. Grounding still drops
+    # the absent 20; case normalization keeps all accepted keys aligned with
+    # the original identity list.
+    client2 = ScriptedClient([_resp(
+        target_field='component_flows', component_identity_action='add',
+        component_names=['methanol', 'ethanol', 'water'],
+        component_flows={'methanol': 50, 'ethanol': 20, 'water': 50},
+        component_flow_units='kmol/hr',
+    )])
+    reply = agent.process_turn(client2, session, 'methanol=50 kmol/hr')
+
+    assert session['feed_state']['component_names'] == ['methanol', 'ethanol', 'water']
+    assert set(session['feed_state']['component_flows']) == {'methanol', 'ethanol', 'water'}
+    assert record_value(session['feed_state']['total_flow']) == 120
+    assert 'pressure' in reply.lower()
+
+
 # --- Full conversation ends with only phase/fraction information -----------
 
 def test_full_conversation_ends_with_only_phase_and_fractions():

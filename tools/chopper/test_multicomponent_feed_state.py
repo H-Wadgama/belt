@@ -73,6 +73,31 @@ def test_redundant_restatement_of_same_component_names_does_not_clear_quantities
     assert record_value(result['state']['total_flow']) == 100
 
 
+def test_component_names_and_quantity_keys_match_case_insensitively_across_turns():
+    """Capitalization changes from model extraction must not create a
+    phantom fourth component and leave feed quantity permanently missing."""
+    state = empty_feed_state()
+    state = apply_user_update(state, {
+        'component_names': ['methanol', 'ethanol', 'water'],
+    })
+    state = apply_user_update(state, {
+        'component_flows': {'water': 50, 'Ethanol': 20},
+        'component_flow_units': 'kmol/hr',
+    })
+    state = apply_user_update(state, {
+        'component_flows': {'methanol': 50},
+        'component_flow_units': 'kmol/hr',
+    })
+
+    result = assess_feed_state(state)
+
+    assert result['state']['component_names'] == ['methanol', 'ethanol', 'water']
+    assert set(result['state']['component_flows']) == {'methanol', 'ethanol', 'water'}
+    assert record_value(result['state']['component_flows']['ethanol']) == 20
+    assert record_value(result['state']['total_flow']) == 120
+    assert result['missing_inputs'][0] == 'pressure_value'
+
+
 def test_explicit_replace_clears_quantities():
     result = _assess(
         {'component_names': ['Water', 'Ethanol', 'Methanol'],

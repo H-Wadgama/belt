@@ -103,10 +103,46 @@ def record_unit(record):
     return record.get('unit') if record else None
 
 
-def _add_names(state, names):
+def _component_key(name):
+    """Case-insensitive identity key used only for matching components.
+
+    Keep the spelling from the first established component list for display
+    and for BioSTEAM, but never let a later capitalization difference create
+    a second logical component (for example, ``ethanol`` and ``Ethanol``).
+    """
+    return name.strip().casefold() if isinstance(name, str) else name
+
+
+def _canonical_component_name(state, name):
+    """Return the already-established spelling for ``name`` when present."""
+    key = _component_key(name)
+    for established in state['component_names']:
+        if _component_key(established) == key:
+            return established
+    return name.strip() if isinstance(name, str) else name
+
+
+def _canonicalize_name_list(state, names):
+    """Resolve names against established identities and deduplicate by key."""
+    result = []
+    seen = set()
     for name in names:
-        if name not in state['component_names']:
-            state['component_names'].append(name)
+        canonical = _canonical_component_name(state, name)
+        key = _component_key(canonical)
+        if key not in seen:
+            result.append(canonical)
+            seen.add(key)
+    return result
+
+
+def _add_names(state, names):
+    existing_keys = {_component_key(n) for n in state['component_names']}
+    for name in names:
+        canonical = _canonical_component_name(state, name)
+        key = _component_key(canonical)
+        if key not in existing_keys:
+            state['component_names'].append(canonical)
+            existing_keys.add(key)
 
 
 def shared_component_flow_unit(state):
@@ -174,16 +210,17 @@ def apply_user_update(state, update, *, turn_number=None, evidence=None):
     op = update.get('component_identity_op')
     names_arg = update.get('component_names')
     if names_arg is not None:
-        names_arg = list(dict.fromkeys(names_arg))
+        names_arg = _canonicalize_name_list(state, names_arg)
         current = state['component_names']
         if op == 'add':
             _add_names(state, names_arg)
         elif op == 'remove':
-            remove_set = set(names_arg)
-            state['component_names'] = [n for n in current if n not in remove_set]
-            for n in names_arg:
-                state['component_flows'].pop(n, None)
-                state['composition'].pop(n, None)
+            remove_keys = {_component_key(n) for n in names_arg}
+            removed_names = [n for n in current if _component_key(n) in remove_keys]
+            state['component_names'] = [n for n in current if _component_key(n) not in remove_keys]
+            for name in removed_names:
+                state['component_flows'].pop(name, None)
+                state['composition'].pop(name, None)
         elif op == 'replace':
             state['component_names'] = names_arg
             state['component_flows'] = {}
@@ -194,7 +231,7 @@ def apply_user_update(state, update, *, turn_number=None, evidence=None):
             # None or 'initialize': only ever an idempotent restatement of
             # the identical set, or the first-ever identity. A differing
             # set with no explicit op is ignored -- never a silent replace.
-            if not current or set(names_arg) == set(current):
+            if not current or {_component_key(n) for n in names_arg} == {_component_key(n) for n in current}:
                 state['component_names'] = names_arg or current
 
     # --- component flows -------------------------------------------------------
@@ -203,8 +240,9 @@ def apply_user_update(state, update, *, turn_number=None, evidence=None):
     flow_evidence = evidence.get('component_flows') or {}
     if flows_arg:
         for name, value in flows_arg.items():
+            canonical_name = _canonical_component_name(state, name)
             unit = shared_unit
-            state['component_flows'][name] = _record(
+            state['component_flows'][canonical_name] = _record(
                 value, unit=unit, provenance='user_explicit',
                 source_turn=turn_number, evidence=flow_evidence.get(name),
             )
@@ -235,7 +273,8 @@ def apply_user_update(state, update, *, turn_number=None, evidence=None):
     comp_evidence = evidence.get('composition') or {}
     if comp_arg:
         for name, value in comp_arg.items():
-            state['composition'][name] = _record(
+            canonical_name = _canonical_component_name(state, name)
+            state['composition'][canonical_name] = _record(
                 value, provenance='user_explicit',
                 source_turn=turn_number, evidence=comp_evidence.get(name),
             )
@@ -440,7 +479,7 @@ def validate_feed_state(state):
     def _finite(v):
         return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
-    if names and len(set(names)) != len(names):
+    if names and len({_component_key(n) for n in names}) != len(names):
         errors.append(_issue('Duplicate component names given.', 'identity', ('component_names',)))
 
     for n, r in state['component_flows'].items():
@@ -522,7 +561,7 @@ def missing_inputs(state):
     missing = []
     names = state['component_names']
 
-    if len(set(names)) < MIN_COMPONENTS:
+    if len({_component_key(n) for n in names}) < MIN_COMPONENTS:
         missing.append('component_names')
         return missing
 

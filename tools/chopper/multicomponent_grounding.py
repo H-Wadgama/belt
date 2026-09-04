@@ -181,7 +181,11 @@ def _name_grounded(name, message, known_component_names=()):
         return False
     if name.strip().lower() in (message or '').lower():
         return True
-    return name in known_component_names
+    name_key = name.strip().casefold()
+    return any(
+        isinstance(known, str) and known.strip().casefold() == name_key
+        for known in known_component_names
+    )
 
 
 def unit_evidence(canonical_unit, message, alias_table):
