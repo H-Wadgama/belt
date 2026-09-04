@@ -9,10 +9,76 @@ or vapor_liquid. The model is never asked to interpret a vapor fraction or
 pick which VLE calculation to run -- exactly one branch executes, selected
 only by which thermal-condition field is present.
 
+`_run_vle_and_classify` below is the component-count-independent core of
+this calculation (see tools/multicomponent-distillation-feed-phase-plan.md
+"2. Generic equilibrium calculation") -- `evaluate_feed_phase` wraps it
+with the binary (exactly 2 nonzero-flow components) gate;
+`multicomponent_feed_phase.evaluate_multicomponent_feed_phase` wraps the
+same core with a >=3 components gate. Neither wrapper's public behavior
+changed by this extraction.
+
 No LLM calls -- this module must never import `ollama` or `openai`.
 """
 
 _THERMAL_FIELDS = ('feed_temperature_K', 'feed_quality', 'feed_enthalpy_kJ_per_hr')
+
+
+def _run_vle_and_classify(
+    feed, component_names, *, pressure_Pa, feed_temperature_K, feed_quality,
+    feed_enthalpy_kJ_per_hr, phase_tolerance, check_name='feed_phase',
+):
+    """
+    Component-count-independent VLE core: runs exactly one BioSTEAM VLE
+    specification (T/P, V/P, or H/P -- selected only by which thermal
+    argument is not None) on a copy of `feed` and deterministically
+    classifies the result. Callers are responsible for validating the
+    thermal specification and component count before calling this, and for
+    catching any exception it raises.
+    """
+    equilibrium_feed = feed.copy()
+
+    if feed_temperature_K is not None:
+        equilibrium_feed.vle(T=feed_temperature_K, P=pressure_Pa)
+        specification = 'T_P'
+    elif feed_quality is not None:
+        equilibrium_feed.vle(V=feed_quality, P=pressure_Pa)
+        specification = 'V_P'
+    else:
+        equilibrium_feed.vle(H=feed_enthalpy_kJ_per_hr, P=pressure_Pa)
+        specification = 'H_P'
+
+    V = float(equilibrium_feed.vapor_fraction)
+    if V <= phase_tolerance:
+        phase = 'liquid'
+    elif V >= 1.0 - phase_tolerance:
+        phase = 'vapor'
+    else:
+        phase = 'vapor_liquid'
+    liquid_fraction = 1.0 - V
+
+    vapor_mol = {ID: float(equilibrium_feed.imol['g', ID]) for ID in component_names}
+    liquid_mol = {ID: float(equilibrium_feed.imol['l', ID]) for ID in component_names}
+
+    message = {
+        'liquid': 'Feed is entirely liquid at the specified feed conditions.',
+        'vapor': 'Feed is entirely vapor at the specified feed conditions.',
+        'vapor_liquid': 'Feed is a vapor-liquid mixture at the specified feed conditions.',
+    }[phase]
+
+    return {
+        'check': check_name,
+        'valid': True,
+        'phase': phase,
+        'vapor_fraction': V,
+        'liquid_fraction': liquid_fraction,
+        'temperature_K': float(equilibrium_feed.T),
+        'pressure_Pa': float(pressure_Pa),
+        'components': component_names,
+        'vapor_mol': vapor_mol,
+        'liquid_mol': liquid_mol,
+        'calculation': {'type': 'VLE', 'specification': specification},
+        'message': message,
+    }
 
 
 def evaluate_feed_phase(
@@ -85,50 +151,12 @@ def evaluate_feed_phase(
                 ),
             }
 
-        equilibrium_feed = feed.copy()
-
-        if feed_temperature_K is not None:
-            equilibrium_feed.vle(T=feed_temperature_K, P=pressure_Pa)
-            specification = 'T_P'
-        elif feed_quality is not None:
-            equilibrium_feed.vle(V=feed_quality, P=pressure_Pa)
-            specification = 'V_P'
-        else:
-            equilibrium_feed.vle(H=feed_enthalpy_kJ_per_hr, P=pressure_Pa)
-            specification = 'H_P'
-
-        V = float(equilibrium_feed.vapor_fraction)
-        if V <= phase_tolerance:
-            phase = 'liquid'
-        elif V >= 1.0 - phase_tolerance:
-            phase = 'vapor'
-        else:
-            phase = 'vapor_liquid'
-        liquid_fraction = 1.0 - V
-
-        vapor_mol = {ID: float(equilibrium_feed.imol['g', ID]) for ID in component_names}
-        liquid_mol = {ID: float(equilibrium_feed.imol['l', ID]) for ID in component_names}
-
-        message = {
-            'liquid': 'Feed is entirely liquid at the specified feed conditions.',
-            'vapor': 'Feed is entirely vapor at the specified feed conditions.',
-            'vapor_liquid': 'Feed is a vapor-liquid mixture at the specified feed conditions.',
-        }[phase]
-
-        return {
-            'check': 'feed_phase',
-            'valid': True,
-            'phase': phase,
-            'vapor_fraction': V,
-            'liquid_fraction': liquid_fraction,
-            'temperature_K': float(equilibrium_feed.T),
-            'pressure_Pa': float(pressure_Pa),
-            'components': component_names,
-            'vapor_mol': vapor_mol,
-            'liquid_mol': liquid_mol,
-            'calculation': {'type': 'VLE', 'specification': specification},
-            'message': message,
-        }
+        return _run_vle_and_classify(
+            feed, component_names,
+            pressure_Pa=pressure_Pa, feed_temperature_K=feed_temperature_K,
+            feed_quality=feed_quality, feed_enthalpy_kJ_per_hr=feed_enthalpy_kJ_per_hr,
+            phase_tolerance=phase_tolerance, check_name='feed_phase',
+        )
     except Exception as err:
         return {
             'check': 'feed_phase',
