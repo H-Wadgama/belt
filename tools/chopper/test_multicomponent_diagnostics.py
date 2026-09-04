@@ -25,6 +25,16 @@ def test_new_turn_record_has_the_documented_top_level_shape():
     assert record['function_calls'] == []
 
 
+def test_new_turn_record_has_the_dialogue_robustness_plan_fields():
+    record = diag.new_turn_record(1, 'hi')
+    for key in (
+        'intent', 'target_field', 'active_request_before', 'active_request_after',
+        'evidence', 'binding_decision', 'candidate_state', 'candidate_validation',
+        'accepted_groups', 'rejected_groups', 'committed_state', 'rollback', 'query_result',
+    ):
+        assert key in record
+
+
 # --- to_jsonable ---------------------------------------------------------
 
 def test_to_jsonable_passes_through_plain_json_values():
@@ -95,6 +105,32 @@ def test_compute_state_diff_compares_component_mappings_by_key_not_list_index():
     assert 'component_flows.Water' not in diff['changed']
     assert diff['changed']['component_flows.Ethanol'] == {'before': 40, 'after': 50}
     assert diff['added']['component_flows.Methanol'] == 10
+
+
+def test_empty_mapping_becoming_populated_reports_only_added_children():
+    """tools/multicomponent-distillation-dialogue-robustness-plan.md
+    Section 12: an empty dict becoming populated must report ONLY the
+    added child entries -- never ALSO a spurious removal of the empty
+    parent mapping."""
+    before = {'component_flows': {}}
+    after = {'component_flows': {'Water': 30}}
+    diff = diag.compute_state_diff(before, after)
+    assert diff['added'] == {'component_flows.Water': 30}
+    assert diff['removed'] == {}
+    assert diff['changed'] == {}
+
+
+def test_populated_mapping_becoming_empty_reports_only_removed_children():
+    before = {'component_flows': {'Water': 30}}
+    after = {'component_flows': {}}
+    diff = diag.compute_state_diff(before, after)
+    assert diff['removed'] == {'component_flows.Water': 30}
+    assert diff['added'] == {}
+
+
+def test_two_empty_mappings_produce_no_diff():
+    diff = diag.compute_state_diff({'component_flows': {}}, {'component_flows': {}})
+    assert diff == {'added': {}, 'changed': {}, 'removed': {}}
 
 
 # --- render_human_readable -------------------------------------------------

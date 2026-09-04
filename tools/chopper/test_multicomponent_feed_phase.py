@@ -16,6 +16,7 @@ from multicomponent_feed_phase import (
     calculate_multicomponent_feed_phase,
     evaluate_multicomponent_feed_phase,
 )
+from multicomponent_feed_state import apply_user_update, empty_feed_state
 
 
 @pytest.fixture
@@ -99,16 +100,15 @@ def test_binary_wrapper_still_supports_full_thermal_options():
 # --- calculate_multicomponent_feed_phase (full orchestration, incl. degC) ---
 
 def test_calculate_multicomponent_feed_phase_full_state_with_degC():
-    state = {
+    state = apply_user_update(empty_feed_state(), {
         'component_names': ['Water', 'Ethanol', 'Methanol'],
         'component_flows': {'Water': 30, 'Ethanol': 40, 'Methanol': 30},
         'component_flow_units': 'kmol/hr',
-        'total_flow_units': None,
         'pressure': 101.325,
         'pressure_units': 'kPa',
         'feed_temperature': 76.85,
         'feed_temperature_units': 'degC',
-    }
+    })
     result = calculate_multicomponent_feed_phase(state)
     assert result['valid'] is True
     assert result['temperature_K'] == pytest.approx(350.0, abs=1e-6)
@@ -116,12 +116,12 @@ def test_calculate_multicomponent_feed_phase_full_state_with_degC():
 
 
 def test_calculate_multicomponent_feed_phase_unbuildable_state_reports_error():
-    state = {
+    state = apply_user_update(empty_feed_state(), {
         'component_names': ['Water', 'Ethanol'],
         'component_flows': {'Water': 30, 'Ethanol': 40},
         'component_flow_units': 'kmol/hr',
         'pressure': 1.0, 'pressure_units': 'atm',
-    }
+    })
     result = calculate_multicomponent_feed_phase(state)
     assert result['valid'] is False
     assert result['error'] == 'feed_build_failed'

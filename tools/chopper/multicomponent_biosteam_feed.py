@@ -20,6 +20,7 @@ No LLM calls -- this module must never import `ollama` or `openai`.
 """
 import biosteam as bst
 
+from multicomponent_feed_state import record_unit, record_value, shared_component_flow_unit
 from multicomponent_units import (
     is_mass_flow_unit,
     is_molar_flow_unit,
@@ -56,11 +57,11 @@ def _canonical_molar_flows_kmol_per_hr(state, chemicals):
         return chemicals[name].MW
 
     flows = state.get('component_flows') or {}
-    flow_units = normalize_flow_unit(state.get('component_flow_units')) or state.get('component_flow_units')
+    flow_units = normalize_flow_unit(shared_component_flow_unit(state)) or shared_component_flow_unit(state)
     if flow_units and all(n in flows for n in names):
         result = {}
         for n in names:
-            v = flows[n]
+            v = record_value(flows[n])
             if flow_units == 'kmol/hr':
                 result[n] = v
             elif flow_units == 'mol/hr':
@@ -73,10 +74,10 @@ def _canonical_molar_flows_kmol_per_hr(state, chemicals):
                 )
         return result
 
-    total_flow = state.get('total_flow')
-    total_flow_units = normalize_flow_unit(state.get('total_flow_units')) or state.get('total_flow_units')
-    composition = state.get('composition') or {}
-    composition_basis = state.get('composition_basis')
+    total_flow = record_value(state.get('total_flow'))
+    total_flow_units = normalize_flow_unit(record_unit(state.get('total_flow'))) or record_unit(state.get('total_flow'))
+    composition = {n: record_value(r) for n, r in (state.get('composition') or {}).items()}
+    composition_basis = record_value(state.get('composition_basis'))
 
     if (total_flow is not None and total_flow_units and composition_basis
             and all(n in composition for n in names)):
@@ -149,8 +150,8 @@ def build_multicomponent_biosteam_feed(state, *, stream_id='multicomponent_feed'
             f'{component_names}.'
         )
 
-    pressure = state.get('pressure')
-    pressure_units = state.get('pressure_units')
+    pressure = record_value(state.get('pressure'))
+    pressure_units = record_unit(state.get('pressure'))
     if pressure is None or pressure_units is None:
         raise MulticomponentBiosteamFeedError(
             'Feed state is missing pressure or its units; cannot build a '
@@ -170,13 +171,15 @@ def build_multicomponent_biosteam_feed(state, *, stream_id='multicomponent_feed'
 
 
 if __name__ == '__main__':
-    state = {
+    from multicomponent_feed_state import apply_user_update, empty_feed_state
+
+    state = apply_user_update(empty_feed_state(), {
         'component_names': ['Water', 'Methanol', 'Ethanol'],
         'total_flow': 100, 'total_flow_units': 'kmol/hr',
         'composition': {'Water': 0.20, 'Methanol': 0.20, 'Ethanol': 0.60},
         'composition_basis': 'mass',
         'pressure': 1.0, 'pressure_units': 'atm',
-    }
+    })
     feed, pressure_Pa = build_multicomponent_biosteam_feed(state)
     feed.show()
     print('pressure_Pa:', pressure_Pa)

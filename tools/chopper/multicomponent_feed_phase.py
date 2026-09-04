@@ -24,6 +24,7 @@ from multicomponent_biosteam_feed import (
     MulticomponentBiosteamFeedError,
     build_multicomponent_biosteam_feed,
 )
+from multicomponent_feed_state import record_unit, record_value
 from multicomponent_units import temperature_to_K
 
 MIN_COMPONENTS = 3
@@ -139,7 +140,7 @@ def calculate_multicomponent_feed_phase(state):
         }
 
     feed_temperature_K = temperature_to_K(
-        state['feed_temperature'], state['feed_temperature_units'],
+        record_value(state['feed_temperature']), record_unit(state['feed_temperature']),
     )
 
     return evaluate_multicomponent_feed_phase(

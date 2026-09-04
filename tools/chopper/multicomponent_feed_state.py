@@ -1,23 +1,23 @@
 """
 Deterministic feed-state layer for multicomponent distillation intake.
 
-See tools/multicomponent-distillation-feed-phase-plan.md "State and
-Validation Changes". Generalizes the binary `feed_state.py` merge/
-normalize/completeness pattern to any number of components (the agent
-itself only ever uses this for >=3 -- see MIN_COMPONENTS -- but nothing in
-this module hard-codes a component count), keyed by component name so the
-logic is independent of how many components are involved. Also carries
-pressure and the feed's single thermal specification -- temperature is the
-ONLY accepted thermal input for this agent (see "Scope Boundaries" in the
-plan); enthalpy and quality are not fields of this state at all.
+See tools/multicomponent-distillation-dialogue-robustness-plan.md. Every
+stored fact -- identity aside -- is exactly ONE measurement record:
+`{'value', 'unit', 'status', 'provenance', 'source_turn', 'evidence'}`
+(composition/basis entries carry `unit=None`, since a fraction/basis has no
+unit of its own). This is deliberate: an earlier draft proposed a second,
+parallel "measurements" dict alongside the plain value dict for keyed
+fields (component_flows/composition) to carry unit/provenance -- rejected,
+because two structures for one fact can silently disagree. There is
+exactly one place each fact lives.
 
-Every quantity here is tagged with its provenance -- 'user_explicit' or
-'derived' -- same convention as `feed_state.py`, so a later user correction
-never leaves a stale derived value behind. Composition basis additionally
-carries its own provenance -- 'user_explicit' or
-'inferred_from_total_flow_units' -- since a bare percentage's basis is
-deferred until the total-flow unit is known (Composition-Basis Rules) and
-must be re-inferred, not left stale, if the flow units later change.
+This module never reads a raw user message, a model proposal, or an
+`intent`/`target_field` -- it only ever accepts already-checked, plain
+field values (see `apply_user_update`'s `update` parameter) from the
+conversation layer (`multicomponent_dialogue.py` / `multicomponent_grounding.py`
+/ `multicomponent_distillation_agent.py`). Conversely, no function here
+formats a user-facing question or reads message text; that is the
+conversation layer's job.
 
 This module stores only RAW explicit facts plus what is derivable by plain
 arithmetic (unit-free fraction complements, same-unit flow sums, and
@@ -37,36 +37,70 @@ from multicomponent_units import (
     SUPPORTED_PRESSURE_UNITS,
     SUPPORTED_TEMPERATURE_UNITS,
     flow_unit_basis,
-    normalize_flow_unit,
-    normalize_pressure_unit,
-    normalize_temperature_unit,
     temperature_to_K,
 )
 
 MIN_COMPONENTS = 3
 
+# Every checked-fact key `apply_user_update` recognizes, tagged with the
+# ONE logical group (tools/multicomponent-distillation-dialogue-robustness
+# -plan.md Section 8) it belongs to. `multicomponent_dialogue.FIELD_REGISTRY`
+# reuses this same mapping (via `field_group`) rather than declaring its
+# own copy, so the group a field belongs to is never stated twice.
+FIELD_GROUPS = {
+    'component_names': 'identity',
+    'component_identity_op': 'identity',
+    'component_flows': 'quantity',
+    'component_flow_units': 'quantity',
+    'total_flow': 'quantity',
+    'total_flow_units': 'quantity',
+    'composition': 'quantity',
+    'composition_basis': 'quantity',
+    'pressure': 'pressure',
+    'pressure_units': 'pressure',
+    'feed_temperature': 'temperature',
+    'feed_temperature_units': 'temperature',
+}
+GROUP_ORDER = ('identity', 'quantity', 'pressure', 'temperature')
+
 
 def empty_feed_state():
-    """A feed state with no identity, quantity, pressure, or thermal information at all."""
+    """A feed state with no identity, quantity, pressure, or thermal
+    information at all. Every non-identity fact is `None` until given, then
+    becomes exactly one measurement record -- never two structures for the
+    same fact."""
     return {
         'component_names': [],
         'component_flows': {},
-        'component_flows_provenance': {},
-        'component_flow_units': None,
         'total_flow': None,
-        'total_flow_provenance': None,
-        'total_flow_units': None,
         'composition': {},
-        'composition_provenance': {},
         'composition_basis': None,
-        'composition_basis_provenance': None,
         'pressure': None,
-        'pressure_provenance': None,
-        'pressure_units': None,
         'feed_temperature': None,
-        'feed_temperature_provenance': None,
-        'feed_temperature_units': None,
     }
+
+
+def _record(value, unit=None, status=None, provenance='user_explicit', source_turn=None, evidence=None):
+    if status is None:
+        status = 'complete' if (unit is not None or value is None) else 'awaiting_unit'
+    return {
+        'value': value, 'unit': unit, 'status': status,
+        'provenance': provenance, 'source_turn': source_turn, 'evidence': evidence,
+    }
+
+
+def record_value(record):
+    """Public accessor -- the plain numeric/string value of a measurement
+    record, or None if `record` is None or has no value yet. Every other
+    module that reads a scalar/keyed fact from this state uses this
+    accessor rather than indexing `['value']` directly, so the record
+    shape can only ever change in one place."""
+    return record['value'] if record else None
+
+
+def record_unit(record):
+    """Public accessor -- the unit of a measurement record, or None."""
+    return record.get('unit') if record else None
 
 
 def _add_names(state, names):
@@ -75,119 +109,173 @@ def _add_names(state, names):
             state['component_names'].append(name)
 
 
-def apply_user_update(state, update):
+def shared_component_flow_unit(state):
+    """The ONE common flow unit across every component_flows measurement
+    (plus total_flow's unit, if set) -- None if no unit is known yet, or if
+    more than one distinct unit is present. This is a derived read, never a
+    separately stored field, so it can never drift from the measurements it
+    summarizes (Section 7: "derive a shared unit only when the stored
+    component measurements agree")."""
+    units = {r['unit'] for r in state['component_flows'].values() if r.get('unit')}
+    total_unit = record_unit(state['total_flow'])
+    if total_unit:
+        units = units | {total_unit}
+    return next(iter(units)) if len(units) == 1 else None
+
+
+def apply_user_update(state, update, *, turn_number=None, evidence=None):
     """
-    Non-destructive merge of a partial update into `state`. Never mutates
-    the input; returns a new state dict.
+    Non-destructive merge of already-checked facts into `state`. Never
+    mutates the input; returns a new state dict. `update` and `evidence`
+    are plain dicts supplied by the conversation layer -- this function
+    never sees a raw message or a model proposal.
 
-    Recognized keys in `update` (all optional; anything else is ignored, so
-    a full accumulated spec dict can be passed straight through):
+    Recognized `update` keys (all optional):
 
-        component_names        : list[str] -- REPLACES the feed's identity
-                                  entirely. Because a changed identity
-                                  invalidates any previously known/derived
-                                  quantity, this also clears
-                                  component_flows, total_flow, and
-                                  composition (and their provenance).
-        add_component_names    : list[str] -- APPENDS to the existing
-                                  identity without touching any known
-                                  quantity.
-        component_flows        : dict[str, float] -- merged into the
-                                  existing component_flows (per-key
-                                  overwrite), each marked 'user_explicit'.
-                                  Any name not yet in component_names is
-                                  added to it.
-        component_flow_units   : str -- overwrites if given; normalized
-                                  through the unit registry (stored as-is,
-                                  unnormalized, if the alias is not
-                                  recognized, so validation can report it).
-        total_flow              : float -- overwrites if given, marked
-                                  'user_explicit'.
-        total_flow_units        : str -- overwrites if given (normalized).
-        composition              : dict[str, float] -- merged like
-                                  component_flows, each marked
-                                  'user_explicit'.
-        composition_basis        : str -- 'mole' or 'mass', overwrites if
-                                  given; always marked 'user_explicit'
-                                  (deferred, inferred bases are only ever
-                                  set by normalize_feed_state, never here).
-        pressure / pressure_units             : float / str.
-        feed_temperature / feed_temperature_units : float / str.
+        component_names / component_identity_op :
+            `component_identity_op` is one of 'initialize', 'add',
+            'remove', 'replace', or omitted/None. Its meaning changes what
+            `component_names` holds:
+              - None / 'initialize' : the FULL identity list (only applied
+                if the feed has no identity yet, or the set is identical to
+                what's already established -- any other shape is silently
+                ignored here; the conversation layer is responsible for
+                classifying a genuine change and supplying the correct op
+                instead of ever reaching this branch with one unclassified).
+              - 'add'     : names to ADD to the existing identity.
+              - 'remove'  : names to REMOVE (also drops their component_flows/
+                composition entries).
+              - 'replace' : the FULL new identity list; clears
+                component_flows/total_flow/composition/composition_basis
+                (they described the old feed).
+        component_flows / component_flow_units :
+            component_flows is {name: number}, merged per-key (overwrite);
+            component_flow_units, if given, fills in the unit of any
+            component_flows entry that doesn't have one yet (a shared-unit
+            answer) -- it never overwrites an entry that already recorded a
+            *different* unit, so a genuine cross-turn unit conflict is
+            preserved for normalize_feed_state to report, not silently lost.
+        total_flow / total_flow_units, pressure / pressure_units,
+        feed_temperature / feed_temperature_units :
+            each pair merges into ONE measurement record; a units-only
+            answer fills in the pending record's unit.
+        composition / composition_basis :
+            composition is {name: fraction}, merged per-key.
 
-    A component name never implies a component flow, and a single
-    component's flow is never treated as the total feed flow -- this
-    function only ever records what was explicitly given.
+    `evidence` mirrors `update`'s shape: a plain string for a scalar field
+    (`evidence['pressure']`), or a per-component dict for a keyed field
+    (`evidence['component_flows']['Water']`).
     """
     state = copy.deepcopy(state) if state else empty_feed_state()
     update = update or {}
+    evidence = evidence or {}
 
-    if update.get('component_names') is not None:
-        new_names = list(dict.fromkeys(update['component_names']))
-        # A tool-calling model cannot be relied on to omit already-known
-        # facts on every turn (see multicomponent_grounding.py's
-        # known-component-names grounding fallback) -- a REDUNDANT
-        # restatement of the exact same identity set must never wipe out
-        # quantities already established for it. Only an actual identity
-        # CHANGE (a different set of names) clears them.
-        if set(new_names) != set(state['component_names']):
-            state['component_names'] = new_names
+    # --- component identity --------------------------------------------------
+    op = update.get('component_identity_op')
+    names_arg = update.get('component_names')
+    if names_arg is not None:
+        names_arg = list(dict.fromkeys(names_arg))
+        current = state['component_names']
+        if op == 'add':
+            _add_names(state, names_arg)
+        elif op == 'remove':
+            remove_set = set(names_arg)
+            state['component_names'] = [n for n in current if n not in remove_set]
+            for n in names_arg:
+                state['component_flows'].pop(n, None)
+                state['composition'].pop(n, None)
+        elif op == 'replace':
+            state['component_names'] = names_arg
             state['component_flows'] = {}
-            state['component_flows_provenance'] = {}
-            state['component_flow_units'] = None
             state['total_flow'] = None
-            state['total_flow_provenance'] = None
-            state['total_flow_units'] = None
             state['composition'] = {}
-            state['composition_provenance'] = {}
             state['composition_basis'] = None
-            state['composition_basis_provenance'] = None
+        else:
+            # None or 'initialize': only ever an idempotent restatement of
+            # the identical set, or the first-ever identity. A differing
+            # set with no explicit op is ignored -- never a silent replace.
+            if not current or set(names_arg) == set(current):
+                state['component_names'] = names_arg or current
 
-    if update.get('add_component_names'):
-        _add_names(state, update['add_component_names'])
+    # --- component flows -------------------------------------------------------
+    flows_arg = update.get('component_flows')
+    shared_unit = update.get('component_flow_units')
+    flow_evidence = evidence.get('component_flows') or {}
+    if flows_arg:
+        for name, value in flows_arg.items():
+            unit = shared_unit
+            state['component_flows'][name] = _record(
+                value, unit=unit, provenance='user_explicit',
+                source_turn=turn_number, evidence=flow_evidence.get(name),
+            )
+        _add_names(state, flows_arg.keys())
+    if shared_unit is not None:
+        for rec in state['component_flows'].values():
+            if rec.get('unit') is None:
+                rec['unit'] = shared_unit
+                rec['status'] = 'complete'
 
-    if update.get('component_flows'):
-        for name, value in update['component_flows'].items():
-            state['component_flows'][name] = value
-            state['component_flows_provenance'][name] = 'user_explicit'
-        _add_names(state, update['component_flows'].keys())
-
-    if update.get('component_flow_units') is not None:
-        raw = update['component_flow_units']
-        state['component_flow_units'] = normalize_flow_unit(raw) or raw
-
+    # --- total_flow ---------------------------------------------------------------
     if update.get('total_flow') is not None:
-        state['total_flow'] = update['total_flow']
-        state['total_flow_provenance'] = 'user_explicit'
-
+        existing_unit = record_unit(state['total_flow'])
+        state['total_flow'] = _record(
+            update['total_flow'], unit=existing_unit, provenance='user_explicit',
+            source_turn=turn_number, evidence=evidence.get('total_flow'),
+        )
     if update.get('total_flow_units') is not None:
-        raw = update['total_flow_units']
-        state['total_flow_units'] = normalize_flow_unit(raw) or raw
+        if state['total_flow'] is None:
+            state['total_flow'] = _record(None, unit=update['total_flow_units'], provenance=None)
+        else:
+            state['total_flow']['unit'] = update['total_flow_units']
+            if state['total_flow']['value'] is not None:
+                state['total_flow']['status'] = 'complete'
 
-    if update.get('composition'):
-        for name, value in update['composition'].items():
-            state['composition'][name] = value
-            state['composition_provenance'][name] = 'user_explicit'
-        _add_names(state, update['composition'].keys())
+    # --- composition ---------------------------------------------------------------
+    comp_arg = update.get('composition')
+    comp_evidence = evidence.get('composition') or {}
+    if comp_arg:
+        for name, value in comp_arg.items():
+            state['composition'][name] = _record(
+                value, provenance='user_explicit',
+                source_turn=turn_number, evidence=comp_evidence.get(name),
+            )
+        _add_names(state, comp_arg.keys())
 
     if update.get('composition_basis') is not None:
-        state['composition_basis'] = update['composition_basis']
-        state['composition_basis_provenance'] = 'user_explicit'
+        state['composition_basis'] = _record(
+            update['composition_basis'], provenance='user_explicit',
+            source_turn=turn_number, evidence=evidence.get('composition_basis'),
+        )
 
+    # --- pressure -----------------------------------------------------------------
     if update.get('pressure') is not None:
-        state['pressure'] = update['pressure']
-        state['pressure_provenance'] = 'user_explicit'
-
+        existing_unit = record_unit(state['pressure'])
+        state['pressure'] = _record(
+            update['pressure'], unit=existing_unit, provenance='user_explicit',
+            source_turn=turn_number, evidence=evidence.get('pressure'),
+        )
     if update.get('pressure_units') is not None:
-        raw = update['pressure_units']
-        state['pressure_units'] = normalize_pressure_unit(raw) or raw
+        if state['pressure'] is None:
+            state['pressure'] = _record(None, unit=update['pressure_units'], provenance=None)
+        else:
+            state['pressure']['unit'] = update['pressure_units']
+            if state['pressure']['value'] is not None:
+                state['pressure']['status'] = 'complete'
 
+    # --- feed_temperature -----------------------------------------------------------
     if update.get('feed_temperature') is not None:
-        state['feed_temperature'] = update['feed_temperature']
-        state['feed_temperature_provenance'] = 'user_explicit'
-
+        existing_unit = record_unit(state['feed_temperature'])
+        state['feed_temperature'] = _record(
+            update['feed_temperature'], unit=existing_unit, provenance='user_explicit',
+            source_turn=turn_number, evidence=evidence.get('feed_temperature'),
+        )
     if update.get('feed_temperature_units') is not None:
-        raw = update['feed_temperature_units']
-        state['feed_temperature_units'] = normalize_temperature_unit(raw) or raw
+        if state['feed_temperature'] is None:
+            state['feed_temperature'] = _record(None, unit=update['feed_temperature_units'], provenance=None)
+        else:
+            state['feed_temperature']['unit'] = update['feed_temperature_units']
+            if state['feed_temperature']['value'] is not None:
+                state['feed_temperature']['status'] = 'complete'
 
     return state
 
@@ -198,208 +286,153 @@ def _close(a, b, rel_tol=1e-3, abs_tol=1e-6):
     return abs(a - b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
 
 
+def _issue(message, group, fields):
+    return {'message': message, 'group': group, 'fields': list(fields)}
+
+
 def normalize_feed_state(state):
     """
     Deterministically derive total_flow / component_flows / composition /
     composition_basis entries that are mathematically FORCED by what's
-    already user_explicit, using only unit-free arithmetic (fraction
-    complements, same-unit sums, same-basis total*fraction products).
-    Never invents a value beyond what that arithmetic requires, and never
-    performs a cross-basis (mass<->mole) conversion -- that needs molecular
-    weights and is deferred to multicomponent_biosteam_feed.py.
-
-    Also cross-checks redundant explicit information for contradictions
-    (e.g. component flows that don't sum to an explicitly-given total flow
-    when their units agree, or N composition fractions that don't sum to
-    1), and infers a still-unset composition basis from the known flow
-    units (Composition-Basis Rules 3-4) -- re-inferring it fresh every call
-    so a later change to the flow units never leaves a stale inferred basis
-    behind.
+    already user_explicit, using only unit-free arithmetic. Never performs
+    a cross-basis (mass<->mole) conversion -- deferred to
+    multicomponent_biosteam_feed.py.
 
     Returns
     -------
-    (new_state, conflicts) : (dict, list[str])
-        `new_state` is `state` with every derivable field filled in
-        (never mutates the input). `conflicts` is a list of human-readable
-        contradiction descriptions; when non-empty, the caller should
-        treat the feed as inconsistent rather than proceeding.
+    (new_state, conflicts) : (dict, list[dict])
+        `new_state` is `state` with every derivable field filled in (never
+        mutates the input). `conflicts` is a list of
+        `{'message', 'group', 'fields'}` dicts -- group-tagged so a
+        candidate/commit transaction can attribute a conflict to exactly
+        one logical group (Section 8).
     """
     state = copy.deepcopy(state)
     names = state['component_names']
 
-    # Drop every previously-DERIVED value before recomputing -- only what's
-    # still 'user_explicit' survives untouched. Every derived value below is
-    # either recomputed fresh from the current explicit values, or correctly
-    # disappears if it's no longer mathematically forced -- so a correction
-    # on a later turn can never leave a stale derived value behind.
-    flows = {
-        n: v for n, v in state['component_flows'].items()
-        if state['component_flows_provenance'].get(n) == 'user_explicit'
-    }
-    flows_prov = {n: 'user_explicit' for n in flows}
-    comp = {
-        n: v for n, v in state['composition'].items()
-        if state['composition_provenance'].get(n) == 'user_explicit'
-    }
-    comp_prov = {n: 'user_explicit' for n in comp}
-    if state['total_flow_provenance'] != 'user_explicit':
+    flows = {n: r for n, r in state['component_flows'].items() if r.get('provenance') == 'user_explicit'}
+    comp = {n: r for n, r in state['composition'].items() if r.get('provenance') == 'user_explicit'}
+    if state['total_flow'] and state['total_flow'].get('provenance') != 'user_explicit':
         state['total_flow'] = None
-        state['total_flow_provenance'] = None
-    if state['composition_basis_provenance'] != 'user_explicit':
+    if state['composition_basis'] and state['composition_basis'].get('provenance') != 'user_explicit':
         state['composition_basis'] = None
-        state['composition_basis_provenance'] = None
     conflicts = []
 
     def known_flow_names():
         return [n for n in names if n in flows]
 
     def all_flows_known():
-        # len(names) >= 2 guards against a degenerate single-named-component
-        # state: one component's flow must never read as "all flows known".
         return len(names) >= 2 and len(known_flow_names()) == len(names)
 
-    # --- Composition-Basis Rules 3-4: infer a still-unset basis from
-    # whichever flow-unit is already known. Explicit bases (still present
-    # above) are never overridden. ---
+    def flow_units_present():
+        return {r['unit'] for r in flows.values() if r.get('unit')}
+
+    total_unit = record_unit(state['total_flow'])
+
     if state['composition_basis'] is None:
-        flow_units_for_basis = state['total_flow_units'] or state['component_flow_units']
-        inferred = flow_unit_basis(normalize_flow_unit(flow_units_for_basis) or flow_units_for_basis) \
-            if flow_units_for_basis else None
-        if inferred is not None:
-            state['composition_basis'] = inferred
-            state['composition_basis_provenance'] = 'inferred_from_total_flow_units'
+        candidate_units = flow_units_present()
+        if total_unit:
+            candidate_units = candidate_units | {total_unit}
+        if len(candidate_units) == 1:
+            inferred = flow_unit_basis(next(iter(candidate_units)))
+            if inferred is not None:
+                state['composition_basis'] = _record(inferred, provenance='inferred_from_total_flow_units')
 
+    basis_value = record_value(state['composition_basis'])
     basis_matches_total_flow = (
-        state['total_flow_units'] is not None and state['composition_basis'] is not None
-        and flow_unit_basis(normalize_flow_unit(state['total_flow_units']) or state['total_flow_units'])
-        == state['composition_basis']
+        total_unit is not None and basis_value is not None
+        and flow_unit_basis(total_unit) == basis_value
     )
+    single_comp_flow_unit = next(iter(flow_units_present())) if len(flow_units_present()) == 1 else None
     basis_matches_component_flow = (
-        state['component_flow_units'] is not None and state['composition_basis'] is not None
-        and flow_unit_basis(normalize_flow_unit(state['component_flow_units']) or state['component_flow_units'])
-        == state['composition_basis']
+        single_comp_flow_unit is not None and basis_value is not None
+        and flow_unit_basis(single_comp_flow_unit) == basis_value
     )
 
-    # --- total_flow vs. component_flows (only comparable when their units
-    # agree, or at least one side's units are still unknown -- a genuine
-    # cross-unit comparison needs molecular weights and is deferred). ---
-    units_comparable = (
-        state['component_flow_units'] is None or state['total_flow_units'] is None
-        or state['component_flow_units'] == state['total_flow_units']
-    )
-    if state['total_flow_provenance'] == 'user_explicit':
+    all_flow_units = flow_units_present() | ({total_unit} if total_unit else set())
+    units_comparable = len(all_flow_units) <= 1
+
+    total_value = record_value(state['total_flow'])
+    if state['total_flow'] is not None and state['total_flow'].get('provenance') == 'user_explicit':
         if all_flows_known() and units_comparable:
-            implied_total = sum(flows[n] for n in names)
-            if not _close(implied_total, state['total_flow']):
-                conflicts.append(
+            implied_total = sum(record_value(flows[n]) for n in names)
+            if not _close(implied_total, total_value):
+                conflicts.append(_issue(
                     f"Component flows sum to {implied_total:g}, but total "
-                    f"flow was specified as {state['total_flow']:g}."
-                )
+                    f"flow was specified as {total_value:g}.",
+                    'quantity', ('component_flows', 'total_flow'),
+                ))
     elif all_flows_known() and known_flow_names() and units_comparable:
-        state['total_flow'] = sum(flows[n] for n in names)
-        state['total_flow_provenance'] = 'derived'
-        if state['total_flow_units'] is None:
-            state['total_flow_units'] = state['component_flow_units']
+        derived_unit = single_comp_flow_unit
+        state['total_flow'] = _record(
+            sum(record_value(flows[n]) for n in names), unit=derived_unit, provenance='derived',
+        )
 
-    # --- total_flow known + all-but-one component flow known (same units)
-    # -> derive it. ---
-    if state['total_flow'] is not None and names and units_comparable:
+    total_value = record_value(state['total_flow'])
+    total_unit = record_unit(state['total_flow'])
+    if total_value is not None and names and units_comparable:
         missing = [n for n in names if n not in flows]
         if len(missing) == 1 and len(known_flow_names()) == len(names) - 1:
-            derived = state['total_flow'] - sum(flows[n] for n in known_flow_names())
-            flows[missing[0]] = derived
-            flows_prov[missing[0]] = 'derived'
+            derived_val = total_value - sum(record_value(flows[n]) for n in known_flow_names())
+            flows[missing[0]] = _record(derived_val, unit=total_unit, provenance='derived')
 
-    # --- N-1 of N composition fractions known -> derive the last one.
-    # Pure arithmetic (fractions on one common basis sum to 1 regardless of
-    # what that basis is), so this needs no molecular weights. ---
     known_comp_names = [n for n in names if n in comp]
     if len(names) >= 2 and len(known_comp_names) == len(names) - 1:
         missing_name = [n for n in names if n not in comp][0]
-        complement = 1.0 - sum(comp[n] for n in known_comp_names)
-        comp[missing_name] = complement
-        comp_prov[missing_name] = 'derived'
+        complement = 1.0 - sum(record_value(comp[n]) for n in known_comp_names)
+        comp[missing_name] = _record(complement, provenance='derived')
     elif len(names) >= 2 and known_comp_names and len(known_comp_names) == len(names):
-        total_frac = sum(comp[n] for n in names)
+        total_frac = sum(record_value(comp[n]) for n in names)
         if not _close(total_frac, 1.0, rel_tol=0.0, abs_tol=1e-3):
-            conflicts.append(f'Composition fractions sum to {total_frac:g}, not 1.')
+            conflicts.append(_issue(f'Composition fractions sum to {total_frac:g}, not 1.', 'quantity', ('composition',)))
 
-    # --- total_flow known + full composition known, ON THE SAME BASIS as
-    # total_flow_units implies -> derive component_flows directly (no MW
-    # needed since basis already agrees). A basis that disagrees with
-    # total_flow_units (e.g. a mass composition against a molar total) is
-    # left to multicomponent_biosteam_feed.py's MW-aware conversion. ---
     known_comp_names = [n for n in names if n in comp]
-    if (state['total_flow'] is not None and names and len(known_comp_names) == len(names)
-            and basis_matches_total_flow):
+    if (total_value is not None and names and len(known_comp_names) == len(names) and basis_matches_total_flow):
         for n in names:
-            derived = state['total_flow'] * comp[n]
+            derived_val = total_value * record_value(comp[n])
             if n in flows:
-                if not _close(flows[n], derived):
-                    conflicts.append(
-                        f"{n} flow was specified as {flows[n]:g}, but total "
-                        f"flow times composition implies {derived:g}."
-                    )
+                if not _close(record_value(flows[n]), derived_val):
+                    conflicts.append(_issue(
+                        f"{n} flow was specified as {record_value(flows[n]):g}, but total "
+                        f"flow times composition implies {derived_val:g}.",
+                        'quantity', ('component_flows', 'total_flow', 'composition'),
+                    ))
             else:
-                flows[n] = derived
-                flows_prov[n] = 'derived'
-        if state['component_flow_units'] is None:
-            state['component_flow_units'] = state['total_flow_units']
+                flows[n] = _record(derived_val, unit=total_unit, provenance='derived')
 
-    # --- Reverse: total_flow + all component_flows known (same basis as
-    # component_flow_units) -> derive composition (flag disagreement with
-    # any explicit fraction). ---
-    total = state['total_flow']
+    total = total_value
     known_comp_names = [n for n in names if n in comp]
     if (total and all_flows_known() and len(known_comp_names) < len(names)
-            and units_comparable and (basis_matches_component_flow or state['composition_basis'] is None)):
+            and units_comparable and (basis_matches_component_flow or basis_value is None)):
         for n in names:
-            implied_frac = flows[n] / total
+            implied_frac = record_value(flows[n]) / total
             if n in comp:
-                if not _close(comp[n], implied_frac):
-                    conflicts.append(
-                        f"{n} fraction was specified as {comp[n]:g}, but "
-                        f"component flows imply {implied_frac:g}."
-                    )
+                if not _close(record_value(comp[n]), implied_frac):
+                    conflicts.append(_issue(
+                        f"{n} fraction was specified as {record_value(comp[n]):g}, but "
+                        f"component flows imply {implied_frac:g}.",
+                        'quantity', ('composition', 'component_flows'),
+                    ))
             else:
-                comp[n] = implied_frac
-                comp_prov[n] = 'derived'
+                comp[n] = _record(implied_frac, provenance='derived')
+
+    if len(flow_units_present()) > 1:
+        conflicts.append(_issue(
+            "Component flows were given in more than one unit "
+            f"({', '.join(sorted(flow_units_present()))}) -- please restate "
+            "all component flows using one common unit.",
+            'quantity', ('component_flows',),
+        ))
 
     state['component_flows'] = flows
-    state['component_flows_provenance'] = flows_prov
     state['composition'] = comp
-    state['composition_provenance'] = comp_prov
     return state, conflicts
-
-
-def feed_quantity_complete(state):
-    """
-    True once the feed QUANTITY VALUES are fully pinned down -- either
-    every named component has a known flow (Mode A, possibly derived), or
-    the total flow value and every component's fraction are known (Mode
-    B). Deliberately does NOT require flow units or a resolved composition
-    basis here -- those are reported as their own, later missing-input
-    items (`flow_units`, `composition_basis`) so that "total flow value +
-    fractions given, units not yet stated" surfaces as a units question,
-    not a generic re-ask for the quantity (plan: "the next question is for
-    total-flow units... infer the basis and continue without a redundant
-    basis question").
-    """
-    names = state['component_names']
-    if not names:
-        return False
-    if all(n in state['component_flows'] for n in names):
-        return True
-    return state['total_flow'] is not None and all(n in state['composition'] for n in names)
 
 
 def validate_feed_state(state):
     """
-    Validation errors against an already-`normalize_feed_state`-d state --
-    genuinely invalid combinations of what IS present, as opposed to
-    `missing_inputs` (below), which reports what is not yet present at all.
-
-    Returns list[str] of human-readable error messages (empty if none).
+    Validation errors against an already-`normalize_feed_state`-d state.
+    Returns list[dict] shaped like `normalize_feed_state`'s conflicts.
     """
     errors = []
     names = state['component_names']
@@ -408,73 +441,84 @@ def validate_feed_state(state):
         return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
     if names and len(set(names)) != len(names):
-        errors.append('Duplicate component names given.')
+        errors.append(_issue('Duplicate component names given.', 'identity', ('component_names',)))
 
-    for n, v in state['component_flows'].items():
+    for n, r in state['component_flows'].items():
+        v = record_value(r)
         if not _finite(v):
-            errors.append(f'{n} flow must be a finite number; got {v!r}.')
+            errors.append(_issue(f'{n} flow must be a finite number; got {v!r}.', 'quantity', ('component_flows',)))
         elif v <= 0:
-            errors.append(f'{n} flow must be positive; got {v:g}.')
+            errors.append(_issue(f'{n} flow must be positive; got {v:g}.', 'quantity', ('component_flows',)))
 
-    if state['total_flow'] is not None:
-        if not _finite(state['total_flow']):
-            errors.append(f"total_flow must be a finite number; got {state['total_flow']!r}.")
-        elif state['total_flow'] <= 0:
-            errors.append(f"total_flow must be positive; got {state['total_flow']:g}.")
+    total_value = record_value(state['total_flow'])
+    if total_value is not None:
+        if not _finite(total_value):
+            errors.append(_issue(f'total_flow must be a finite number; got {total_value!r}.', 'quantity', ('total_flow',)))
+        elif total_value <= 0:
+            errors.append(_issue(f'total_flow must be positive; got {total_value:g}.', 'quantity', ('total_flow',)))
 
-    for n, v in state['composition'].items():
+    for n, r in state['composition'].items():
+        v = record_value(r)
         if not _finite(v):
-            errors.append(f'{n} composition fraction must be a finite number; got {v!r}.')
+            errors.append(_issue(f'{n} composition fraction must be a finite number; got {v!r}.', 'quantity', ('composition',)))
         elif not (0.0 <= v <= 1.0):
-            errors.append(f'{n} composition fraction must be between 0 and 1; got {v:g}.')
+            errors.append(_issue(f'{n} composition fraction must be between 0 and 1; got {v:g}.', 'quantity', ('composition',)))
 
-    if state['composition'] and state['composition_basis'] is not None \
-            and state['composition_basis'] not in ('mole', 'mass'):
-        errors.append(
-            f"Composition basis must be \"mole\" or \"mass\"; got "
-            f"{state['composition_basis']!r}."
-        )
+    basis_value = record_value(state['composition_basis'])
+    if state['composition'] and basis_value is not None and basis_value not in ('mole', 'mass'):
+        errors.append(_issue(f'Composition basis must be "mole" or "mass"; got {basis_value!r}.', 'quantity', ('composition_basis',)))
 
-    if state['pressure'] is not None:
-        if not _finite(state['pressure']):
-            errors.append(f"pressure must be a finite number; got {state['pressure']!r}.")
-        elif state['pressure'] <= 0:
-            errors.append(f"pressure must be positive; got {state['pressure']:g}.")
+    pressure_value = record_value(state['pressure'])
+    if pressure_value is not None:
+        if not _finite(pressure_value):
+            errors.append(_issue(f'pressure must be a finite number; got {pressure_value!r}.', 'pressure', ('pressure',)))
+        elif pressure_value <= 0:
+            errors.append(_issue(f'pressure must be positive; got {pressure_value:g}.', 'pressure', ('pressure',)))
 
-    if state['feed_temperature'] is not None:
-        if not _finite(state['feed_temperature']):
-            errors.append(f"feed_temperature must be a finite number; got {state['feed_temperature']!r}.")
-        elif state['feed_temperature_units'] in SUPPORTED_TEMPERATURE_UNITS:
-            T_K = temperature_to_K(state['feed_temperature'], state['feed_temperature_units'])
+    temp_value = record_value(state['feed_temperature'])
+    temp_unit = record_unit(state['feed_temperature'])
+    if temp_value is not None:
+        if not _finite(temp_value):
+            errors.append(_issue(f'feed_temperature must be a finite number; got {temp_value!r}.', 'temperature', ('feed_temperature',)))
+        elif temp_unit in SUPPORTED_TEMPERATURE_UNITS:
+            T_K = temperature_to_K(temp_value, temp_unit)
             if T_K <= 0:
-                errors.append(f'feed_temperature must be above absolute zero; got {T_K:g} K.')
+                errors.append(_issue(f'feed_temperature must be above absolute zero; got {T_K:g} K.', 'temperature', ('feed_temperature',)))
 
-    def _check_unit(value, supported, label):
+    def _check_unit(value, supported, label, group, field):
         if value is not None and value not in supported:
-            errors.append(
-                f"Unsupported {label} {value!r}; supported units: "
-                f"{', '.join(supported)}."
-            )
+            errors.append(_issue(
+                f"Unsupported {label} {value!r}; supported units: {', '.join(supported)}.",
+                group, (field,),
+            ))
 
-    _check_unit(state['component_flow_units'], SUPPORTED_FLOW_UNITS, 'flow unit')
-    _check_unit(state['total_flow_units'], SUPPORTED_FLOW_UNITS, 'flow unit')
-    _check_unit(state['pressure_units'], SUPPORTED_PRESSURE_UNITS, 'pressure unit')
-    _check_unit(state['feed_temperature_units'], SUPPORTED_TEMPERATURE_UNITS, 'temperature unit')
+    for r in state['component_flows'].values():
+        _check_unit(r.get('unit'), SUPPORTED_FLOW_UNITS, 'flow unit', 'quantity', 'component_flows')
+    _check_unit(record_unit(state['total_flow']), SUPPORTED_FLOW_UNITS, 'flow unit', 'quantity', 'total_flow')
+    _check_unit(record_unit(state['pressure']), SUPPORTED_PRESSURE_UNITS, 'pressure unit', 'pressure', 'pressure_units')
+    _check_unit(record_unit(state['feed_temperature']), SUPPORTED_TEMPERATURE_UNITS, 'temperature unit', 'temperature', 'feed_temperature_units')
 
     return errors
 
 
-def missing_inputs(state):
-    """
-    Ordered list of genuinely missing input identifiers, following:
-    1. component identities, 2. feed quantity/composition, 3. shared flow
-    or total-flow units, 4. composition-basis conflict (only when
-    composition was given but no basis could be resolved, explicit or
-    inferred), 5. pressure value, 6. pressure units, 7. feed temperature
-    value, 8. feed temperature units.
+def feed_quantity_complete(state):
+    """True once every named component has a known flow value (Mode A,
+    possibly derived), or the total flow value and every component's
+    fraction are known (Mode B)."""
+    names = state['component_names']
+    if not names:
+        return False
+    if all(n in state['component_flows'] and record_value(state['component_flows'][n]) is not None for n in names):
+        return True
+    return (
+        record_value(state['total_flow']) is not None
+        and all(n in state['composition'] and record_value(state['composition'][n]) is not None for n in names)
+    )
 
-    Only the FIRST entry should ever be surfaced to the user in one turn.
-    """
+
+def missing_inputs(state):
+    """Ordered list of genuinely missing input identifiers. Only the FIRST
+    entry should ever be surfaced to the user in one turn."""
     missing = []
     names = state['component_names']
 
@@ -485,24 +529,26 @@ def missing_inputs(state):
     if not feed_quantity_complete(state):
         missing.append('feed_quantity')
 
-    flow_units = state['component_flow_units'] or state['total_flow_units']
-    if flow_units is None:
+    any_flow_unit_given = bool(
+        {r['unit'] for r in state['component_flows'].values() if r.get('unit')}
+    ) or record_unit(state['total_flow']) is not None
+    if not any_flow_unit_given:
         missing.append('flow_units')
 
     composition_started = any(
-        state['composition_provenance'].get(n) == 'user_explicit' for n in names
+        r.get('provenance') == 'user_explicit' for r in state['composition'].values()
     )
-    if composition_started and state['composition_basis'] is None:
+    if composition_started and record_value(state['composition_basis']) is None:
         missing.append('composition_basis')
 
-    if state['pressure'] is None:
+    if record_value(state['pressure']) is None:
         missing.append('pressure_value')
-    elif state['pressure_units'] is None:
+    elif record_unit(state['pressure']) is None:
         missing.append('pressure_units')
 
-    if state['feed_temperature'] is None:
+    if record_value(state['feed_temperature']) is None:
         missing.append('feed_temperature_value')
-    elif state['feed_temperature_units'] is None:
+    elif record_unit(state['feed_temperature']) is None:
         missing.append('feed_temperature_units')
 
     return missing
@@ -512,19 +558,8 @@ def assess_feed_state(state):
     """
     Normalize + validate consistency + report missing inputs in one call.
 
-    Returns
-    -------
-    dict with keys:
-        'state'              : the normalized feed state.
-        'conflicts'          : list[str] -- contradictions between
-                                redundant explicit values.
-        'validation_errors'  : list[str] -- invalid values present in the
-                                state (not missing-ness).
-        'missing_inputs'     : ordered list[str] -- see missing_inputs().
-        'ready'               : bool -- True only when there are no
-                                conflicts, no validation errors, no missing
-                                inputs, and at least MIN_COMPONENTS
-                                components are named.
+    Returns dict with keys: 'state', 'conflicts' (list[dict]),
+    'validation_errors' (list[dict]), 'missing_inputs' (list[str]), 'ready' (bool).
     """
     normalized, conflicts = normalize_feed_state(state)
     validation_errors = validate_feed_state(normalized)
@@ -539,4 +574,64 @@ def assess_feed_state(state):
         'validation_errors': validation_errors,
         'missing_inputs': missing,
         'ready': ready,
+    }
+
+
+def assess_candidate_transition(committed_state, checked_facts, *, turn_number=None, evidence=None):
+    """
+    Transactional candidate/commit (Section 8): partitions `checked_facts`
+    by `FIELD_GROUPS` and applies groups in `GROUP_ORDER` (identity must
+    precede quantity so an identity change's clear-quantity behavior fires
+    before same-turn quantity values land). After each group's tentative
+    apply, re-normalizes/validates and rejects that group alone if it
+    introduces a NEW conflict/validation error tagged with its own group --
+    everything else commits. `checked_facts`/`evidence` are plain data from
+    the conversation layer; this function never reads a message or a model
+    proposal.
+
+    Returns
+    -------
+    dict with keys:
+        'candidate_state' / 'committed_state' : the same final, normalized
+            state (both keys kept for parity with the plan's required
+            transition-result shape; there is no separate "attempted but
+            not committed" state here since rejected groups are dropped
+            before the final state is built).
+        'accepted_groups' / 'rejected_groups' : list[str] / dict[str, dict].
+        'conflicts' / 'validation_errors'      : list[dict], the union of
+            every rejected group's own issues -- for user-facing reporting.
+    """
+    checked_facts = checked_facts or {}
+    evidence = evidence or {}
+    working_state = copy.deepcopy(committed_state)
+    accepted_groups = []
+    rejected_groups = {}
+
+    for group in GROUP_ORDER:
+        group_update = {k: v for k, v in checked_facts.items() if FIELD_GROUPS.get(k) == group}
+        if not group_update:
+            continue
+        group_evidence = {k: v for k, v in evidence.items() if FIELD_GROUPS.get(k) == group}
+        candidate = apply_user_update(working_state, group_update, turn_number=turn_number, evidence=group_evidence)
+        normalized, conflicts = normalize_feed_state(candidate)
+        errors = validate_feed_state(normalized)
+        group_conflicts = [c for c in conflicts if c['group'] == group]
+        group_errors = [e for e in errors if e['group'] == group]
+        if group_conflicts or group_errors:
+            rejected_groups[group] = {'conflicts': group_conflicts, 'validation_errors': group_errors}
+            continue
+        working_state = candidate
+        accepted_groups.append(group)
+
+    final_normalized, _residual_conflicts = normalize_feed_state(working_state)
+    reported_conflicts = [c for g in rejected_groups.values() for c in g['conflicts']]
+    reported_errors = [e for g in rejected_groups.values() for e in g['validation_errors']]
+
+    return {
+        'candidate_state': final_normalized,
+        'committed_state': final_normalized,
+        'accepted_groups': accepted_groups,
+        'rejected_groups': rejected_groups,
+        'conflicts': reported_conflicts,
+        'validation_errors': reported_errors,
     }

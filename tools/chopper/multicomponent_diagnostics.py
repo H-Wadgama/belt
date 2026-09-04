@@ -20,16 +20,29 @@ import json
 
 
 def new_turn_record(turn_number, user_message):
-    """Construct one empty per-turn diagnostic record matching the plan's
-    "Diagnostic Record" shape."""
+    """Construct one empty per-turn diagnostic record matching the
+    dialogue-robustness plan's Section 12 "Expand Debugging" shape."""
     return {
         'turn': turn_number,
         'user_message': user_message,
+        'intent': None,
+        'target_field': None,
+        'active_request_before': None,
+        'active_request_after': None,
         'pending_before': None,
         'state_before': None,
         'model': {},
         'prechecks': {},
+        'evidence': {},
+        'binding_decision': None,
         'grounding': {'accepted': {}, 'rejected': {}},
+        'candidate_state': None,
+        'candidate_validation': {},
+        'accepted_groups': [],
+        'rejected_groups': {},
+        'committed_state': None,
+        'rollback': None,
+        'query_result': None,
         'function_calls': [],
         'state_after': None,
         'state_diff': {},
@@ -80,11 +93,16 @@ def _flatten(value, prefix=''):
     diff over (e.g.) `component_flows` reports exactly which component
     key changed. Lists (e.g. `component_names`) are left as atomic leaf
     values -- "Nested component MAPPINGS should be compared by component
-    key", not list contents index-by-index."""
+    key", not list contents index-by-index.
+
+    An empty dict contributes ZERO flattened keys (neither as its own
+    leaf nor as any child) -- tools/multicomponent-distillation-dialogue
+    -robustness-plan.md Section 12: a mapping going from `{}` to
+    `{'Water': ...}` must diff as only `added.<field>.Water`, never ALSO
+    `removed.<field>` for the empty parent that no longer "exists" as its
+    own leaf once it gained a child."""
     out = {}
     if isinstance(value, dict):
-        if not value and prefix:
-            out[prefix] = value
         for key, sub in value.items():
             child_prefix = f'{prefix}.{key}' if prefix else str(key)
             out.update(_flatten(sub, child_prefix))
@@ -123,6 +141,14 @@ def render_human_readable(record):
     lines = [f"[debug turn {record.get('turn')}]"]
     lines.append(f"[user message] {record.get('user_message')}")
 
+    if record.get('intent') is not None or record.get('target_field') is not None:
+        lines.append(f"[intent] {record.get('intent')} target_field={record.get('target_field')}")
+
+    active_before = record.get('active_request_before')
+    active_after = record.get('active_request_after')
+    if active_before or active_after:
+        lines.append(f"[active request] before={active_before} after={active_after}")
+
     pending_before = record.get('pending_before')
     if pending_before:
         lines.append(f"[pending before] {pending_before}")
@@ -146,6 +172,9 @@ def render_human_readable(record):
     if prechecks:
         lines.append(f"[prechecks] {prechecks}")
 
+    if record.get('binding_decision'):
+        lines.append(f"[binding] {record.get('binding_decision')}")
+
     grounding = record.get('grounding') or {}
     accepted = grounding.get('accepted')
     rejected = grounding.get('rejected')
@@ -153,6 +182,21 @@ def render_human_readable(record):
         lines.append(f"[grounding accepted] {accepted}")
     if rejected:
         lines.append(f"[grounding rejected] {rejected}")
+
+    if record.get('evidence'):
+        lines.append(f"[evidence] {record.get('evidence')}")
+
+    if record.get('accepted_groups') or record.get('rejected_groups'):
+        lines.append(
+            f"[groups] accepted={record.get('accepted_groups')} "
+            f"rejected={record.get('rejected_groups')}"
+        )
+
+    if record.get('rollback') is not None:
+        lines.append(f"[rollback] {record.get('rollback')}")
+
+    if record.get('query_result') is not None:
+        lines.append(f"[query result] {record.get('query_result')}")
 
     for call in record.get('function_calls') or []:
         lines.append(f"[calling {call.get('name')}] {call.get('arguments')}")
