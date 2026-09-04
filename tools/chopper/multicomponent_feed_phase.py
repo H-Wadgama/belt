@@ -2,17 +2,17 @@
 Deterministic feed-phase (VLE) evaluation for multicomponent distillation.
 
 See tools/multicomponent-distillation-context.md and
-tools/multicomponent-distillation-feed-phase-plan.md "2. Generic
-equilibrium calculation". Thin multicomponent (>=3 nonzero-flow
-components) wrapper around the shared VLE core in
+tools/multicomponent-distillation-feed-phase-plan.md. Thin multicomponent
+(>=3 nonzero-flow components) wrapper around the shared VLE core in
 `feed_phase._run_vle_and_classify` -- the same underlying calculation the
-binary `feed_phase.evaluate_feed_phase` (exactly 2 components) uses.
-Neither wrapper interprets a vapor fraction or picks which VLE
-calculation to run in natural language -- exactly one branch executes,
-selected only by which thermal-condition argument is present.
+binary `feed_phase.evaluate_feed_phase` (exactly 2 components) uses. This
+wrapper exposes ONLY the T/P (temperature-based) branch of that core --
+enthalpy and quality are scope-excluded for the multicomponent agent (see
+"Scope Boundaries" in the plan); the shared core itself still supports
+them internally for the binary workflow, which is unaffected.
 
-`calculate_multicomponent_feed_phase` is the top-level orchestration
-entry point: given an already-`ready` (see
+`calculate_multicomponent_feed_phase` is the top-level orchestration entry
+point: given an already-`ready` (see
 `multicomponent_feed_state.assess_feed_state`) feed state, it builds the
 BioSTEAM feed (`multicomponent_biosteam_feed.py`), converts pressure/
 temperature to canonical Pa/K, and runs the VLE evaluation below.
@@ -28,23 +28,20 @@ from multicomponent_units import temperature_to_K
 
 MIN_COMPONENTS = 3
 
-_THERMAL_FIELDS = ('feed_temperature_K', 'feed_quality', 'feed_enthalpy_kJ_per_hr')
-
 
 def evaluate_multicomponent_feed_phase(
     feed,
     *,
     pressure_Pa,
-    feed_temperature_K=None,
-    feed_quality=None,
-    feed_enthalpy_kJ_per_hr=None,
+    feed_temperature_K,
     phase_tolerance=1e-6,
 ):
     """
     Deterministically evaluate the equilibrium phase of a >=3-component
-    `feed` at the given pressure and thermal condition. Same contract as
-    `feed_phase.evaluate_feed_phase`, except it requires at least
-    MIN_COMPONENTS nonzero-flow components instead of exactly 2.
+    `feed` at the given pressure and temperature. Same contract as
+    `feed_phase.evaluate_feed_phase`'s T/P branch, except it requires at
+    least MIN_COMPONENTS nonzero-flow components instead of exactly 2, and
+    accepts only a temperature -- never enthalpy or quality.
 
     Parameters
     ----------
@@ -53,9 +50,9 @@ def evaluate_multicomponent_feed_phase(
         Never mutated -- a copy is used for the equilibrium calculation.
     pressure_Pa : float
         Feed pressure, Pa.
-    feed_temperature_K, feed_quality, feed_enthalpy_kJ_per_hr : float, optional
-        Exactly one must be given -- the feed's thermal specification.
-        Never defaulted (e.g. never silently set to bubble point).
+    feed_temperature_K : float
+        Feed temperature, K. Required -- never defaulted (e.g. never
+        silently set to bubble point).
     phase_tolerance : float, optional
         Vapor-fraction tolerance for classifying a result as purely liquid
         or purely vapor rather than vapor_liquid.
@@ -66,21 +63,14 @@ def evaluate_multicomponent_feed_phase(
         Same schema as `feed_phase.evaluate_feed_phase`, with
         `check == 'multicomponent_feed_phase'`.
     """
-    thermal_values = {
-        'feed_temperature_K': feed_temperature_K,
-        'feed_quality': feed_quality,
-        'feed_enthalpy_kJ_per_hr': feed_enthalpy_kJ_per_hr,
-    }
-    given = [f for f in _THERMAL_FIELDS if thermal_values[f] is not None]
-    if len(given) != 1:
+    if feed_temperature_K is None:
         return {
             'check': 'multicomponent_feed_phase',
             'valid': False,
             'error': 'invalid_thermal_specification',
             'message': (
-                'Exactly one of feed_temperature_K, feed_quality, '
-                'feed_enthalpy_kJ_per_hr must be given; got '
-                f'{len(given)}: {given}.'
+                'feed_temperature_K must be given; this agent accepts only a '
+                'temperature-based feed thermal condition.'
             ),
         }
 
@@ -103,7 +93,7 @@ def evaluate_multicomponent_feed_phase(
         return _run_vle_and_classify(
             feed, component_names,
             pressure_Pa=pressure_Pa, feed_temperature_K=feed_temperature_K,
-            feed_quality=feed_quality, feed_enthalpy_kJ_per_hr=feed_enthalpy_kJ_per_hr,
+            feed_quality=None, feed_enthalpy_kJ_per_hr=None,
             phase_tolerance=phase_tolerance, check_name='multicomponent_feed_phase',
         )
     except Exception as err:
@@ -120,11 +110,8 @@ def calculate_multicomponent_feed_phase(state):
     Build a BioSTEAM feed from `state` (an already-normalized, `ready`
     multicomponent feed state -- see
     `multicomponent_feed_state.assess_feed_state`) and run the
-    deterministic VLE phase evaluation above. Converts pressure and
-    (if given as temperature) the feed thermal condition to canonical
-    Pa/K via `multicomponent_units` -- enthalpy is already canonical
-    (kJ/hr) and quality is already dimensionless, so neither needs
-    conversion.
+    deterministic T/P VLE phase evaluation above. Converts pressure and
+    the feed temperature to canonical Pa/K via `multicomponent_units`.
 
     Returns
     -------
@@ -151,21 +138,12 @@ def calculate_multicomponent_feed_phase(state):
             'message': str(err),
         }
 
-    feed_temperature_K = None
-    feed_quality = None
-    feed_enthalpy_kJ_per_hr = None
-    if state.get('feed_temperature') is not None:
-        feed_temperature_K = temperature_to_K(
-            state['feed_temperature'], state['feed_temperature_units'],
-        )
-    elif state.get('feed_quality') is not None:
-        feed_quality = state['feed_quality']
-    elif state.get('feed_enthalpy') is not None:
-        feed_enthalpy_kJ_per_hr = state['feed_enthalpy']
+    feed_temperature_K = temperature_to_K(
+        state['feed_temperature'], state['feed_temperature_units'],
+    )
 
     return evaluate_multicomponent_feed_phase(
         feed, pressure_Pa=pressure_Pa, feed_temperature_K=feed_temperature_K,
-        feed_quality=feed_quality, feed_enthalpy_kJ_per_hr=feed_enthalpy_kJ_per_hr,
     )
 
 

@@ -10,6 +10,12 @@ in one place -- no other module should hardcode a conversion factor or an
 alias spelling. An unrecognized alias normalizes to None so callers can
 report it as unsupported rather than guessing.
 
+Enthalpy is intentionally NOT supported here -- the multicomponent plan
+accepts only a temperature-based feed thermal condition (see
+tools/multicomponent-distillation-feed-phase-plan.md "Scope Boundaries").
+The shared binary VLE core (`feed_phase.py`) still accepts enthalpy/quality
+internally, but nothing in the multicomponent pipeline may propose them.
+
 No BioSTEAM calls and no LLM calls -- pure data/functions.
 """
 
@@ -29,6 +35,13 @@ FLOW_UNIT_ALIASES = {
 }
 SUPPORTED_FLOW_UNITS = ('kmol/hr', 'mol/hr', 'kg/hr')
 
+# tools/multicomponent-distillation-feed-phase-plan.md "Canonical
+# Molar-Flow Conversion" step 4 -- which SUPPORTED_FLOW_UNITS are molar vs.
+# mass, used both for the mass<->mole composition-basis inference rule and
+# for the MW-aware canonical conversion in multicomponent_biosteam_feed.py.
+MOLAR_FLOW_UNITS = ('kmol/hr', 'mol/hr')
+MASS_FLOW_UNITS = ('kg/hr',)
+
 PRESSURE_UNIT_ALIASES = {
     'pa': 'Pa', 'pascal': 'Pa', 'pascals': 'Pa',
     'kpa': 'kPa', 'kilopascal': 'kPa', 'kilopascals': 'kPa',
@@ -44,12 +57,6 @@ TEMPERATURE_UNIT_ALIASES = {
     'degrees celsius': 'degC', 'deg c': 'degC', '°c': 'degC',
 }
 SUPPORTED_TEMPERATURE_UNITS = ('K', 'degC')
-
-ENTHALPY_UNIT_ALIASES = {
-    'kj/hr': 'kJ/hr', 'kj/h': 'kJ/hr', 'kj per hr': 'kJ/hr',
-    'kj per hour': 'kJ/hr',
-}
-SUPPORTED_ENTHALPY_UNITS = ('kJ/hr',)
 
 
 def _normalize(raw, alias_table):
@@ -73,9 +80,21 @@ def normalize_temperature_unit(raw):
     return _normalize(raw, TEMPERATURE_UNIT_ALIASES)
 
 
-def normalize_enthalpy_unit(raw):
-    """Map an enthalpy-unit phrasing to one of SUPPORTED_ENTHALPY_UNITS, or None if unrecognized."""
-    return _normalize(raw, ENTHALPY_UNIT_ALIASES)
+def flow_unit_basis(canonical_flow_unit):
+    """'mole' for a molar SUPPORTED_FLOW_UNITS value, 'mass' for a mass one, else None."""
+    if canonical_flow_unit in MOLAR_FLOW_UNITS:
+        return 'mole'
+    if canonical_flow_unit in MASS_FLOW_UNITS:
+        return 'mass'
+    return None
+
+
+def is_molar_flow_unit(canonical_flow_unit):
+    return canonical_flow_unit in MOLAR_FLOW_UNITS
+
+
+def is_mass_flow_unit(canonical_flow_unit):
+    return canonical_flow_unit in MASS_FLOW_UNITS
 
 
 def pressure_to_Pa(value, unit):

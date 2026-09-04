@@ -1,38 +1,49 @@
 """
 Deterministic feed-state layer for multicomponent distillation intake.
 
-See tools/multicomponent-distillation-feed-phase-plan.md "1. Stateful feed
-specification". Generalizes the binary `feed_state.py` merge/normalize/
-completeness pattern to any number of components (the agent itself only
-ever uses this for >=3 -- see MIN_COMPONENTS -- but nothing in this module
-hard-codes a component count), keyed by component name so the logic is
-independent of how many components are involved. Also carries pressure and
-the feed's single thermal specification (temperature, enthalpy, or
-quality), each tagged with its own unit field, normalized through
-`multicomponent_units.py` -- never guessed or defaulted.
+See tools/multicomponent-distillation-feed-phase-plan.md "State and
+Validation Changes". Generalizes the binary `feed_state.py` merge/
+normalize/completeness pattern to any number of components (the agent
+itself only ever uses this for >=3 -- see MIN_COMPONENTS -- but nothing in
+this module hard-codes a component count), keyed by component name so the
+logic is independent of how many components are involved. Also carries
+pressure and the feed's single thermal specification -- temperature is the
+ONLY accepted thermal input for this agent (see "Scope Boundaries" in the
+plan); enthalpy and quality are not fields of this state at all.
 
 Every quantity here is tagged with its provenance -- 'user_explicit' or
 'derived' -- same convention as `feed_state.py`, so a later user correction
-never leaves a stale derived value behind.
+never leaves a stale derived value behind. Composition basis additionally
+carries its own provenance -- 'user_explicit' or
+'inferred_from_total_flow_units' -- since a bare percentage's basis is
+deferred until the total-flow unit is known (Composition-Basis Rules) and
+must be re-inferred, not left stale, if the flow units later change.
+
+This module stores only RAW explicit facts plus what is derivable by plain
+arithmetic (unit-free fraction complements, same-unit flow sums, and
+same-basis total*fraction products). Cross-basis conversion (e.g. a mass
+composition against a molar total flow) requires molecular weights and is
+deliberately NOT done here -- see multicomponent_biosteam_feed.py's
+canonical component_molar_flows_kmol_per_hr conversion, which is the only
+place that math happens.
 
 No BioSTEAM calls and no LLM calls -- pure data-structure logic.
 """
 import copy
+import math
 
 from multicomponent_units import (
-    SUPPORTED_ENTHALPY_UNITS,
     SUPPORTED_FLOW_UNITS,
     SUPPORTED_PRESSURE_UNITS,
     SUPPORTED_TEMPERATURE_UNITS,
-    normalize_enthalpy_unit,
+    flow_unit_basis,
     normalize_flow_unit,
     normalize_pressure_unit,
     normalize_temperature_unit,
+    temperature_to_K,
 )
 
 MIN_COMPONENTS = 3
-
-_THERMAL_FIELDS = ('feed_temperature', 'feed_enthalpy', 'feed_quality')
 
 
 def empty_feed_state():
@@ -48,17 +59,13 @@ def empty_feed_state():
         'composition': {},
         'composition_provenance': {},
         'composition_basis': None,
+        'composition_basis_provenance': None,
         'pressure': None,
         'pressure_provenance': None,
         'pressure_units': None,
         'feed_temperature': None,
         'feed_temperature_provenance': None,
         'feed_temperature_units': None,
-        'feed_enthalpy': None,
-        'feed_enthalpy_provenance': None,
-        'feed_enthalpy_units': None,
-        'feed_quality': None,
-        'feed_quality_provenance': None,
     }
 
 
@@ -101,34 +108,39 @@ def apply_user_update(state, update):
                                   component_flows, each marked
                                   'user_explicit'.
         composition_basis        : str -- 'mole' or 'mass', overwrites if
-                                  given.
+                                  given; always marked 'user_explicit'
+                                  (deferred, inferred bases are only ever
+                                  set by normalize_feed_state, never here).
         pressure / pressure_units             : float / str.
         feed_temperature / feed_temperature_units : float / str.
-        feed_enthalpy / feed_enthalpy_units       : float / str.
-        feed_quality                              : float (0-1).
 
     A component name never implies a component flow, and a single
     component's flow is never treated as the total feed flow -- this
     function only ever records what was explicitly given.
-
-    Supplying a new value for one of feed_temperature/feed_enthalpy/
-    feed_quality clears the other two -- the feed has exactly one thermal
-    specification at a time.
     """
     state = copy.deepcopy(state) if state else empty_feed_state()
     update = update or {}
 
     if update.get('component_names') is not None:
-        state['component_names'] = list(dict.fromkeys(update['component_names']))
-        state['component_flows'] = {}
-        state['component_flows_provenance'] = {}
-        state['component_flow_units'] = None
-        state['total_flow'] = None
-        state['total_flow_provenance'] = None
-        state['total_flow_units'] = None
-        state['composition'] = {}
-        state['composition_provenance'] = {}
-        state['composition_basis'] = None
+        new_names = list(dict.fromkeys(update['component_names']))
+        # A tool-calling model cannot be relied on to omit already-known
+        # facts on every turn (see multicomponent_grounding.py's
+        # known-component-names grounding fallback) -- a REDUNDANT
+        # restatement of the exact same identity set must never wipe out
+        # quantities already established for it. Only an actual identity
+        # CHANGE (a different set of names) clears them.
+        if set(new_names) != set(state['component_names']):
+            state['component_names'] = new_names
+            state['component_flows'] = {}
+            state['component_flows_provenance'] = {}
+            state['component_flow_units'] = None
+            state['total_flow'] = None
+            state['total_flow_provenance'] = None
+            state['total_flow_units'] = None
+            state['composition'] = {}
+            state['composition_provenance'] = {}
+            state['composition_basis'] = None
+            state['composition_basis_provenance'] = None
 
     if update.get('add_component_names'):
         _add_names(state, update['add_component_names'])
@@ -159,6 +171,7 @@ def apply_user_update(state, update):
 
     if update.get('composition_basis') is not None:
         state['composition_basis'] = update['composition_basis']
+        state['composition_basis_provenance'] = 'user_explicit'
 
     if update.get('pressure') is not None:
         state['pressure'] = update['pressure']
@@ -171,34 +184,10 @@ def apply_user_update(state, update):
     if update.get('feed_temperature') is not None:
         state['feed_temperature'] = update['feed_temperature']
         state['feed_temperature_provenance'] = 'user_explicit'
-        state['feed_enthalpy'] = None
-        state['feed_enthalpy_provenance'] = None
-        state['feed_quality'] = None
-        state['feed_quality_provenance'] = None
 
     if update.get('feed_temperature_units') is not None:
         raw = update['feed_temperature_units']
         state['feed_temperature_units'] = normalize_temperature_unit(raw) or raw
-
-    if update.get('feed_enthalpy') is not None:
-        state['feed_enthalpy'] = update['feed_enthalpy']
-        state['feed_enthalpy_provenance'] = 'user_explicit'
-        state['feed_temperature'] = None
-        state['feed_temperature_provenance'] = None
-        state['feed_quality'] = None
-        state['feed_quality_provenance'] = None
-
-    if update.get('feed_enthalpy_units') is not None:
-        raw = update['feed_enthalpy_units']
-        state['feed_enthalpy_units'] = normalize_enthalpy_unit(raw) or raw
-
-    if update.get('feed_quality') is not None:
-        state['feed_quality'] = update['feed_quality']
-        state['feed_quality_provenance'] = 'user_explicit'
-        state['feed_temperature'] = None
-        state['feed_temperature_provenance'] = None
-        state['feed_enthalpy'] = None
-        state['feed_enthalpy_provenance'] = None
 
     return state
 
@@ -211,14 +200,21 @@ def _close(a, b, rel_tol=1e-3, abs_tol=1e-6):
 
 def normalize_feed_state(state):
     """
-    Deterministically derive total_flow / component_flows / composition
-    entries that are mathematically FORCED by what's already
-    user_explicit. Never invents a value beyond what the math requires.
+    Deterministically derive total_flow / component_flows / composition /
+    composition_basis entries that are mathematically FORCED by what's
+    already user_explicit, using only unit-free arithmetic (fraction
+    complements, same-unit sums, same-basis total*fraction products).
+    Never invents a value beyond what that arithmetic requires, and never
+    performs a cross-basis (mass<->mole) conversion -- that needs molecular
+    weights and is deferred to multicomponent_biosteam_feed.py.
 
     Also cross-checks redundant explicit information for contradictions
-    (e.g. component flows that don't sum to an explicitly-given total
-    flow, or a composition that doesn't match what the component flows
-    imply, or N composition fractions that don't sum to 1).
+    (e.g. component flows that don't sum to an explicitly-given total flow
+    when their units agree, or N composition fractions that don't sum to
+    1), and infers a still-unset composition basis from the known flow
+    units (Composition-Basis Rules 3-4) -- re-inferring it fresh every call
+    so a later change to the flow units never leaves a stale inferred basis
+    behind.
 
     Returns
     -------
@@ -249,6 +245,9 @@ def normalize_feed_state(state):
     if state['total_flow_provenance'] != 'user_explicit':
         state['total_flow'] = None
         state['total_flow_provenance'] = None
+    if state['composition_basis_provenance'] != 'user_explicit':
+        state['composition_basis'] = None
+        state['composition_basis_provenance'] = None
     conflicts = []
 
     def known_flow_names():
@@ -259,21 +258,52 @@ def normalize_feed_state(state):
         # state: one component's flow must never read as "all flows known".
         return len(names) >= 2 and len(known_flow_names()) == len(names)
 
-    # --- total_flow vs. component_flows ---
+    # --- Composition-Basis Rules 3-4: infer a still-unset basis from
+    # whichever flow-unit is already known. Explicit bases (still present
+    # above) are never overridden. ---
+    if state['composition_basis'] is None:
+        flow_units_for_basis = state['total_flow_units'] or state['component_flow_units']
+        inferred = flow_unit_basis(normalize_flow_unit(flow_units_for_basis) or flow_units_for_basis) \
+            if flow_units_for_basis else None
+        if inferred is not None:
+            state['composition_basis'] = inferred
+            state['composition_basis_provenance'] = 'inferred_from_total_flow_units'
+
+    basis_matches_total_flow = (
+        state['total_flow_units'] is not None and state['composition_basis'] is not None
+        and flow_unit_basis(normalize_flow_unit(state['total_flow_units']) or state['total_flow_units'])
+        == state['composition_basis']
+    )
+    basis_matches_component_flow = (
+        state['component_flow_units'] is not None and state['composition_basis'] is not None
+        and flow_unit_basis(normalize_flow_unit(state['component_flow_units']) or state['component_flow_units'])
+        == state['composition_basis']
+    )
+
+    # --- total_flow vs. component_flows (only comparable when their units
+    # agree, or at least one side's units are still unknown -- a genuine
+    # cross-unit comparison needs molecular weights and is deferred). ---
+    units_comparable = (
+        state['component_flow_units'] is None or state['total_flow_units'] is None
+        or state['component_flow_units'] == state['total_flow_units']
+    )
     if state['total_flow_provenance'] == 'user_explicit':
-        if all_flows_known():
+        if all_flows_known() and units_comparable:
             implied_total = sum(flows[n] for n in names)
             if not _close(implied_total, state['total_flow']):
                 conflicts.append(
                     f"Component flows sum to {implied_total:g}, but total "
                     f"flow was specified as {state['total_flow']:g}."
                 )
-    elif all_flows_known() and known_flow_names():
+    elif all_flows_known() and known_flow_names() and units_comparable:
         state['total_flow'] = sum(flows[n] for n in names)
         state['total_flow_provenance'] = 'derived'
+        if state['total_flow_units'] is None:
+            state['total_flow_units'] = state['component_flow_units']
 
-    # --- total_flow known + all-but-one component flow known -> derive it ---
-    if state['total_flow'] is not None and names:
+    # --- total_flow known + all-but-one component flow known (same units)
+    # -> derive it. ---
+    if state['total_flow'] is not None and names and units_comparable:
         missing = [n for n in names if n not in flows]
         if len(missing) == 1 and len(known_flow_names()) == len(names) - 1:
             derived = state['total_flow'] - sum(flows[n] for n in known_flow_names())
@@ -281,8 +311,8 @@ def normalize_feed_state(state):
             flows_prov[missing[0]] = 'derived'
 
     # --- N-1 of N composition fractions known -> derive the last one.
-    # Generalizes the binary "one fraction implies the other" case to any
-    # component count. ---
+    # Pure arithmetic (fractions on one common basis sum to 1 regardless of
+    # what that basis is), so this needs no molecular weights. ---
     known_comp_names = [n for n in names if n in comp]
     if len(names) >= 2 and len(known_comp_names) == len(names) - 1:
         missing_name = [n for n in names if n not in comp][0]
@@ -294,10 +324,14 @@ def normalize_feed_state(state):
         if not _close(total_frac, 1.0, rel_tol=0.0, abs_tol=1e-3):
             conflicts.append(f'Composition fractions sum to {total_frac:g}, not 1.')
 
-    # --- total_flow known + full composition known -> derive component_flows
-    # (flag disagreement against any that were also given explicitly). ---
+    # --- total_flow known + full composition known, ON THE SAME BASIS as
+    # total_flow_units implies -> derive component_flows directly (no MW
+    # needed since basis already agrees). A basis that disagrees with
+    # total_flow_units (e.g. a mass composition against a molar total) is
+    # left to multicomponent_biosteam_feed.py's MW-aware conversion. ---
     known_comp_names = [n for n in names if n in comp]
-    if state['total_flow'] is not None and names and len(known_comp_names) == len(names):
+    if (state['total_flow'] is not None and names and len(known_comp_names) == len(names)
+            and basis_matches_total_flow):
         for n in names:
             derived = state['total_flow'] * comp[n]
             if n in flows:
@@ -309,12 +343,16 @@ def normalize_feed_state(state):
             else:
                 flows[n] = derived
                 flows_prov[n] = 'derived'
+        if state['component_flow_units'] is None:
+            state['component_flow_units'] = state['total_flow_units']
 
-    # --- Reverse: total_flow + all component_flows known -> derive
-    # composition (flag disagreement with any explicit fraction). ---
+    # --- Reverse: total_flow + all component_flows known (same basis as
+    # component_flow_units) -> derive composition (flag disagreement with
+    # any explicit fraction). ---
     total = state['total_flow']
     known_comp_names = [n for n in names if n in comp]
-    if total and all_flows_known() and len(known_comp_names) < len(names):
+    if (total and all_flows_known() and len(known_comp_names) < len(names)
+            and units_comparable and (basis_matches_component_flow or state['composition_basis'] is None)):
         for n in names:
             implied_frac = flows[n] / total
             if n in comp:
@@ -335,15 +373,24 @@ def normalize_feed_state(state):
 
 
 def feed_quantity_complete(state):
-    """True once every named component has a known flow (explicit or derived)."""
+    """
+    True once the feed QUANTITY VALUES are fully pinned down -- either
+    every named component has a known flow (Mode A, possibly derived), or
+    the total flow value and every component's fraction are known (Mode
+    B). Deliberately does NOT require flow units or a resolved composition
+    basis here -- those are reported as their own, later missing-input
+    items (`flow_units`, `composition_basis`) so that "total flow value +
+    fractions given, units not yet stated" surfaces as a units question,
+    not a generic re-ask for the quantity (plan: "the next question is for
+    total-flow units... infer the basis and continue without a redundant
+    basis question").
+    """
     names = state['component_names']
     if not names:
         return False
-    return all(n in state['component_flows'] for n in names)
-
-
-def _thermal_given_fields(state):
-    return [f for f in _THERMAL_FIELDS if state.get(f) is not None]
+    if all(n in state['component_flows'] for n in names):
+        return True
+    return state['total_flow'] is not None and all(n in state['composition'] for n in names)
 
 
 def validate_feed_state(state):
@@ -357,18 +404,28 @@ def validate_feed_state(state):
     errors = []
     names = state['component_names']
 
+    def _finite(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
     if names and len(set(names)) != len(names):
         errors.append('Duplicate component names given.')
 
     for n, v in state['component_flows'].items():
-        if v is not None and v <= 0:
+        if not _finite(v):
+            errors.append(f'{n} flow must be a finite number; got {v!r}.')
+        elif v <= 0:
             errors.append(f'{n} flow must be positive; got {v:g}.')
 
-    if state['total_flow'] is not None and state['total_flow'] <= 0:
-        errors.append(f"total_flow must be positive; got {state['total_flow']:g}.")
+    if state['total_flow'] is not None:
+        if not _finite(state['total_flow']):
+            errors.append(f"total_flow must be a finite number; got {state['total_flow']!r}.")
+        elif state['total_flow'] <= 0:
+            errors.append(f"total_flow must be positive; got {state['total_flow']:g}.")
 
     for n, v in state['composition'].items():
-        if v is not None and not (0.0 <= v <= 1.0):
+        if not _finite(v):
+            errors.append(f'{n} composition fraction must be a finite number; got {v!r}.')
+        elif not (0.0 <= v <= 1.0):
             errors.append(f'{n} composition fraction must be between 0 and 1; got {v:g}.')
 
     if state['composition'] and state['composition_basis'] is not None \
@@ -378,15 +435,19 @@ def validate_feed_state(state):
             f"{state['composition_basis']!r}."
         )
 
-    given_thermal = _thermal_given_fields(state)
-    if len(given_thermal) > 1:
-        errors.append(
-            f'Exactly one feed thermal condition may be given; got '
-            f'{len(given_thermal)}: {given_thermal}.'
-        )
+    if state['pressure'] is not None:
+        if not _finite(state['pressure']):
+            errors.append(f"pressure must be a finite number; got {state['pressure']!r}.")
+        elif state['pressure'] <= 0:
+            errors.append(f"pressure must be positive; got {state['pressure']:g}.")
 
-    if state['feed_quality'] is not None and not (0.0 <= state['feed_quality'] <= 1.0):
-        errors.append(f"feed_quality must be between 0 and 1; got {state['feed_quality']:g}.")
+    if state['feed_temperature'] is not None:
+        if not _finite(state['feed_temperature']):
+            errors.append(f"feed_temperature must be a finite number; got {state['feed_temperature']!r}.")
+        elif state['feed_temperature_units'] in SUPPORTED_TEMPERATURE_UNITS:
+            T_K = temperature_to_K(state['feed_temperature'], state['feed_temperature_units'])
+            if T_K <= 0:
+                errors.append(f'feed_temperature must be above absolute zero; got {T_K:g} K.')
 
     def _check_unit(value, supported, label):
         if value is not None and value not in supported:
@@ -399,7 +460,6 @@ def validate_feed_state(state):
     _check_unit(state['total_flow_units'], SUPPORTED_FLOW_UNITS, 'flow unit')
     _check_unit(state['pressure_units'], SUPPORTED_PRESSURE_UNITS, 'pressure unit')
     _check_unit(state['feed_temperature_units'], SUPPORTED_TEMPERATURE_UNITS, 'temperature unit')
-    _check_unit(state['feed_enthalpy_units'], SUPPORTED_ENTHALPY_UNITS, 'enthalpy unit')
 
     return errors
 
@@ -407,9 +467,11 @@ def validate_feed_state(state):
 def missing_inputs(state):
     """
     Ordered list of genuinely missing input identifiers, following:
-    1. component identities, 2. feed quantities/composition,
-    3. composition basis (when applicable), 4. flow units, 5. pressure
-    (value then units), 6. thermal condition (value then units).
+    1. component identities, 2. feed quantity/composition, 3. shared flow
+    or total-flow units, 4. composition-basis conflict (only when
+    composition was given but no basis could be resolved, explicit or
+    inferred), 5. pressure value, 6. pressure units, 7. feed temperature
+    value, 8. feed temperature units.
 
     Only the FIRST entry should ever be surfaced to the user in one turn.
     """
@@ -423,30 +485,25 @@ def missing_inputs(state):
     if not feed_quantity_complete(state):
         missing.append('feed_quantity')
 
+    flow_units = state['component_flow_units'] or state['total_flow_units']
+    if flow_units is None:
+        missing.append('flow_units')
+
     composition_started = any(
         state['composition_provenance'].get(n) == 'user_explicit' for n in names
     )
     if composition_started and state['composition_basis'] is None:
         missing.append('composition_basis')
 
-    flow_units = state['component_flow_units'] or state['total_flow_units']
-    if feed_quantity_complete(state) and flow_units is None:
-        missing.append('flow_units')
-
     if state['pressure'] is None:
         missing.append('pressure_value')
     elif state['pressure_units'] is None:
         missing.append('pressure_units')
 
-    given_thermal = _thermal_given_fields(state)
-    if len(given_thermal) == 0:
-        missing.append('feed_thermal_condition')
-    elif len(given_thermal) == 1:
-        field = given_thermal[0]
-        if field == 'feed_temperature' and state['feed_temperature_units'] is None:
-            missing.append('feed_temperature_units')
-        elif field == 'feed_enthalpy' and state['feed_enthalpy_units'] is None:
-            missing.append('feed_enthalpy_units')
+    if state['feed_temperature'] is None:
+        missing.append('feed_temperature_value')
+    elif state['feed_temperature_units'] is None:
+        missing.append('feed_temperature_units')
 
     return missing
 

@@ -1,6 +1,9 @@
 """
 Tests for `multicomponent_units.py` -- the deterministic unit alias/
 conversion registry the multicomponent feed-phase intake pipeline uses.
+Enthalpy is intentionally not supported here (see "Scope Boundaries" in
+tools/multicomponent-distillation-feed-phase-plan.md) -- there are no
+enthalpy tests in this file.
 
 Run with:
     pytest tools/chopper/test_multicomponent_units.py -v
@@ -8,7 +11,9 @@ Run with:
 import pytest
 
 from multicomponent_units import (
-    normalize_enthalpy_unit,
+    flow_unit_basis,
+    is_mass_flow_unit,
+    is_molar_flow_unit,
     normalize_flow_unit,
     normalize_pressure_unit,
     normalize_temperature_unit,
@@ -58,17 +63,6 @@ def test_temperature_unit_unrecognized_returns_none():
     assert normalize_temperature_unit('F') is None
 
 
-@pytest.mark.parametrize('raw,expected', [
-    ('kJ/hr', 'kJ/hr'), ('kj per hour', 'kJ/hr'),
-])
-def test_enthalpy_unit_aliases_normalize(raw, expected):
-    assert normalize_enthalpy_unit(raw) == expected
-
-
-def test_enthalpy_unit_unrecognized_returns_none():
-    assert normalize_enthalpy_unit('BTU/hr') is None
-
-
 def test_pressure_to_Pa_conversions():
     assert pressure_to_Pa(1.0, 'Pa') == pytest.approx(1.0)
     assert pressure_to_Pa(1.0, 'kPa') == pytest.approx(1000.0)
@@ -89,3 +83,27 @@ def test_temperature_to_K_conversions():
 def test_temperature_to_K_unsupported_unit_raises():
     with pytest.raises(ValueError):
         temperature_to_K(100.0, 'F')
+
+
+# --- Molar/mass flow-unit basis helpers (Composition-Basis Rules 3-4) -------
+
+def test_flow_unit_basis_molar_units():
+    assert flow_unit_basis('kmol/hr') == 'mole'
+    assert flow_unit_basis('mol/hr') == 'mole'
+
+
+def test_flow_unit_basis_mass_units():
+    assert flow_unit_basis('kg/hr') == 'mass'
+
+
+def test_flow_unit_basis_unrecognized_returns_none():
+    assert flow_unit_basis('lb/hr') is None
+    assert flow_unit_basis(None) is None
+
+
+def test_is_molar_and_mass_flow_unit():
+    assert is_molar_flow_unit('kmol/hr') is True
+    assert is_molar_flow_unit('mol/hr') is True
+    assert is_molar_flow_unit('kg/hr') is False
+    assert is_mass_flow_unit('kg/hr') is True
+    assert is_mass_flow_unit('kmol/hr') is False
