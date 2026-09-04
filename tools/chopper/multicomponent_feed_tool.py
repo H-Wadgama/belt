@@ -17,6 +17,8 @@ in the plan).
 
 No LLM calls -- this module must never import `ollama` or `openai`.
 """
+import copy
+
 from multicomponent_feed_phase import calculate_multicomponent_feed_phase
 from multicomponent_feed_state import (
     MIN_COMPONENTS,
@@ -106,6 +108,29 @@ def _pending_request_for(missing_field):
         'field': missing_field,
         'question': f'Please provide {missing_field}.',
     })
+
+
+def get_multicomponent_feed_state() -> dict:
+    """Deep-copied, read-only snapshot of the accumulated feed state for
+    the current multicomponent feed problem -- diagnostics only. Never
+    mutates `_feed_state` and must never be used to drive a control-flow
+    decision (that belongs to `update_multicomponent_feed`'s own
+    `assess_feed_state` call)."""
+    return copy.deepcopy(_feed_state)
+
+
+def get_pending_request() -> dict | None:
+    """Read-only assessment of the CURRENT accumulated feed state -- the
+    same `pending_request` that `update_multicomponent_feed` would return
+    if called with no new fields, without mutating state or re-running the
+    VLE calculation. `assess_feed_state`/`normalize_feed_state` never
+    mutate their input, so this never touches `_feed_state` directly.
+    Diagnostics only."""
+    assessment = assess_feed_state(_feed_state)
+    if assessment['conflicts'] or assessment['validation_errors'] or assessment['ready']:
+        return None
+    missing = assessment['missing_inputs']
+    return _pending_request_for(missing[0]) if missing else None
 
 
 def reset_multicomponent_feed_session() -> dict:

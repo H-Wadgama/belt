@@ -38,14 +38,30 @@ Run interactively:
 
 Or run a single one-shot prompt (useful for scripting/testing):
     python multicomponent_distillation_agent.py "hello"
+
+Optional turn-by-turn diagnostics (see
+../multicomponent-distillation-debugging-plan.md) are available via two
+mutually exclusive flags, off by default and never affecting normal
+behavior:
+
+    python multicomponent_distillation_agent.py --debug
+    python multicomponent_distillation_agent.py --debug-json
+
+Diagnostic output goes to stderr; the ordinary `Assistant:` reply stays on
+stdout. The trace includes the user's full message and the model's raw
+output, so a captured trace may contain sensitive process information.
 """
+import argparse
 import json
 import sys
 
 import ollama
 
+import multicomponent_diagnostics as diag
 from multicomponent_feed_tool import (
     get_known_component_names,
+    get_multicomponent_feed_state,
+    get_pending_request,
     reset_multicomponent_feed_session,
     update_multicomponent_feed,
 )
@@ -159,21 +175,31 @@ def propose_feed_update(client, messages):
 
     Returns
     -------
-    (proposal, ok) : (dict, bool)
+    (proposal, ok, diagnostics) : (dict, bool, dict)
         `ok` is False only if both the original call and the retry failed
         to produce a well-formed JSON object; `proposal` is then an
         all-null/false dict, safe to treat as "nothing proposed".
+        `diagnostics` is purely observational metadata (raw responses,
+        call count, whether the retry ran, whether parsing ultimately
+        succeeded, and the final parsed proposal) -- it never changes
+        which `proposal`/`ok` the caller receives.
     """
     history = [m for m in messages if not (isinstance(m, dict) and m.get('role') == 'system')]
     interpretation_messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + history
+
+    raw_responses = []
 
     response = client.chat(
         model=MODEL, messages=interpretation_messages,
         format=_PROPOSAL_JSON_SCHEMA, think=False, options={'temperature': 0},
     )
+    raw_responses.append(response.message.content)
     proposal = _parse_proposal(response.message.content)
     if proposal is not None:
-        return proposal, True
+        return proposal, True, {
+            'call_count': 1, 'raw_responses': raw_responses,
+            'parsed_proposal': proposal, 'retry_used': False, 'parse_succeeded': True,
+        }
 
     retry_messages = interpretation_messages + [{
         'role': 'system',
@@ -187,11 +213,19 @@ def propose_feed_update(client, messages):
         model=MODEL, messages=retry_messages,
         format=_PROPOSAL_JSON_SCHEMA, think=False, options={'temperature': 0},
     )
+    raw_responses.append(response.message.content)
     proposal = _parse_proposal(response.message.content)
     if proposal is not None:
-        return proposal, True
+        return proposal, True, {
+            'call_count': 2, 'raw_responses': raw_responses,
+            'parsed_proposal': proposal, 'retry_used': True, 'parse_succeeded': True,
+        }
 
-    return {field: (False if field == 'reset' else None) for field in _PROPOSAL_FIELDS}, False
+    fallback = {field: (False if field == 'reset' else None) for field in _PROPOSAL_FIELDS}
+    return fallback, False, {
+        'call_count': 2, 'raw_responses': raw_responses,
+        'parsed_proposal': None, 'retry_used': True, 'parse_succeeded': False,
+    }
 
 
 def _format_pending_reply(result):
@@ -222,7 +256,29 @@ def _format_result_reply(result):
     )
 
 
-def process_turn(client, messages, user_message):
+def _exit_path_for_pending(result):
+    """Deterministic exit-path classification for a non-complete tool
+    result -- mirrors `_format_pending_reply`'s branch order exactly, so
+    the debug trace's `exit_path` always matches the reply actually
+    shown."""
+    if result.get('conflicts'):
+        return 'conflict'
+    if result.get('validation_errors'):
+        return 'validation_error'
+    if not result.get('valid', True) and result.get('error'):
+        return 'calculation_error'
+    return 'pending_request'
+
+
+def _emit_debug_record(record, debug_mode):
+    """Render and print one finished diagnostic record to stderr --
+    printing and CLI-mode decisions stay here, not in the diagnostics
+    module (see multicomponent_diagnostics.py's module docstring)."""
+    text = diag.render_json(record) if debug_mode == 'json' else diag.render_human_readable(record)
+    print(text, file=sys.stderr)
+
+
+def process_turn(client, messages, user_message, turn_number=1, debug_mode=None):
     """
     Process exactly ONE user turn end-to-end and return the reply text,
     appending both the user message and the reply to `messages`.
@@ -231,57 +287,153 @@ def process_turn(client, messages, user_message):
     bounded malformed-JSON retry) is made; grounding, state application,
     and reply formatting are all deterministic Python from there on -- the
     model is never called again after extraction on this same turn.
+
+    `debug_mode` -- None (default), 'human', or 'json' -- is purely
+    observational. When None, no diagnostic record is built or printed and
+    this function's behavior (including its return value) is identical to
+    having no debugging support at all. See
+    ../multicomponent-distillation-debugging-plan.md.
     """
-    messages.append({'role': 'user', 'content': user_message})
+    record = diag.new_turn_record(turn_number, user_message) if debug_mode else None
+    if record is not None:
+        record['pending_before'] = diag.to_jsonable(get_pending_request())
+        record['state_before'] = diag.to_jsonable(get_multicomponent_feed_state())
 
-    proposal, ok = propose_feed_update(client, messages)
-    if not ok:
-        reply = "Sorry, I couldn't parse that -- could you restate the feed information?"
-        messages.append({'role': 'assistant', 'content': reply})
-        return reply
+    reply = None
+    exit_path = None
+    try:
+        messages.append({'role': 'user', 'content': user_message})
 
-    if proposal.get('reset'):
-        reset_multicomponent_feed_session()
-        reply = 'Starting a new feed. Which components are in the feed?'
-        messages.append({'role': 'assistant', 'content': reply})
-        return reply
+        proposal, ok, model_diagnostics = propose_feed_update(client, messages)
+        if record is not None:
+            record['model'] = model_diagnostics
 
-    if len(detect_mixed_flow_units(user_message)) > 1 and (
-            proposal.get('component_flows') or proposal.get('component_flow_units')
-            or proposal.get('total_flow_units')):
-        reply = (
-            'The message gives more than one flow unit -- please restate all '
-            'component flows using one common unit (kmol/hr, mol/hr, or kg/hr).'
+        if not ok:
+            reply = "Sorry, I couldn't parse that -- could you restate the feed information?"
+            messages.append({'role': 'assistant', 'content': reply})
+            exit_path = 'model_parse_failure'
+            return reply
+
+        if proposal.get('reset'):
+            reset_result = reset_multicomponent_feed_session()
+            if record is not None:
+                record['function_calls'].append({
+                    'name': 'reset_multicomponent_feed_session',
+                    'arguments': {},
+                    'result': diag.to_jsonable(reset_result),
+                })
+            reply = 'Starting a new feed. Which components are in the feed?'
+            messages.append({'role': 'assistant', 'content': reply})
+            exit_path = 'reset'
+            return reply
+
+        mixed_units = detect_mixed_flow_units(user_message)
+        mixed_basis = detect_mixed_composition_basis(user_message)
+        if record is not None:
+            record['prechecks'] = {
+                'detected_flow_units': sorted(mixed_units),
+                'detected_composition_bases': sorted(mixed_basis),
+                'mixed_flow_units': len(mixed_units) > 1,
+                'mixed_composition_basis': len(mixed_basis) > 1,
+            }
+
+        if len(mixed_units) > 1 and (
+                proposal.get('component_flows') or proposal.get('component_flow_units')
+                or proposal.get('total_flow_units')):
+            reply = (
+                'The message gives more than one flow unit -- please restate all '
+                'component flows using one common unit (kmol/hr, mol/hr, or kg/hr).'
+            )
+            messages.append({'role': 'assistant', 'content': reply})
+            exit_path = 'mixed_flow_units'
+            return reply
+
+        if len(mixed_basis) > 1 and (
+                proposal.get('composition') or proposal.get('composition_basis')):
+            reply = (
+                'The message gives composition on more than one basis -- please '
+                'restate all fractions using one common basis (mole or mass).'
+            )
+            messages.append({'role': 'assistant', 'content': reply})
+            exit_path = 'mixed_composition_basis'
+            return reply
+
+        grounded, rejected = ground_proposed_update(
+            user_message, {k: v for k, v in proposal.items() if k != 'reset'},
+            known_component_names=get_known_component_names(),
         )
+        if record is not None:
+            record['grounding'] = {
+                'accepted': diag.to_jsonable(grounded),
+                'rejected': diag.to_jsonable(rejected),
+            }
+
+        result = update_multicomponent_feed(**grounded)
+        if record is not None:
+            record['function_calls'].append({
+                'name': 'update_multicomponent_feed',
+                'arguments': diag.to_jsonable(grounded),
+                'result': diag.to_jsonable(result),
+            })
+
+        if result.get('complete'):
+            reply = _format_result_reply(result)
+            exit_path = 'complete_result'
+        else:
+            reply = _format_pending_reply(result)
+            exit_path = _exit_path_for_pending(result)
         messages.append({'role': 'assistant', 'content': reply})
         return reply
+    finally:
+        if record is not None:
+            record['reply'] = reply
+            record['exit_path'] = exit_path
+            record['state_after'] = diag.to_jsonable(get_multicomponent_feed_state())
+            record['state_diff'] = diag.compute_state_diff(record['state_before'], record['state_after'])
+            _emit_debug_record(record, debug_mode)
 
-    if len(detect_mixed_composition_basis(user_message)) > 1 and (
-            proposal.get('composition') or proposal.get('composition_basis')):
-        reply = (
-            'The message gives composition on more than one basis -- please '
-            'restate all fractions using one common basis (mole or mass).'
-        )
-        messages.append({'role': 'assistant', 'content': reply})
-        return reply
 
-    grounded, _rejected = ground_proposed_update(
-        user_message, {k: v for k, v in proposal.items() if k != 'reset'},
-        known_component_names=get_known_component_names(),
+def _build_arg_parser():
+    parser = argparse.ArgumentParser(
+        prog='multicomponent_distillation_agent.py',
+        description=(
+            'Natural-language front end for the multicomponent (>=3 '
+            'component) feed-phase intake agent.'
+        ),
     )
+    debug_group = parser.add_mutually_exclusive_group()
+    debug_group.add_argument(
+        '--debug', action='store_true',
+        help=(
+            "Print a compact human-readable diagnostic trace of every turn "
+            "(model proposal, grounding, state changes) to stderr; the "
+            "ordinary Assistant reply still goes to stdout. WARNING: the "
+            "trace includes the full raw user message and the model's raw "
+            "output, which may contain sensitive process information."
+        ),
+    )
+    debug_group.add_argument(
+        '--debug-json', action='store_true',
+        help=(
+            "Print one complete JSON diagnostic object per turn to stderr; "
+            "the ordinary Assistant reply still goes to stdout. WARNING: "
+            "the trace includes the full raw user message and the model's "
+            "raw output, which may contain sensitive process information."
+        ),
+    )
+    parser.add_argument(
+        'prompt', nargs='*',
+        help='One-shot prompt text. If omitted, starts an interactive REPL.',
+    )
+    return parser
 
-    result = update_multicomponent_feed(**grounded)
 
-    reply = _format_result_reply(result) if result.get('complete') else _format_pending_reply(result)
-    messages.append({'role': 'assistant', 'content': reply})
-    return reply
-
-
-def run_repl():
+def run_repl(debug_mode=None):
     client = ollama.Client()
     messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
 
     print(f"Multicomponent distillation agent ready (model: {MODEL}). Type 'exit' to quit.")
+    turn_number = 0
     while True:
         try:
             user_input = input('\nYou: ').strip()
@@ -292,15 +444,19 @@ def run_repl():
         if not user_input:
             continue
 
-        reply = process_turn(client, messages, user_input)
+        turn_number += 1
+        reply = process_turn(client, messages, user_input, turn_number=turn_number, debug_mode=debug_mode)
         print(f"\nAssistant: {reply}")
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
+    args = _build_arg_parser().parse_args()
+    debug_mode = 'json' if args.debug_json else ('human' if args.debug else None)
+
+    if args.prompt:
         # One-shot mode: single prompt from argv, print the reply, exit.
         client = ollama.Client()
         messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-        print(process_turn(client, messages, ' '.join(sys.argv[1:])))
+        print(process_turn(client, messages, ' '.join(args.prompt), turn_number=1, debug_mode=debug_mode))
     else:
-        run_repl()
+        run_repl(debug_mode=debug_mode)
