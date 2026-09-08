@@ -13,6 +13,7 @@ import pytest
 
 from feed_phase import evaluate_feed_phase
 from multicomponent_feed_phase import (
+    calculate_multicomponent_feed_phase_with_inputs,
     calculate_multicomponent_feed_phase,
     evaluate_multicomponent_feed_phase,
 )
@@ -125,3 +126,40 @@ def test_calculate_multicomponent_feed_phase_unbuildable_state_reports_error():
     result = calculate_multicomponent_feed_phase(state)
     assert result['valid'] is False
     assert result['error'] == 'feed_build_failed'
+
+
+# --- calculate_multicomponent_feed_phase_with_inputs (on-demand debug) ------
+
+def test_calculate_multicomponent_feed_phase_with_inputs_reports_calculation_inputs():
+    state = apply_user_update(empty_feed_state(), {
+        'component_names': ['Water', 'Ethanol', 'Methanol'],
+        'component_flows': {'Water': 30, 'Ethanol': 40, 'Methanol': 30},
+        'component_flow_units': 'kmol/hr',
+        'pressure': 1.0, 'pressure_units': 'atm',
+        'feed_temperature': 350, 'feed_temperature_units': 'K',
+    })
+    result, inputs = calculate_multicomponent_feed_phase_with_inputs(state)
+
+    assert result['valid'] is True
+    assert inputs['pressure_Pa'] == pytest.approx(101325.0, abs=1e-3)
+    assert inputs['feed_temperature_K'] == pytest.approx(350.0, abs=1e-6)
+    assert inputs['component_molar_flows_kmol_per_hr'] == {
+        'Water': pytest.approx(30.0), 'Ethanol': pytest.approx(40.0), 'Methanol': pytest.approx(30.0),
+    }
+
+
+def test_calculate_multicomponent_feed_phase_with_inputs_unbuildable_state_reports_none_inputs():
+    state = apply_user_update(empty_feed_state(), {
+        'component_names': ['Water', 'Ethanol'],
+        'component_flows': {'Water': 30, 'Ethanol': 40},
+        'component_flow_units': 'kmol/hr',
+        'pressure': 1.0, 'pressure_units': 'atm',
+    })
+    result, inputs = calculate_multicomponent_feed_phase_with_inputs(state)
+
+    assert result['valid'] is False
+    assert result['error'] == 'feed_build_failed'
+    assert inputs == {
+        'pressure_Pa': None, 'feed_temperature_K': None,
+        'component_molar_flows_kmol_per_hr': None,
+    }

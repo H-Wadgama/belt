@@ -106,6 +106,44 @@ def evaluate_multicomponent_feed_phase(
         }
 
 
+def _build_feed_inputs(state):
+    """Deterministically build the feed/pressure/temperature inputs the T/P
+    VLE evaluation needs, without running the calculation itself. Shared by
+    `calculate_multicomponent_feed_phase` and
+    `calculate_multicomponent_feed_phase_with_inputs` so there is exactly
+    one place that derives these values from `state`.
+
+    Returns
+    -------
+    (feed, pressure_Pa, feed_temperature_K, error_result) : tuple
+        On success, `error_result` is None and the other three are usable.
+        On failure, `feed`/`pressure_Pa`/`feed_temperature_K` are None and
+        `error_result` is an already-shaped
+        `calculate_multicomponent_feed_phase`-style failure dict.
+    """
+    try:
+        feed, pressure_Pa = build_multicomponent_biosteam_feed(state)
+    except Exception as err:
+        # Catches both MulticomponentBiosteamFeedError (an incomplete
+        # state -- should not normally reach here once the caller has
+        # checked assess_feed_state()['ready']) and any exception BioSTEAM
+        # itself raises while building the feed, e.g. an unrecognized
+        # component name `bst.settings.set_thermo` cannot find
+        # thermodynamic data for -- something no pure state-layer
+        # validation could have caught in advance.
+        return None, None, None, {
+            'check': 'multicomponent_feed_phase',
+            'valid': False,
+            'error': 'feed_build_failed',
+            'message': str(err),
+        }
+
+    feed_temperature_K = temperature_to_K(
+        record_value(state['feed_temperature']), record_unit(state['feed_temperature']),
+    )
+    return feed, pressure_Pa, feed_temperature_K, None
+
+
 def calculate_multicomponent_feed_phase(state):
     """
     Build a BioSTEAM feed from `state` (an already-normalized, `ready`
@@ -122,30 +160,48 @@ def calculate_multicomponent_feed_phase(state):
         'error': 'feed_build_failed', 'message': str}` if the feed itself
         could not be built (see `build_multicomponent_biosteam_feed`).
     """
-    try:
-        feed, pressure_Pa = build_multicomponent_biosteam_feed(state)
-    except Exception as err:
-        # Catches both MulticomponentBiosteamFeedError (an incomplete
-        # state -- should not normally reach here once the caller has
-        # checked assess_feed_state()['ready']) and any exception BioSTEAM
-        # itself raises while building the feed, e.g. an unrecognized
-        # component name `bst.settings.set_thermo` cannot find
-        # thermodynamic data for -- something no pure state-layer
-        # validation could have caught in advance.
-        return {
-            'check': 'multicomponent_feed_phase',
-            'valid': False,
-            'error': 'feed_build_failed',
-            'message': str(err),
-        }
-
-    feed_temperature_K = temperature_to_K(
-        record_value(state['feed_temperature']), record_unit(state['feed_temperature']),
-    )
-
+    feed, pressure_Pa, feed_temperature_K, error_result = _build_feed_inputs(state)
+    if error_result is not None:
+        return error_result
     return evaluate_multicomponent_feed_phase(
         feed, pressure_Pa=pressure_Pa, feed_temperature_K=feed_temperature_K,
     )
+
+
+def calculate_multicomponent_feed_phase_with_inputs(state):
+    """
+    Same calculation as `calculate_multicomponent_feed_phase`, but also
+    returns the exact deterministic inputs used (or attempted) -- for the
+    on-demand phase-query debug trace (see
+    tools/multicomponent-distillation-boiling-point-order-plan.md
+    "On-demand feed-phase evaluation" / debug requirements). Not used by
+    the terminal boiling-point-order path, which never runs this
+    calculation at all.
+
+    Returns
+    -------
+    (result, inputs) : (dict, dict)
+        `result` is exactly `calculate_multicomponent_feed_phase`'s return
+        value for the same `state`. `inputs` is
+        `{'pressure_Pa', 'feed_temperature_K',
+        'component_molar_flows_kmol_per_hr'}` -- all None if the feed could
+        not be built at all (see the `feed_build_failed` result).
+    """
+    feed, pressure_Pa, feed_temperature_K, error_result = _build_feed_inputs(state)
+    if error_result is not None:
+        return error_result, {
+            'pressure_Pa': None, 'feed_temperature_K': None,
+            'component_molar_flows_kmol_per_hr': None,
+        }
+
+    result = evaluate_multicomponent_feed_phase(
+        feed, pressure_Pa=pressure_Pa, feed_temperature_K=feed_temperature_K,
+    )
+    molar_flows = {ID: feed.imol[ID] for ID in feed.chemicals.IDs if feed.imol[ID] > 1e-9}
+    return result, {
+        'pressure_Pa': pressure_Pa, 'feed_temperature_K': feed_temperature_K,
+        'component_molar_flows_kmol_per_hr': molar_flows,
+    }
 
 
 if __name__ == '__main__':

@@ -77,7 +77,19 @@ QUERY_ALIASES = {
     'total_flow': ('total flow', 'total feed', 'feed rate', 'feed flow'),
     'pressure': ('pressure',),
     'feed_temperature': ('temperature', 'temp', 'feed temp'),
+    # On-demand feed-phase evaluation (tools/multicomponent-distillation
+    # -boiling-point-order-plan.md "On-demand feed-phase evaluation") --
+    # these are computational query targets, not stored feed-state fields:
+    # a verified hit routes to `multicomponent_feed_phase`, never to
+    # `multicomponent_feed_tool.query_feed_state`.
+    'phase': ('phase',),
+    'vapor_fraction': ('vapor fraction', 'vapor frac'),
+    'liquid_fraction': ('liquid fraction', 'liquid frac'),
 }
+
+# Query target fields that trigger a live deterministic phase calculation
+# (`multicomponent_feed_phase`) instead of a read-only feed-state snapshot.
+PHASE_QUERY_FIELDS = ('phase', 'vapor_fraction', 'liquid_fraction')
 
 
 def _alias_present(alias, text_lower):
@@ -202,6 +214,21 @@ def _unit_grounded(canonical_unit, message, alias_table):
     return unit_evidence(canonical_unit, message, alias_table) is not None
 
 
+def _composition_semantics_present(message):
+    """Return whether the message presents values as compositions/fractions.
+
+    Numeric presence alone is insufficient because a small model may copy
+    flow, pressure, or temperature values into its composition proposal.
+    """
+    text_lower = (message or '').lower()
+    if '%' in text_lower:
+        return True
+    return any(
+        _alias_present(alias, text_lower)
+        for alias in QUERY_ALIASES['composition']
+    )
+
+
 def ground_query_target_field(message, target_field):
     """Confirm that `message` actually names `target_field` before a
     read-only query is ever answered from stored state -- "verify
@@ -299,7 +326,15 @@ def ground_proposed_update(message, candidate_fields, known_component_names=(), 
     # --- composition (dict-shaped, per-entry) -------------------------------
     composition = candidate_fields.get('composition')
     if composition is not None:
-        if not isinstance(composition, dict):
+        composition_was_requested = bool(
+            active_request and active_request.get('field') == 'composition'
+        )
+        if not composition_was_requested and not _composition_semantics_present(message):
+            reject(
+                'composition',
+                'message does not identify the numbers as composition or fractions',
+            )
+        elif not isinstance(composition, dict):
             reject('composition', 'not a mapping of component name to numeric fraction')
         elif len(mixed_basis) > 1:
             reject(

@@ -43,6 +43,7 @@ def new_turn_record(turn_number, user_message):
         'committed_state': None,
         'rollback': None,
         'boiling_point_order': None,
+        'feed_phase_evaluation': None,
         'query_result': None,
         'function_calls': [],
         'state_after': None,
@@ -212,6 +213,24 @@ def render_human_readable(record):
         lines.append(f"  order_low_to_high: {boiling.get('order_low_to_high')}")
         lines.append(f"  ties: {boiling.get('ties')}")
         lines.append(f"  status: {boiling.get('status')}")
+
+    phase_eval = record.get('feed_phase_evaluation')
+    if phase_eval:
+        lines.append('[feed_phase_evaluation]')
+        lines.append(f"  temperature_K: {phase_eval.get('temperature_K')}")
+        lines.append(f"  pressure_Pa: {phase_eval.get('pressure_Pa')}")
+        lines.append(
+            f"  component_molar_flows_kmol_per_hr: "
+            f"{phase_eval.get('component_molar_flows_kmol_per_hr')}"
+        )
+        lines.append(f"  calculation_type: {phase_eval.get('calculation_type')}")
+        lines.append(f"  phase: {phase_eval.get('phase')}")
+        lines.append(f"  vapor_fraction: {phase_eval.get('vapor_fraction')}")
+        lines.append(f"  liquid_fraction: {phase_eval.get('liquid_fraction')}")
+        lines.append(f"  valid: {phase_eval.get('valid')}")
+        lines.append(f"  status: {phase_eval.get('status')}")
+        if phase_eval.get('error'):
+            lines.append(f"  error: {phase_eval.get('error')} -- {phase_eval.get('message')}")
 
     if record.get('query_result') is not None:
         lines.append(f"[query result] {record.get('query_result')}")

@@ -97,6 +97,95 @@ def test_fabricated_pressure_and_flows_are_never_applied():
 
 # --- State persists across separate turns; no resend needed ----------------
 
+def test_initial_multifact_message_is_not_scoped_to_model_target_field(monkeypatch):
+    """Regression for a live Qwen proposal that targeted component_names
+    while correctly extracting the rest of a complete initial feed."""
+    ordered_names = ['hydrogen', 'methane', 'methanol', 'ethanol', 'water', 'glycerol']
+    monkeypatch.setattr(
+        agent.tool,
+        'calculate_multicomponent_boiling_point_order',
+        lambda component_names: {
+            'check': 'multicomponent_boiling_point_order',
+            'valid': True,
+            'status': 'complete',
+            'reference_pressure_Pa': 101325.0,
+            'components': [],
+            'failures': [],
+            'order_low_to_high': ordered_names,
+            'ties': [],
+            'error': None,
+            'message': None,
+        },
+    )
+    session = dlg.create_session()
+    client = ScriptedClient([_resp(
+        target_field='component_names', component_identity_action='add',
+        component_names=['water', 'ethanol', 'methane', 'hydrogen', 'methanol', 'glycerol'],
+        component_flows={
+            'water': 20, 'ethanol': 20, 'methane': 50,
+            'hydrogen': 90, 'methanol': 100, 'glycerol': 10,
+        },
+        component_flow_units='kmol/hr', total_flow=290,
+        total_flow_units='kmol/hr',
+        composition={
+            'water': 0.069, 'ethanol': 0.069, 'methane': 0.1724,
+            'hydrogen': 0.3103, 'methanol': 0.3448, 'glycerol': 0.0345,
+        },
+        composition_basis='mole', pressure=1, pressure_units='atm',
+        feed_temperature=355, feed_temperature_units='K',
+    )])
+
+    reply = agent.process_turn(
+        client, session,
+        'separate water=20 kmol/hr, ethanol=20 kmol/hr, methane=50 kmol/hr, '
+        'hydrogen=90 kmol/hr, methanol=100 kmol/hr, glycerol=10 kmol/hr '
+        'at 355 K and 1 atm',
+    )
+
+    state = session['feed_state']
+    assert set(state['component_flows']) == {
+        'water', 'ethanol', 'methane', 'hydrogen', 'methanol', 'glycerol',
+    }
+    assert record_value(state['total_flow']) == 290
+    assert record_value(state['pressure']) == 1
+    assert record_value(state['feed_temperature']) == 355
+    assert 'boiling point' in reply.lower()
+
+
+def test_initial_respectively_flow_list_advances_past_identity_collection():
+    session = dlg.create_session()
+    client = ScriptedClient([_resp(
+        target_field='component_names', component_identity_action='add',
+        component_names=['water', 'methanol', 'ethanol', 'glycerol', 'hydrogen', 'methane'],
+        component_flows={
+            'water': 10, 'methanol': 30, 'ethanol': 60,
+            'glycerol': 20, 'hydrogen': 90, 'methane': 60,
+        },
+        component_flow_units='kmol/hr', total_flow=270,
+        total_flow_units='kmol/hr',
+        # Reproduce the noisy live proposal. This must not prevent the
+        # explicitly stated flow group from being committed.
+        composition={
+            'water': 10, 'methanol': 30, 'ethanol': 60,
+            'glycerol': 20, 'hydrogen': 90, 'methane': 60,
+        },
+        composition_basis='mole',
+    )])
+
+    reply = agent.process_turn(
+        client, session,
+        'separate water, methanol, ethanol, glycerol, hydrogen, methane at '
+        'flow rates of 10 kmol/hr, 30 kmol/hr, 60 kmol/hr, 20 kmol/hr, '
+        '90 kmol/hr and 60 kmol/hr respectively',
+    )
+
+    assert set(session['feed_state']['component_flows']) == {
+        'water', 'methanol', 'ethanol', 'glycerol', 'hydrogen', 'methane',
+    }
+    assert record_value(session['feed_state']['total_flow']) == 270
+    assert 'pressure' in reply.lower()
+
+
 def test_state_persists_across_separate_turns():
     session = dlg.create_session()
 
@@ -329,3 +418,66 @@ def test_query_with_unverifiable_target_field_asks_for_clarification():
     client = ScriptedClient([_resp(intent='query_current_state', target_field='pressure')])
     reply = agent.process_turn(client, session, 'what is the total flow?')
     assert 'not sure' in reply.lower()
+
+
+# --- On-demand feed-phase evaluation (kept out of the default terminal -----
+# --- reply, but explicitly calculated -- never guessed -- on request) ------
+
+def _complete_feed_session():
+    session = dlg.create_session()
+    turns = [
+        ('Water, ethanol, methanol.', _resp(component_names=['Water', 'Ethanol', 'Methanol'])),
+        ('30, 40, 30 kmol/hr.', _resp(
+            component_flows={'Water': 30, 'Ethanol': 40, 'Methanol': 30},
+            component_flow_units='kmol/hr')),
+        ('1 atm.', _resp(pressure=1, pressure_units='atm')),
+        ('350 K.', _resp(feed_temperature=350, feed_temperature_units='K')),
+    ]
+    for user_text, response in turns:
+        client = ScriptedClient([response])
+        agent.process_turn(client, session, user_text)
+    return session
+
+
+def test_explicit_phase_query_after_complete_feed_calculates_and_reports_phase():
+    session = _complete_feed_session()
+    state_before = json.dumps(session['feed_state'], default=str, sort_keys=True)
+
+    client = ScriptedClient([_resp(intent='query_current_state', target_field='phase')])
+    reply = agent.process_turn(client, session, 'what is the phase of the feed?')
+
+    assert reply.startswith('Phase: ')
+    assert 'Vapor fraction: 0.' in reply
+    assert 'Liquid fraction: 0.' in reply
+    # Read-only: the committed feed state is untouched by the query.
+    assert json.dumps(session['feed_state'], default=str, sort_keys=True) == state_before
+    assert session['pending_request'] is None
+
+
+def test_explicit_phase_query_accepts_vapor_and_liquid_fraction_wording():
+    session = _complete_feed_session()
+
+    client_v = ScriptedClient([_resp(intent='query_current_state', target_field='vapor_fraction')])
+    reply_v = agent.process_turn(client_v, session, "what's the vapor fraction?")
+    assert 'Vapor fraction: 0.' in reply_v
+
+    client_l = ScriptedClient([_resp(intent='query_current_state', target_field='liquid_fraction')])
+    reply_l = agent.process_turn(client_l, session, "what's the liquid fraction?")
+    assert 'Liquid fraction: 0.' in reply_l
+
+
+def test_explicit_phase_query_before_feed_complete_reports_missing_input():
+    session = dlg.create_session()
+    client0 = ScriptedClient([_resp(component_names=['Water', 'Ethanol', 'Methanol'])])
+    agent.process_turn(client0, session, 'separate water ethanol methanol')
+    pending_before = session['pending_request']
+
+    client = ScriptedClient([_resp(intent='query_current_state', target_field='phase')])
+    reply = agent.process_turn(client, session, 'what is the phase of the feed?')
+
+    assert "can't be evaluated yet" in reply
+    assert 'feed quantity' in reply.lower() or 'composition' in reply.lower()
+    assert 'Phase:' not in reply
+    # Still read-only: the query neither creates nor replaces the active
+    # pending request -- whatever was already pending stays pending.
+    assert session['pending_request'] == pending_before

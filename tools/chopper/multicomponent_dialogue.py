@@ -443,6 +443,18 @@ def bind_reply_to_pending(session, intent_result, raw_message):
     if direct_binding is not None:
         return direct_binding
 
+    # A model-proposed target is useful for interpreting a reply to an active
+    # question, but it must not truncate an unsolicited multi-fact message.
+    # Qwen commonly labels a complete initial feed statement with the first
+    # field (component_names) while also extracting flows, pressure, and
+    # temperature correctly. With no pending request, every proposed field is
+    # allowed to reach literal grounding; unsupported/model-derived values are
+    # still rejected there.
+    if pending is None:
+        candidate = dict(model_fields)
+        candidate = with_identity_op('component_names', candidate)
+        return _finalize(session, candidate)
+
     if target_field:
         candidate = scoped(target_field)
         if not candidate and pending and pending['field'] == target_field:
@@ -470,6 +482,7 @@ def bind_reply_to_pending(session, intent_result, raw_message):
 
         return {'action': 'clarify', 'message': format_pending_question(pending)}
 
-    candidate = dict(model_fields)
-    candidate = with_identity_op('component_names', candidate)
-    return _finalize(session, candidate)
+    # `pending is None` returned above; all pending paths return within their
+    # branch as well. Keep a defensive empty candidate for future registry
+    # extensions rather than silently widening a pending reply.
+    return _finalize(session, {})

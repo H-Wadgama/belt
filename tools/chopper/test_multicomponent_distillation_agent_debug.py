@@ -277,6 +277,66 @@ def test_debug_human_trace_has_dedicated_normal_boiling_point_section(capsys):
     assert 'status: complete' in trace
 
 
+# --- 10b. On-demand phase query gets its own debug section, independent ---
+# --- of (and without rerunning) the normal-boiling-point order -------------
+
+def test_phase_query_debug_section_reports_calculation_inputs_and_result(capsys):
+    _run_to_completion('json')
+    capsys.readouterr()  # discard the four intake turns' records
+
+    client = ScriptedClient([_resp(intent='query_current_state', target_field='phase')])
+    session = dlg.create_session()
+    for user_text, response in [
+        ('Water, ethanol, methanol.', _resp(component_names=['Water', 'Ethanol', 'Methanol'])),
+        ('30, 40, 30 kmol/hr.', _resp(
+            component_flows={'Water': 30, 'Ethanol': 40, 'Methanol': 30},
+            component_flow_units='kmol/hr')),
+        ('1 atm.', _resp(pressure=1, pressure_units='atm')),
+        ('350 K.', _resp(feed_temperature=350, feed_temperature_units='K')),
+    ]:
+        agent.process_turn(ScriptedClient([response]), session, user_text)
+    capsys.readouterr()
+
+    agent.process_turn(client, session, 'what is the phase of the feed?', debug_mode='json')
+    record = _debug_json_records(capsys)[0]
+
+    assert record['exit_path'] == 'phase_query'
+    # The phase evaluation ran and is reported in its own section...
+    phase_eval = record['feed_phase_evaluation']
+    assert phase_eval['status'] == 'complete'
+    assert phase_eval['valid'] is True
+    assert phase_eval['temperature_K'] == pytest.approx(350.0, abs=1e-3)
+    assert phase_eval['pressure_Pa'] == pytest.approx(101325.0, abs=1)
+    assert phase_eval['component_molar_flows_kmol_per_hr'] == {
+        'Water': pytest.approx(30.0), 'Ethanol': pytest.approx(40.0), 'Methanol': pytest.approx(30.0),
+    }
+    assert phase_eval['phase'] in ('liquid', 'vapor', 'vapor_liquid')
+    # ...and the boiling-point order is untouched/absent -- the phase query
+    # neither reruns nor replaces it, and no state-changing function ran.
+    assert record['boiling_point_order'] is None
+    assert record['function_calls'] == []
+    json.dumps(record)  # no BioSTEAM object leaked through
+
+
+def test_phase_query_debug_section_reports_missing_inputs_without_calculating(capsys):
+    session = dlg.create_session()
+    client0 = ScriptedClient([_resp(component_names=['Water', 'Ethanol', 'Methanol'])])
+    agent.process_turn(client0, session, 'separate water ethanol methanol')
+    capsys.readouterr()
+
+    client = ScriptedClient([_resp(intent='query_current_state', target_field='phase')])
+    agent.process_turn(client, session, 'what is the phase of the feed?', debug_mode='json')
+
+    record = _debug_json_records(capsys)[0]
+    assert record['exit_path'] == 'phase_query'
+    phase_eval = record['feed_phase_evaluation']
+    assert phase_eval['status'] == 'missing_inputs'
+    assert phase_eval['valid'] is False
+    assert phase_eval['temperature_K'] is None
+    assert phase_eval['phase'] is None
+    assert record['function_calls'] == []
+
+
 # --- 11. Read-only query is recorded without a state-changing function call
 
 def test_query_turn_records_query_result_and_no_function_calls(capsys):

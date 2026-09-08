@@ -60,8 +60,10 @@ import ollama
 
 import multicomponent_diagnostics as diag
 import multicomponent_dialogue as dlg
+import multicomponent_feed_phase as feed_phase
 import multicomponent_feed_tool as tool
 import multicomponent_grounding as ground
+from multicomponent_feed_state import assess_feed_state
 
 MODEL = 'qwen3:8b'
 
@@ -140,7 +142,11 @@ target_field -- if the message clearly names ONE specific field (one of: \
 component_names, component_flows, composition, total_flow, pressure, \
 feed_temperature), name it; otherwise null. When intent is \
 query_current_state, target_field MUST be set to the field being asked \
-about.
+about -- this also includes phase, vapor_fraction, or liquid_fraction \
+when the user explicitly asks for the feed's equilibrium phase, vapor \
+fraction, or liquid fraction (e.g. "what is the phase of the feed?", \
+"what's the vapor fraction?"). These three are read-only computed \
+results, never fact fields you should populate.
 
 component_identity_action -- 'none' unless the message explicitly adds, \
 removes, or replaces feed components (e.g. "also include propanol" -> \
@@ -273,6 +279,75 @@ def _format_result_reply(result):
     )
 
 
+def _format_phase_query_reply(result):
+    """Deterministic formatter for a completed on-demand feed-phase
+    evaluation -- the same sentence shape the terminal reply used before
+    tools/multicomponent-distillation-boiling-point-order-plan.md replaced
+    it as the default output. Only ever called on-demand now, when the
+    user explicitly asks for the phase."""
+    return (
+        f"Phase: {result['phase']}. "
+        f"Vapor fraction: {result['vapor_fraction']:.4f}. "
+        f"Liquid fraction: {result['liquid_fraction']:.4f}."
+    )
+
+
+def _handle_phase_query(session, record):
+    """
+    Read-only on-demand feed-phase evaluation (see
+    tools/multicomponent-distillation-boiling-point-order-plan.md
+    "On-demand feed-phase evaluation"). Runs the deterministic
+    `multicomponent_feed_phase` calculation directly against a snapshot of
+    the committed feed state -- never caches a result into `feed_state`,
+    never touches `pending_request`, and never re-derives or replaces the
+    normal-boiling-point order. The `101325 Pa` boiling-point reference
+    pressure is never involved here; the feed's own committed pressure is
+    used, exactly as `multicomponent_feed_phase.calculate_multicomponent_
+    feed_phase` requires.
+    """
+    assessment = assess_feed_state(session['feed_state'])
+
+    if not assessment['ready']:
+        missing = assessment['missing_inputs']
+        missing_field = missing[0] if missing else None
+        pending = dlg.pending_request_for(missing_field) if missing_field else None
+        if record is not None:
+            record['feed_phase_evaluation'] = {
+                'temperature_K': None, 'pressure_Pa': None,
+                'component_molar_flows_kmol_per_hr': None,
+                'calculation_type': 'temperature_pressure',
+                'phase': None, 'vapor_fraction': None, 'liquid_fraction': None,
+                'valid': False, 'status': 'missing_inputs',
+                'error': 'missing_inputs', 'message': f'missing: {missing_field}',
+            }
+        if pending is None:
+            return 'More feed information is needed before the phase can be evaluated.'
+        return (
+            "The feed phase can't be evaluated yet -- "
+            + dlg.format_pending_question(pending)
+        )
+
+    result, inputs = feed_phase.calculate_multicomponent_feed_phase_with_inputs(assessment['state'])
+    if record is not None:
+        record['feed_phase_evaluation'] = {
+            'temperature_K': inputs['feed_temperature_K'],
+            'pressure_Pa': inputs['pressure_Pa'],
+            'component_molar_flows_kmol_per_hr': diag.to_jsonable(inputs['component_molar_flows_kmol_per_hr']),
+            'calculation_type': 'temperature_pressure',
+            'phase': result.get('phase'),
+            'vapor_fraction': result.get('vapor_fraction'),
+            'liquid_fraction': result.get('liquid_fraction'),
+            'valid': result.get('valid'),
+            'status': 'complete' if result.get('valid') else 'failed',
+            'error': result.get('error'),
+            'message': result.get('message'),
+        }
+
+    if not result.get('valid'):
+        return f"Could not evaluate the feed phase: {result.get('message') or result.get('error')}"
+    return _format_phase_query_reply(result)
+
+
 def _emit_debug_record(record, debug_mode):
     text = diag.render_json(record) if debug_mode == 'json' else diag.render_human_readable(record)
     print(text, file=sys.stderr)
@@ -338,6 +413,10 @@ def process_turn(client, session, user_message, debug_mode=None):
         if direct_binding is None and intent == 'query_current_state':
             target_field = proposal.get('target_field')
             verified = bool(target_field) and ground.ground_query_target_field(user_message, target_field)
+            if verified and target_field in ground.PHASE_QUERY_FIELDS:
+                reply = _handle_phase_query(session, record)
+                exit_path = 'phase_query'
+                return reply
             if verified:
                 snapshot = tool.query_feed_state(session['feed_state'], target_field)
                 answer = dlg.format_query_answer(target_field, snapshot)

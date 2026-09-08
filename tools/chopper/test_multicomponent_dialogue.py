@@ -136,13 +136,34 @@ def test_no_pending_and_no_target_field_passes_everything_proposed():
     assert binding['candidate_fields'] == {'pressure': 1, 'pressure_units': 'atm'}
 
 
-def test_target_field_scopes_even_without_pending_request():
+def test_target_field_does_not_truncate_multifact_message_without_pending_request():
     session = dlg.create_session()
     proposal = _empty_proposal(
-        target_field='pressure', pressure=1, component_flows={'Water': 5},
+        target_field='component_names',
+        component_identity_action='add',
+        component_names=['Water', 'Ethanol', 'Methanol'],
+        component_flows={'Water': 5, 'Ethanol': 6, 'Methanol': 7},
+        component_flow_units='kmol/hr',
+        pressure=1,
+        pressure_units='atm',
+        feed_temperature=355,
+        feed_temperature_units='K',
     )
-    binding = dlg.bind_reply_to_pending(session, proposal, 'pressure is 1')
-    assert binding['candidate_fields'] == {'pressure': 1}
+    binding = dlg.bind_reply_to_pending(
+        session,
+        proposal,
+        'Water=5 kmol/hr, Ethanol=6 kmol/hr, Methanol=7 kmol/hr at 355 K and 1 atm',
+    )
+    assert binding['candidate_fields'] == {
+        'component_names': ['Water', 'Ethanol', 'Methanol'],
+        'component_flows': {'Water': 5, 'Ethanol': 6, 'Methanol': 7},
+        'component_flow_units': 'kmol/hr',
+        'pressure': 1,
+        'pressure_units': 'atm',
+        'feed_temperature': 355,
+        'feed_temperature_units': 'K',
+        'component_identity_op': 'add',
+    }
 
 
 # --- Component identity protection --------------------------------------------

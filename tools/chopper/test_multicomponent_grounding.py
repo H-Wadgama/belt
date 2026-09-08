@@ -235,3 +235,58 @@ def test_query_target_field_rejected_for_unregistered_field():
 def test_query_target_field_temperature_aliases():
     assert ground_query_target_field('what temperature did I give?', 'feed_temperature') is True
     assert ground_query_target_field('what is the pressure?', 'feed_temperature') is False
+
+
+# --- On-demand feed-phase query targets are supported computational query --
+# --- targets, not rejected merely because they aren't feed-state fields ----
+
+def test_query_target_field_phase_wording():
+    assert ground_query_target_field('what is the phase of the feed?', 'phase') is True
+    assert ground_query_target_field('what is the pressure?', 'phase') is False
+
+
+def test_query_target_field_vapor_and_liquid_fraction_wording():
+    assert ground_query_target_field('what is the vapor fraction?', 'vapor_fraction') is True
+    assert ground_query_target_field('what is the liquid fraction?', 'liquid_fraction') is True
+    assert ground_query_target_field('what is the vapor fraction?', 'liquid_fraction') is False
+
+
+def test_phase_query_fields_constant_lists_all_three_targets():
+    from multicomponent_grounding import PHASE_QUERY_FIELDS
+    assert set(PHASE_QUERY_FIELDS) == {'phase', 'vapor_fraction', 'liquid_fraction'}
+
+
+# --- Physical-field association for multifact flow messages -----------------
+
+def test_flow_numbers_do_not_ground_model_proposed_composition():
+    message = (
+        'water, methanol, ethanol at flow rates of 10 kmol/hr, 30 kmol/hr, '
+        'and 60 kmol/hr respectively'
+    )
+    proposed = {
+        'component_flows': {'water': 10, 'methanol': 30, 'ethanol': 60},
+        'component_flow_units': 'kmol/hr',
+        'composition': {'water': 10, 'methanol': 30, 'ethanol': 60},
+    }
+
+    grounded, _evidence, rejected = ground_proposed_update(message, proposed)
+
+    assert grounded['component_flows'] == {
+        'water': 10, 'methanol': 30, 'ethanol': 60,
+    }
+    assert 'composition' not in grounded
+    assert 'composition' in rejected
+
+
+def test_bare_composition_values_remain_allowed_for_active_composition_request():
+    message = 'water 0.2, methanol 0.3, ethanol 0.5'
+    proposed = {'composition': {'water': 0.2, 'methanol': 0.3, 'ethanol': 0.5}}
+    active_request = {'field': 'composition', 'kind': 'value'}
+
+    grounded, _evidence, _rejected = ground_proposed_update(
+        message, proposed, active_request=active_request,
+    )
+
+    assert grounded['composition'] == {
+        'water': 0.2, 'methanol': 0.3, 'ethanol': 0.5,
+    }
