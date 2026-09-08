@@ -26,7 +26,11 @@ from multicomponent_feed_state import (
     record_unit,
     record_value,
 )
-from multicomponent_grounding import QUERY_ALIASES, detect_mixed_composition_basis
+from multicomponent_grounding import (
+    QUERY_ALIASES,
+    detect_mixed_composition_basis,
+    detect_mixed_flow_units,
+)
 from multicomponent_units import (
     SUPPORTED_FLOW_UNITS,
     SUPPORTED_PRESSURE_UNITS,
@@ -184,7 +188,10 @@ _UNIT_NORMALIZERS = {
     'feed_temperature_units': normalize_temperature_unit,
 }
 
-_BARE_NUMBER_RE = re.compile(r'^\s*-?\d+(?:\.\d+)?\s*%?\s*$')
+_BARE_MEASUREMENT_RE = re.compile(
+    r'^\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*(.*?)\s*$'
+)
+_NUMBER_PATTERN = r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?'
 
 
 def pending_request_for(missing_field, turn_number=None):
@@ -266,7 +273,60 @@ def format_extraction_context(session):
     return '\n'.join(lines)
 
 
-def _synthesize_short_answer(pending, raw_message):
+def _scalar_pending_answer(field, raw_message):
+    """Read an unambiguous scalar value, optionally followed by its unit."""
+    match = _BARE_MEASUREMENT_RE.fullmatch((raw_message or '').strip())
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit_text = match.group(2).strip()
+    result = {field: value}
+    if not unit_text:
+        return result
+
+    unit_field = FIELD_REGISTRY.get(field, {}).get('unit_field')
+    normalizer = _UNIT_NORMALIZERS.get(unit_field)
+    canonical_unit = normalizer(unit_text) if normalizer else None
+    if canonical_unit is None:
+        return None
+    result[unit_field] = canonical_unit
+    return result
+
+
+def _named_component_flow_answer(session, raw_message):
+    """Extract clearly labelled flows for established components.
+
+    This is deliberately narrower than general natural-language extraction:
+    it runs only when the current message contains exactly one supported flow
+    unit, then associates each number with the established component name
+    immediately preceding it. More complicated statements remain Qwen's job.
+    """
+    units = detect_mixed_flow_units(raw_message)
+    if len(units) != 1:
+        return None
+
+    flows = {}
+    text = raw_message or ''
+    for established in session['feed_state']['component_names']:
+        pattern = re.compile(
+            rf'(?<![a-z0-9]){re.escape(established)}(?![a-z0-9])'
+            rf'\s*(?:flow(?:\s+rate)?\s*)?(?:=|:|is|at)?\s*'
+            rf'({_NUMBER_PATTERN})',
+            re.IGNORECASE,
+        )
+        match = pattern.search(text)
+        if match:
+            flows[established] = float(match.group(1))
+
+    if flows:
+        return {
+            'component_flows': flows,
+            'component_flow_units': next(iter(units)),
+        }
+    return None
+
+
+def _synthesize_short_answer(session, pending, raw_message):
     """Parse `raw_message` itself as a compatible short answer for
     `pending`, entirely independent of what the model proposed -- the
     fallback that guards against the model proposing nothing usable (or
@@ -290,16 +350,10 @@ def _synthesize_short_answer(pending, raw_message):
         return None
 
     if kind == 'value' and field in ('pressure', 'feed_temperature', 'total_flow'):
-        if not _BARE_NUMBER_RE.match(text):
-            return None
-        try:
-            is_pct = text.rstrip().endswith('%')
-            value = float(text.rstrip().rstrip('%').strip())
-        except ValueError:
-            return None
-        if is_pct:
-            value = value / 100.0
-        return {field: value}
+        return _scalar_pending_answer(field, text)
+
+    if kind == 'value' and field == 'component_flows':
+        return _named_component_flow_answer(session, text)
 
     return None
 
@@ -330,6 +384,21 @@ def _finalize(session, candidate):
     if clarification:
         return {'action': 'clarify', 'message': clarification}
     return {'action': 'candidate', 'candidate_fields': candidate}
+
+
+def bind_direct_reply_to_pending(session, raw_message):
+    """Return a deterministic binding for an unambiguous pending answer.
+
+    This check is intentionally independent of the model's proposed intent,
+    target, and value. The controller calls it before acting on those model
+    fields, so even an ``unclear`` or erroneous ``reset`` classification
+    cannot suppress a literal answer to the question just asked.
+    """
+    pending = session.get('pending_request')
+    if pending is None:
+        return None
+    direct_answer = _synthesize_short_answer(session, pending, raw_message)
+    return _finalize(session, direct_answer) if direct_answer else None
 
 
 def bind_reply_to_pending(session, intent_result, raw_message):
@@ -365,10 +434,19 @@ def bind_reply_to_pending(session, intent_result, raw_message):
     raw_target = intent_result.get('target_field')
     target_field = raw_target if raw_target in _FIELD_KEYS else _KEY_TO_FIELD.get(raw_target)
 
+    # The active question is stronger evidence than a small model's proposed
+    # value or target. If the current message is an unambiguous direct answer,
+    # use the deterministic interpretation first. This prevents a Qwen output
+    # such as pressure=0 from suppressing the literal bare answer "3", and it
+    # also prevents a wrong model target from redirecting that 3 elsewhere.
+    direct_binding = bind_direct_reply_to_pending(session, raw_message)
+    if direct_binding is not None:
+        return direct_binding
+
     if target_field:
         candidate = scoped(target_field)
         if not candidate and pending and pending['field'] == target_field:
-            candidate = _synthesize_short_answer(pending, raw_message) or {}
+            candidate = _synthesize_short_answer(session, pending, raw_message) or {}
         candidate = with_identity_op(target_field, candidate)
         return _finalize(session, candidate)
 
@@ -376,7 +454,7 @@ def bind_reply_to_pending(session, intent_result, raw_message):
         field = pending['field']
         candidate = scoped(field)
         if not candidate:
-            candidate = _synthesize_short_answer(pending, raw_message) or {}
+            candidate = _synthesize_short_answer(session, pending, raw_message) or {}
         if candidate:
             candidate = with_identity_op(field, candidate)
             return _finalize(session, candidate)

@@ -21,7 +21,7 @@ import pytest
 
 import multicomponent_distillation_agent as agent
 import multicomponent_dialogue as dlg
-from multicomponent_feed_state import record_value
+from multicomponent_feed_state import apply_user_update, empty_feed_state, record_value
 
 
 class FakeMessage:
@@ -145,6 +145,43 @@ def test_bare_pressure_answer_never_grounds_a_hallucinated_field():
     assert record_value(session['feed_state']['pressure']) == 1
     from multicomponent_feed_state import record_unit
     assert record_unit(session['feed_state']['pressure']) == 'atm'
+
+
+def test_bare_pressure_answer_uses_literal_value_when_model_proposes_zero():
+    """Regression for the live turn where the user answered ``3`` but Qwen
+    proposed pressure=0, causing the pressure question to repeat."""
+    session = dlg.create_session()
+    session['feed_state'] = apply_user_update(empty_feed_state(), {
+        'component_names': ['methanol', 'ethanol', 'water'],
+        'component_flows': {'methanol': 50, 'ethanol': 20, 'water': 50},
+        'component_flow_units': 'kmol/hr',
+    })
+    session['pending_request'] = dlg.pending_request_for('pressure_value', turn_number=1)
+    client = ScriptedClient([_resp(
+        intent='provide_information', target_field=None,
+        pressure=0, total_flow=0, feed_temperature=0,
+    )])
+
+    reply = agent.process_turn(client, session, '3')
+
+    assert record_value(session['feed_state']['pressure']) == 3
+    assert 'units' in reply.lower()
+
+
+def test_direct_pending_answer_survives_wrong_model_intent():
+    session = dlg.create_session()
+    session['feed_state'] = apply_user_update(empty_feed_state(), {
+        'component_names': ['methanol', 'ethanol', 'water'],
+        'component_flows': {'methanol': 50, 'ethanol': 20, 'water': 50},
+        'component_flow_units': 'kmol/hr',
+    })
+    session['pending_request'] = dlg.pending_request_for('pressure_value', turn_number=1)
+    client = ScriptedClient([_resp(intent='unclear', pressure=0)])
+
+    reply = agent.process_turn(client, session, '3')
+
+    assert record_value(session['feed_state']['pressure']) == 3
+    assert 'units' in reply.lower()
 
 
 # --- Component identity protection --------------------------------------------

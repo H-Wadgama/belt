@@ -58,6 +58,60 @@ def test_bare_value_synthesized_from_raw_text_when_model_proposes_nothing():
     assert binding == {'action': 'candidate', 'candidate_fields': {'pressure': 1}}
 
 
+def test_bare_value_overrides_wrong_model_value_for_pending_numeric_field():
+    session = _session_with_pending('pressure_value')
+    proposal = _empty_proposal(pressure=0)
+
+    binding = dlg.bind_reply_to_pending(session, proposal, '3')
+
+    assert binding == {'action': 'candidate', 'candidate_fields': {'pressure': 3.0}}
+
+
+def test_bare_temperature_overrides_wrong_model_value():
+    session = _session_with_pending('feed_temperature_value')
+    proposal = _empty_proposal(feed_temperature=0)
+
+    binding = dlg.bind_reply_to_pending(session, proposal, '355')
+
+    assert binding == {
+        'action': 'candidate', 'candidate_fields': {'feed_temperature': 355.0},
+    }
+
+
+def test_scalar_pending_answer_can_include_its_supported_unit():
+    session = _session_with_pending('pressure_value')
+    proposal = _empty_proposal(pressure=0, pressure_units='Pa')
+
+    binding = dlg.bind_reply_to_pending(session, proposal, '3 atm')
+
+    assert binding == {
+        'action': 'candidate',
+        'candidate_fields': {'pressure': 3.0, 'pressure_units': 'atm'},
+    }
+
+
+def test_explicit_named_component_flows_override_stale_model_mapping():
+    state = apply_user_update(empty_feed_state(), {
+        'component_names': ['methanol', 'ethanol', 'water'],
+    })
+    session = _session_with_pending('feed_quantity', feed_state=state)
+    proposal = _empty_proposal(component_flows={
+        'methanol': 50, 'ethanol': 20, 'water': 50,
+    }, component_flow_units='kmol/hr')
+
+    binding = dlg.bind_reply_to_pending(
+        session, proposal, 'methanol = 50 kmol/hr',
+    )
+
+    assert binding == {
+        'action': 'candidate',
+        'candidate_fields': {
+            'component_flows': {'methanol': 50.0},
+            'component_flow_units': 'kmol/hr',
+        },
+    }
+
+
 def test_incompatible_short_answer_with_no_model_help_asks_for_clarification():
     session = _session_with_pending('pressure_value')
     proposal = _empty_proposal()

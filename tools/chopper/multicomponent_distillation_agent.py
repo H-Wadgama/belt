@@ -311,7 +311,16 @@ def process_turn(client, session, user_message, debug_mode=None):
 
         intent = proposal.get('intent')
 
-        if intent == 'reset':
+        # First honor an unambiguous literal answer to the active question.
+        # This path is independent of Qwen's intent/target/value proposal, so
+        # a bare numeric or unit answer cannot be lost merely because the
+        # model called it unclear, assigned the wrong value, or chose the
+        # wrong intent.
+        direct_binding = dlg.bind_direct_reply_to_pending(
+            session, user_message,
+        )
+
+        if direct_binding is None and intent == 'reset':
             session['feed_state'] = tool.reset_multicomponent_feed_session()
             session['pending_request'] = None
             if record is not None:
@@ -323,7 +332,7 @@ def process_turn(client, session, user_message, debug_mode=None):
             exit_path = 'reset'
             return reply
 
-        if intent == 'query_current_state':
+        if direct_binding is None and intent == 'query_current_state':
             target_field = proposal.get('target_field')
             verified = bool(target_field) and ground.ground_query_target_field(user_message, target_field)
             if verified:
@@ -344,7 +353,7 @@ def process_turn(client, session, user_message, debug_mode=None):
                 exit_path = 'query_unclear'
             return reply
 
-        if intent == 'unclear':
+        if direct_binding is None and intent == 'unclear':
             pending = session.get('pending_request')
             reply = dlg.format_pending_question(pending) if pending else (
                 "Could you tell me more about the feed you'd like to evaluate?"
@@ -356,7 +365,9 @@ def process_turn(client, session, user_message, debug_mode=None):
         # / confirm / deny all flow through the same bind -> ground -> commit
         # pipeline; the binder decides field scope from the active pending
         # request regardless of which of these the message was classified as.
-        binding = dlg.bind_reply_to_pending(session, proposal, user_message)
+        binding = direct_binding or dlg.bind_reply_to_pending(
+            session, proposal, user_message,
+        )
         if record is not None:
             record['binding_decision'] = binding
 
