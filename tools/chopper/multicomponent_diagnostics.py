@@ -42,6 +42,7 @@ def new_turn_record(turn_number, user_message):
         'rejected_groups': {},
         'committed_state': None,
         'rollback': None,
+        'boiling_point_order': None,
         'query_result': None,
         'function_calls': [],
         'state_after': None,
@@ -194,6 +195,23 @@ def render_human_readable(record):
 
     if record.get('rollback') is not None:
         lines.append(f"[rollback] {record.get('rollback')}")
+
+    boiling = record.get('boiling_point_order')
+    if boiling:
+        lines.append('[normal_boiling_point_order]')
+        lines.append(f"  reference_pressure_Pa: {boiling.get('reference_pressure_Pa')}")
+        lines.append('  components:')
+        for c in boiling.get('components') or []:
+            lines.append(
+                f"    - component: {c.get('component')} "
+                f"normal_boiling_point_K: {c.get('normal_boiling_point_K')} "
+                f"property_source: {c.get('property_source')}"
+            )
+        for f in boiling.get('failures') or []:
+            lines.append(f"    - component: {f.get('component')} FAILED: {f.get('reason')}")
+        lines.append(f"  order_low_to_high: {boiling.get('order_low_to_high')}")
+        lines.append(f"  ties: {boiling.get('ties')}")
+        lines.append(f"  status: {boiling.get('status')}")
 
     if record.get('query_result') is not None:
         lines.append(f"[query result] {record.get('query_result')}")

@@ -52,9 +52,10 @@ def test_multiturn_collection_reaches_completion():
 
     r = tool.advance_feed_state(state, {'feed_temperature_units': 'K'})
     assert r['complete'] is True
-    assert r['phase'] in {'liquid', 'vapor', 'vapor_liquid'}
-    assert 0 <= r['vapor_fraction'] <= 1
-    assert 0 <= r['liquid_fraction'] <= 1
+    boiling = r['boiling_point_order']
+    assert boiling['valid'] is True
+    assert set(boiling['order_low_to_high']) == {'Water', 'Ethanol', 'Methanol'}
+    assert len(boiling['order_low_to_high']) == 3
 
 
 def test_bare_percent_composition_infers_basis_without_asking():

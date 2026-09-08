@@ -227,9 +227,10 @@ def test_malformed_output_retry_records_both_raw_responses(capsys):
     assert record['model']['raw_responses'] == ['not json', 'still not json']
 
 
-# --- 10. Completed phase calculation records a JSON-serializable result ----
+# --- 10. Completed calculation records a JSON-serializable boiling-point ---
+# --- order result, with a dedicated trace section --------------------------
 
-def test_completed_calculation_result_is_json_serializable_and_reports_phase(capsys):
+def _run_to_completion(debug_mode):
     session = dlg.create_session()
     turns = [
         ('Water, ethanol, methanol.', _resp(component_names=['Water', 'Ethanol', 'Methanol'])),
@@ -239,17 +240,41 @@ def test_completed_calculation_result_is_json_serializable_and_reports_phase(cap
         ('1 atm.', _resp(pressure=1, pressure_units='atm')),
         ('350 K.', _resp(feed_temperature=350, feed_temperature_units='K')),
     ]
+    reply = None
     for user_text, response in turns:
         client = ScriptedClient([response])
-        agent.process_turn(client, session, user_text, debug_mode='json')
+        reply = agent.process_turn(client, session, user_text, debug_mode=debug_mode)
+    return reply
+
+
+def test_completed_calculation_result_is_json_serializable_and_reports_boiling_point_order(capsys):
+    _run_to_completion('json')
 
     records = _debug_json_records(capsys)
     final = records[-1]
     assert final['exit_path'] == 'complete_result'
     result = final['function_calls'][-1]['result']
     assert result['complete'] is True
-    assert result['phase'] in {'liquid', 'vapor', 'vapor_liquid'}
+    boiling = result['boiling_point_order']
+    assert boiling['valid'] is True
+    assert boiling['status'] == 'complete'
+    assert boiling['reference_pressure_Pa'] == 101325.0
+    assert set(boiling['order_low_to_high']) == {'Water', 'Ethanol', 'Methanol'}
     json.dumps(result)  # no BioSTEAM object leaked through
+
+    # The top-level record also carries a dedicated boiling_point_order
+    # section (not just nested inside the raw function_calls result).
+    assert final['boiling_point_order']['status'] == 'complete'
+
+
+def test_debug_human_trace_has_dedicated_normal_boiling_point_section(capsys):
+    _run_to_completion('human')
+
+    trace = _debug_lines(capsys)
+    assert '[normal_boiling_point_order]' in trace
+    assert 'reference_pressure_Pa: 101325.0' in trace
+    assert 'order_low_to_high:' in trace
+    assert 'status: complete' in trace
 
 
 # --- 11. Read-only query is recorded without a state-changing function call

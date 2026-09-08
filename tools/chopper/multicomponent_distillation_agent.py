@@ -262,11 +262,14 @@ def propose_feed_update(client, session, user_message):
 
 def _format_result_reply(result):
     """Deterministic formatter for a complete tool result -- reports ONLY
-    the phase and the two molar fractions (the agent's output boundary)."""
+    the component order from lowest to highest normal boiling point (the
+    agent's current output boundary). No longer reports phase or vapor/
+    liquid fractions -- see tools/multicomponent-distillation-boiling-point
+    -order-plan.md "Output change"."""
+    order = result['boiling_point_order']['order_low_to_high']
     return (
-        f"Phase: {result['phase']}. "
-        f"Vapor fraction: {result['vapor_fraction']:.4f}. "
-        f"Liquid fraction: {result['liquid_fraction']:.4f}."
+        'Component order by normal boiling point (lowest to highest): '
+        + ', '.join(order) + '.'
     )
 
 
@@ -437,6 +440,8 @@ def process_turn(client, session, user_message, debug_mode=None):
             record['rejected_groups'] = diag.to_jsonable(result['rejected_groups'])
             record['committed_state'] = diag.to_jsonable(result['feed_state'])
             record['rollback'] = not result['accepted_groups']
+            if result.get('boiling_point_order') is not None:
+                record['boiling_point_order'] = diag.to_jsonable(result['boiling_point_order'])
 
         if result['conflicts']:
             reply = 'Conflicting feed information was given: ' + ' '.join(c['message'] for c in result['conflicts'])

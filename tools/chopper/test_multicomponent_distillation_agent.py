@@ -10,7 +10,9 @@ bounded malformed-JSON retry) per turn; a session is threaded explicitly
 (no module-global feed state); the numeric-collision fix (a bare reply
 answering one pending question can't also ground an unrelated hallucinated
 field); component identity protection; read-only queries; and that the
-final reply contains only phase/vapor_fraction/liquid_fraction information.
+final reply contains only the lowest-to-highest normal-boiling-point
+component order (see
+tools/multicomponent-distillation-boiling-point-order-plan.md).
 
 Run with:
     pytest tools/chopper/test_multicomponent_distillation_agent.py -v
@@ -234,9 +236,9 @@ def test_partial_flows_with_changed_capitalization_advance_past_quantity():
     assert 'pressure' in reply.lower()
 
 
-# --- Full conversation ends with only phase/fraction information -----------
+# --- Full conversation ends with only the boiling-point order --------------
 
-def test_full_conversation_ends_with_only_phase_and_fractions():
+def test_full_conversation_ends_with_only_boiling_point_order():
     session = dlg.create_session()
     turns = [
         ('Water, ethanol, methanol.', _resp(component_names=['Water', 'Ethanol', 'Methanol'])),
@@ -251,10 +253,10 @@ def test_full_conversation_ends_with_only_phase_and_fractions():
         client = ScriptedClient([response])
         reply = agent.process_turn(client, session, user_text)
 
-    assert 'phase' in reply.lower()
-    assert 'vapor fraction' in reply.lower()
-    assert 'liquid fraction' in reply.lower()
-    for forbidden in ('column', 'reflux', 'design', 'separation'):
+    assert 'boiling point' in reply.lower()
+    for name in ('water', 'ethanol', 'methanol'):
+        assert name in reply.lower()
+    for forbidden in ('column', 'reflux', 'design', 'separation', 'phase', 'vapor fraction', 'liquid fraction'):
         assert forbidden not in reply.lower()
 
 

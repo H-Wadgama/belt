@@ -18,7 +18,7 @@ No LLM calls -- this module must never import `ollama` or `openai`.
 """
 import copy
 
-from multicomponent_feed_phase import calculate_multicomponent_feed_phase
+from multicomponent_boiling_point import calculate_multicomponent_boiling_point_order
 from multicomponent_feed_state import (
     MIN_COMPONENTS,
     assess_candidate_transition,
@@ -67,8 +67,12 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
                                conversation layer turns this into user-
                                facing text via
                                `multicomponent_dialogue.pending_request_for`.
-        'phase' / 'vapor_fraction' / 'liquid_fraction' : only when complete.
-        'error'              : only if the calculation itself failed.
+        'boiling_point_order' : only when complete -- the full
+                               `calculate_multicomponent_boiling_point_order`
+                               result dict (order, per-component values,
+                               ties, property source, reference pressure).
+        'error'              : only if the calculation itself failed (also
+                               present alongside a failed 'boiling_point_order').
     """
     transition = assess_candidate_transition(
         feed_state, checked_facts, turn_number=turn_number, evidence=evidence,
@@ -104,20 +108,19 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
             'missing_field': missing[0] if missing else None,
         }
 
-    result = calculate_multicomponent_feed_phase(committed)
-    if not result.get('valid'):
+    boiling_result = calculate_multicomponent_boiling_point_order(committed['component_names'])
+    if not boiling_result['valid']:
         return {
             **base, 'complete': False, 'valid': False,
             'conflicts': [], 'validation_errors': [], 'missing_field': None,
-            'error': result.get('error'), 'error_message': result.get('message'),
+            'error': boiling_result.get('error'), 'error_message': boiling_result.get('message'),
+            'boiling_point_order': boiling_result,
         }
 
     return {
         **base, 'complete': True, 'valid': True,
         'conflicts': [], 'validation_errors': [], 'missing_field': None,
-        'phase': result['phase'],
-        'vapor_fraction': result['vapor_fraction'],
-        'liquid_fraction': result['liquid_fraction'],
+        'boiling_point_order': boiling_result,
     }
 
 

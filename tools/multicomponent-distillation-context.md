@@ -199,9 +199,15 @@ sensitive process information.
 
 ## Output Boundary
 
-Once the feed is complete, the agent reports only the equilibrium phase and
-the molar vapor and liquid fractions. It does not route the feed, select a
-separation, or perform a distillation design.
+Once the feed is complete, the agent reports only the feed components
+ordered from lowest to highest normal boiling point (see
+tools/multicomponent-distillation-boiling-point-order-plan.md), looked up
+deterministically at a fixed reference pressure of 101325 Pa (1 atm) rather
+than the feed's own pressure. It does not designate a light or heavy key,
+route the feed, select a separation, or perform a distillation design. The
+feed-phase (equilibrium vapor/liquid fraction) calculation this superseded
+is still available internally (`multicomponent_feed_phase.py`) but is no
+longer the user-facing terminal reply.
 
 The phase-result restriction does not prevent concise missing-input questions,
 validation messages, or explicit read-only answers about accumulated feed
