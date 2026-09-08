@@ -10,9 +10,9 @@ bounded malformed-JSON retry) per turn; a session is threaded explicitly
 (no module-global feed state); the numeric-collision fix (a bare reply
 answering one pending question can't also ground an unrelated hallucinated
 field); component identity protection; read-only queries; and that the
-final reply contains only the lowest-to-highest normal-boiling-point
-component order (see
-tools/multicomponent-distillation-boiling-point-order-plan.md).
+    final reply suppresses the internal normal-boiling-point order and
+    reports the assumed individual products, saturation pressures, and
+    adjacent-pair ideal-liquid relative volatilities.
 
 Run with:
     pytest tools/chopper/test_multicomponent_distillation_agent.py -v
@@ -117,6 +117,25 @@ def test_initial_multifact_message_is_not_scoped_to_model_target_field(monkeypat
             'message': None,
         },
     )
+    monkeypatch.setattr(
+        agent.tool, 'calculate_adjacent_relative_volatilities',
+        lambda component_names, order, temperature_K: {
+            'check': 'multicomponent_relative_volatility', 'valid': True,
+            'status': 'complete', 'temperature_K': temperature_K,
+            'ideal_liquid_assumption': True,
+            'saturation_pressures': [
+                {'component': n, 'Psat_Pa': float(i + 1), 'property_source': 'fake'}
+                for i, n in enumerate(component_names)
+            ],
+            'adjacent_pairs': [
+                {'more_volatile_component': a, 'less_volatile_component': b,
+                 'relative_volatility': 2.0,
+                 'definition': 'Psat_more_volatile/Psat_less_volatile'}
+                for a, b in zip(order, order[1:])
+            ],
+            'failures': [], 'error': None, 'message': None,
+        },
+    )
     session = dlg.create_session()
     client = ScriptedClient([_resp(
         target_field='component_names', component_identity_action='add',
@@ -149,7 +168,8 @@ def test_initial_multifact_message_is_not_scoped_to_model_target_field(monkeypat
     assert record_value(state['total_flow']) == 290
     assert record_value(state['pressure']) == 1
     assert record_value(state['feed_temperature']) == 355
-    assert 'boiling point' in reply.lower()
+    assert 'relative volatilities' in reply.lower()
+    assert 'boiling point' not in reply.lower()
 
 
 def test_initial_respectively_flow_list_advances_past_identity_collection():
@@ -325,9 +345,9 @@ def test_partial_flows_with_changed_capitalization_advance_past_quantity():
     assert 'pressure' in reply.lower()
 
 
-# --- Full conversation ends with only the boiling-point order --------------
+# --- Full conversation reports products, Psat, and relative volatility -----
 
-def test_full_conversation_ends_with_only_boiling_point_order():
+def test_full_conversation_reports_volatility_without_printing_boiling_point_order():
     session = dlg.create_session()
     turns = [
         ('Water, ethanol, methanol.', _resp(component_names=['Water', 'Ethanol', 'Methanol'])),
@@ -342,7 +362,11 @@ def test_full_conversation_ends_with_only_boiling_point_order():
         client = ScriptedClient([response])
         reply = agent.process_turn(client, session, user_text)
 
-    assert 'boiling point' in reply.lower()
+    assert 'boiling point' not in reply.lower()
+    assert '3 products' in reply.lower()
+    assert 'saturation pressures at 350 k' in reply.lower()
+    assert 'relative volatilities' in reply.lower()
+    assert 'psat' in reply.lower()
     for name in ('water', 'ethanol', 'methanol'):
         assert name in reply.lower()
     for forbidden in ('column', 'reflux', 'design', 'separation', 'phase', 'vapor fraction', 'liquid fraction'):

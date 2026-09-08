@@ -247,7 +247,7 @@ def _run_to_completion(debug_mode):
     return reply
 
 
-def test_completed_calculation_result_is_json_serializable_and_reports_boiling_point_order(capsys):
+def test_completed_calculation_result_is_json_serializable_and_reports_volatility(capsys):
     _run_to_completion('json')
 
     records = _debug_json_records(capsys)
@@ -265,6 +265,12 @@ def test_completed_calculation_result_is_json_serializable_and_reports_boiling_p
     # The top-level record also carries a dedicated boiling_point_order
     # section (not just nested inside the raw function_calls result).
     assert final['boiling_point_order']['status'] == 'complete'
+    assert result['product_specification']['number_of_products'] == 3
+    assert result['relative_volatility']['status'] == 'complete'
+    assert len(result['relative_volatility']['saturation_pressures']) == 3
+    assert len(result['relative_volatility']['adjacent_pairs']) == 2
+    assert final['product_specification']['number_of_products'] == 3
+    assert final['relative_volatility']['status'] == 'complete'
 
 
 def test_debug_human_trace_has_dedicated_normal_boiling_point_section(capsys):
@@ -275,6 +281,8 @@ def test_debug_human_trace_has_dedicated_normal_boiling_point_section(capsys):
     assert 'reference_pressure_Pa: 101325.0' in trace
     assert 'order_low_to_high:' in trace
     assert 'status: complete' in trace
+    assert '[product_specification]' in trace
+    assert '[relative_volatility]' in trace
 
 
 # --- 10b. On-demand phase query gets its own debug section, independent ---

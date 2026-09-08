@@ -9,7 +9,8 @@ Assume every feed sent to this agent contains **three or more nonzero-flow
 components**.
 
 This agent currently performs multicomponent feed intake, deterministic
-normal-boiling-point ordering, and on-demand feed-phase evaluation. It does
+normal-boiling-point ordering, an ideal-liquid adjacent relative-volatility
+evaluation, and on-demand feed-phase evaluation. It does
 not inherit the binary workflow's routing, column-design, RAG, trial, sweep,
 economic, or optimization machinery. Small shared thermodynamic helpers may
 be reused when doing so does not import those unrelated behaviors.
@@ -54,8 +55,34 @@ boiling point, the ordering fails structurally; the agent must not present a
 partial list as complete or ask Qwen to supply a missing property.
 
 The normal-boiling-point result does not automatically select light and heavy
-keys. It only establishes the volatility ordering needed by a later separation
-train workflow.
+keys. It establishes the volatility ordering used internally to identify the
+adjacent binary pairs. The ordered component list is retained in structured
+results and diagnostics but is not printed in the ordinary completion reply.
+
+## Required Products and Relative Volatility
+
+For the current version, every nonzero-flow feed component is assumed to be
+required as its own individual product. Consequently, a feed with `n`
+components has `n` required products and `n - 1` adjacent binary pairs. This
+assumption is represented explicitly in the deterministic result so a later
+version can replace it with user-selected product cuts without changing the
+thermodynamic calculation boundary.
+
+Once intake is complete, deterministic Python evaluates each component's
+`chemical.Psat(T)` at the committed feed temperature. Under the ideal-liquid
+assumption, the relative volatility for each internally ordered adjacent pair
+is:
+
+```text
+alpha(more volatile / less volatile) = Psat(more volatile) / Psat(less volatile)
+```
+
+The ordinary completion reply reports the assumed number and identity of the
+individual products, every component saturation pressure in Pa, the evaluation
+temperature in K, and the relative volatility of every adjacent pair. It does
+not print a separate normal-boiling-point-order list. Missing or invalid Psat
+data causes a structured calculation failure; Qwen must not estimate or repair
+the property.
 
 ## Essential Inputs (Table 3-1 Analog, Multicomponent)
 
@@ -143,8 +170,9 @@ For each user turn:
 4. Valid logical groups are committed; a rejected group must not corrupt the
    previously committed state.
 5. Python deterministically returns the next question, validation message,
-   read-only state answer, on-demand phase result, or completed normal-boiling-
-   point order. The model is not called again to write the response.
+   read-only state answer, on-demand phase result, or completed product and
+   relative-volatility evaluation. The model is not called again to write the
+   response.
 
 The logical state groups are component identity, feed quantity/composition,
 pressure, and temperature.
@@ -257,7 +285,9 @@ BioSTEAM calculations, or state mutations.
 For a completed feed, the trace includes a dedicated
 `normal_boiling_point_order` section with the `101325 Pa` reference pressure,
 each component's `chemical.Tb` value and property source, the final order,
-ties, and status.
+ties, and status. It also includes `product_specification` and
+`relative_volatility` sections with the individual-product assumption, product
+count, feed temperature, component Psat values, adjacent pairs, and ratios.
 
 For an explicit phase query, the trace includes a separate
 `feed_phase_evaluation` section with the actual temperature in K, pressure in
@@ -271,10 +301,13 @@ sensitive process information.
 
 ## Output Boundary
 
-Once the feed is complete, the automatic completion reply reports only the
-feed components ordered from lowest to highest normal boiling point. It does
-not automatically report feed phase, designate light or heavy keys, route the
-feed, select a separation, or perform a distillation design.
+Once the feed is complete, the automatic completion reply reports the assumed
+individual products, their count, component Psat values at the feed
+temperature, and ideal-liquid relative volatilities for internally determined
+adjacent pairs. It suppresses the standalone lowest-to-highest normal-boiling-
+point list. It does not automatically report feed phase, designate light or
+heavy keys, route the feed, select a separation, or perform a distillation
+design.
 
 This default boundary does not prevent concise missing-input questions,
 validation messages, stored-state answers, or an explicit on-demand phase

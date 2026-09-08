@@ -23,7 +23,7 @@ for the session/binding/grounding architecture this module implements:
     never by sending a result back to the model as a second turn. The
     model is NOT called again after the extraction call: the next pending
     question, a conflict/validation message, a read-only query answer, or
-    the final phase result are all produced by deterministic Python here
+    the terminal thermodynamic result is produced by deterministic Python here
     and in `multicomponent_dialogue.py`.
   - This module (plus `multicomponent_dialogue.py` and
     `multicomponent_grounding.py`) is the ONLY place that ever reads a raw
@@ -267,15 +267,29 @@ def propose_feed_update(client, session, user_message):
 
 
 def _format_result_reply(result):
-    """Deterministic formatter for a complete tool result -- reports ONLY
-    the component order from lowest to highest normal boiling point (the
-    agent's current output boundary). No longer reports phase or vapor/
-    liquid fractions -- see tools/multicomponent-distillation-boiling-point
-    -order-plan.md "Output change"."""
-    order = result['boiling_point_order']['order_low_to_high']
+    """Report product count, Psat values, and adjacent ideal-liquid alphas.
+
+    The boiling-point order remains in the structured result for selecting
+    adjacent pairs and diagnostics, but is not printed as a user-facing list.
+    """
+    product_spec = result['product_specification']
+    volatility = result['relative_volatility']
+    product_names = [product[0] for product in product_spec['products']]
+    psat_text = '; '.join(
+        f"{item['component']}: {item['Psat_Pa']:.6g} Pa"
+        for item in volatility['saturation_pressures']
+    )
+    pair_text = '; '.join(
+        f"{pair['more_volatile_component']}/{pair['less_volatile_component']}: "
+        f"{pair['relative_volatility']:.6g}"
+        for pair in volatility['adjacent_pairs']
+    )
     return (
-        'Component order by normal boiling point (lowest to highest): '
-        + ', '.join(order) + '.'
+        f"Assuming every feed component is required as a separate product: "
+        f"{product_spec['number_of_products']} products ({', '.join(product_names)}). "
+        f"Saturation pressures at {volatility['temperature_K']:g} K: {psat_text}. "
+        "Adjacent-pair relative volatilities for an ideal liquid "
+        f"(alpha = Psat(more volatile)/Psat(less volatile)): {pair_text}."
     )
 
 
@@ -521,6 +535,10 @@ def process_turn(client, session, user_message, debug_mode=None):
             record['rollback'] = not result['accepted_groups']
             if result.get('boiling_point_order') is not None:
                 record['boiling_point_order'] = diag.to_jsonable(result['boiling_point_order'])
+            if result.get('relative_volatility') is not None:
+                record['relative_volatility'] = diag.to_jsonable(result['relative_volatility'])
+            if result.get('product_specification') is not None:
+                record['product_specification'] = diag.to_jsonable(result['product_specification'])
 
         if result['conflicts']:
             reply = 'Conflicting feed information was given: ' + ' '.join(c['message'] for c in result['conflicts'])

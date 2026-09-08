@@ -56,6 +56,14 @@ def test_multiturn_collection_reaches_completion():
     assert boiling['valid'] is True
     assert set(boiling['order_low_to_high']) == {'Water', 'Ethanol', 'Methanol'}
     assert len(boiling['order_low_to_high']) == 3
+    products = r['product_specification']
+    assert products['number_of_products'] == 3
+    assert products['products'] == [['Water'], ['Ethanol'], ['Methanol']]
+    volatility = r['relative_volatility']
+    assert volatility['valid'] is True
+    assert volatility['temperature_K'] == pytest.approx(350.0)
+    assert len(volatility['saturation_pressures']) == 3
+    assert len(volatility['adjacent_pairs']) == 2
 
 
 def test_bare_percent_composition_infers_basis_without_asking():

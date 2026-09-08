@@ -43,6 +43,8 @@ def new_turn_record(turn_number, user_message):
         'committed_state': None,
         'rollback': None,
         'boiling_point_order': None,
+        'product_specification': None,
+        'relative_volatility': None,
         'feed_phase_evaluation': None,
         'query_result': None,
         'function_calls': [],
@@ -213,6 +215,24 @@ def render_human_readable(record):
         lines.append(f"  order_low_to_high: {boiling.get('order_low_to_high')}")
         lines.append(f"  ties: {boiling.get('ties')}")
         lines.append(f"  status: {boiling.get('status')}")
+
+    products = record.get('product_specification')
+    if products:
+        lines.append('[product_specification]')
+        lines.append(f"  assumption: {products.get('assumption')}")
+        lines.append(f"  number_of_products: {products.get('number_of_products')}")
+        lines.append(f"  products: {products.get('products')}")
+
+    volatility = record.get('relative_volatility')
+    if volatility:
+        lines.append('[relative_volatility]')
+        lines.append(f"  temperature_K: {volatility.get('temperature_K')}")
+        lines.append(f"  ideal_liquid_assumption: {volatility.get('ideal_liquid_assumption')}")
+        lines.append(f"  saturation_pressures: {volatility.get('saturation_pressures')}")
+        lines.append(f"  adjacent_pairs: {volatility.get('adjacent_pairs')}")
+        lines.append(f"  status: {volatility.get('status')}")
+        if volatility.get('error'):
+            lines.append(f"  error: {volatility.get('error')} -- {volatility.get('message')}")
 
     phase_eval = record.get('feed_phase_evaluation')
     if phase_eval:

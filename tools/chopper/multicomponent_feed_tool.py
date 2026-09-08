@@ -24,7 +24,11 @@ from multicomponent_feed_state import (
     assess_candidate_transition,
     assess_feed_state,
     empty_feed_state,
+    record_unit,
+    record_value,
 )
+from multicomponent_relative_volatility import calculate_adjacent_relative_volatilities
+from multicomponent_units import temperature_to_K
 
 
 def get_known_component_names(feed_state) -> list[str]:
@@ -37,8 +41,9 @@ def get_known_component_names(feed_state) -> list[str]:
 def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=None):
     """
     Apply already-checked facts to `feed_state` via a transactional
-    candidate/commit (Section 8), then run the deterministic VLE
-    calculation if the resulting feed is complete.
+    candidate/commit (Section 8), then run the deterministic boiling-point
+    ordering and ideal-liquid relative-volatility calculation if the
+    resulting feed is complete.
 
     Parameters
     ----------
@@ -67,10 +72,15 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
                                conversation layer turns this into user-
                                facing text via
                                `multicomponent_dialogue.pending_request_for`.
-        'boiling_point_order' : only when complete -- the full
+        'boiling_point_order' : only when complete -- the internal full
                                `calculate_multicomponent_boiling_point_order`
                                result dict (order, per-component values,
                                ties, property source, reference pressure).
+        'product_specification': the current default assumption that every
+                               component is required as an individual product.
+        'relative_volatility': component Psat values at feed temperature and
+                               ideal-liquid relative volatility for internally
+                               ordered adjacent pairs.
         'error'              : only if the calculation itself failed (also
                                present alongside a failed 'boiling_point_order').
     """
@@ -117,10 +127,35 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
             'boiling_point_order': boiling_result,
         }
 
+    temperature_K = temperature_to_K(
+        record_value(committed['feed_temperature']),
+        record_unit(committed['feed_temperature']),
+    )
+    volatility_result = calculate_adjacent_relative_volatilities(
+        committed['component_names'], boiling_result['order_low_to_high'], temperature_K,
+    )
+    if not volatility_result['valid']:
+        return {
+            **base, 'complete': False, 'valid': False,
+            'conflicts': [], 'validation_errors': [], 'missing_field': None,
+            'error': volatility_result.get('error'),
+            'error_message': volatility_result.get('message'),
+            'boiling_point_order': boiling_result,
+            'relative_volatility': volatility_result,
+        }
+
+    products = [[name] for name in committed['component_names']]
+
     return {
         **base, 'complete': True, 'valid': True,
         'conflicts': [], 'validation_errors': [], 'missing_field': None,
         'boiling_point_order': boiling_result,
+        'product_specification': {
+            'assumption': 'all_components_separate_individual_products',
+            'number_of_products': len(products),
+            'products': products,
+        },
+        'relative_volatility': volatility_result,
     }
 
 

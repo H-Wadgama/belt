@@ -5,8 +5,8 @@ multicomponent distillation feed.
 See tools/multicomponent-distillation-boiling-point-order-plan.md. Once a
 feed is complete (see `multicomponent_feed_state.assess_feed_state`),
 `multicomponent_feed_tool.advance_feed_state` calls
-`calculate_multicomponent_boiling_point_order` here instead of returning the
-former phase/vapor-fraction/liquid-fraction reply. This module never reads
+`calculate_multicomponent_boiling_point_order` here as an internal prerequisite
+for adjacent-pair selection. This module never reads
 feed quantity, pressure, or temperature -- only the committed component
 identity list -- since the "normal" boiling point is defined at ONE fixed
 documented reference pressure (`REFERENCE_PRESSURE_PA`, 101325 Pa / 1 atm),
