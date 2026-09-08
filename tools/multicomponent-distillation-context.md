@@ -8,17 +8,54 @@ behavior of `tools/chopper/multicomponent_distillation_agent.py`.
 Assume every feed sent to this agent contains **three or more nonzero-flow
 components**.
 
-This agent is currently only a multicomponent feed-intake and feed-phase
-calculator. It does not inherit the binary workflow's routing, column-design,
-RAG, trial, sweep, economic, or optimization machinery. Small shared
-thermodynamic helpers may be reused when doing so does not import those
-unrelated behaviors.
+This agent currently performs multicomponent feed intake, deterministic
+normal-boiling-point ordering, and on-demand feed-phase evaluation. It does
+not inherit the binary workflow's routing, column-design, RAG, trial, sweep,
+economic, or optimization machinery. Small shared thermodynamic helpers may
+be reused when doing so does not import those unrelated behaviors.
 
 ## Feed-Phase Evaluation
 
 For the current version, the feed thermal condition must be explicitly defined
 by **temperature**. Enthalpy and feed quality are not accepted inputs. The
 temperature must never be silently defaulted to the bubble point.
+
+Feed phase is no longer evaluated or reported automatically when intake
+finishes. If the user explicitly asks for the feed phase, vapor fraction, or
+liquid fraction, deterministic Python runs the existing temperature/pressure
+multicomponent VLE calculation using the committed feed state. The calculation
+uses component molar flows, the committed feed temperature converted to K, and
+the committed feed pressure converted to Pa.
+
+The phase result is not supplied or calculated by Qwen. A successful query
+reports the phase together with both molar phase fractions, for example:
+
+```text
+Phase: vapor_liquid. Vapor fraction: 0.4338. Liquid fraction: 0.5662.
+```
+
+This is a read-only computational query: it must not mutate feed facts, replace
+the active request, or change the stored boiling-point order. If required feed
+inputs are missing, the agent reports the next missing input instead of
+guessing or running a partial phase calculation.
+
+## Normal-Boiling-Point Ordering
+
+Once the complete feed input contract is satisfied, deterministic Python
+obtains `chemical.Tb` for every nonzero-flow feed component and orders the
+components from lowest to highest normal boiling point. Normal boiling points
+use the fixed reference pressure `101325 Pa` (`1 atm`) and are independent of
+the committed feed pressure.
+
+The ordering includes every feed component, preserves established component
+spelling, and uses committed feed order as the stable tie rule. Exact ties are
+reported in diagnostics. If any component lacks a finite positive normal
+boiling point, the ordering fails structurally; the agent must not present a
+partial list as complete or ask Qwen to supply a missing property.
+
+The normal-boiling-point result does not automatically select light and heavy
+keys. It only establishes the volatility ordering needed by a later separation
+train workflow.
 
 ## Essential Inputs (Table 3-1 Analog, Multicomponent)
 
@@ -45,9 +82,9 @@ not be required to repeat the entire feed description.
 
 ## Current Model Assumption
 
-Reflux is assumed to be a saturated liquid. This is a current model
-limitation, not an input the agent should request from the user, and it does
-not add any calculation beyond feed-phase evaluation.
+Reflux is assumed to be a saturated liquid for later column-model development.
+This is not an input the current agent requests, and it has no effect on the
+current feed-intake, boiling-point-ordering, or on-demand phase calculations.
 
 ## Initially Supported Units
 
@@ -106,8 +143,8 @@ For each user turn:
 4. Valid logical groups are committed; a rejected group must not corrupt the
    previously committed state.
 5. Python deterministically returns the next question, validation message,
-   read-only state answer, or completed phase result. The model is not called
-   again to write the response.
+   read-only state answer, on-demand phase result, or completed normal-boiling-
+   point order. The model is not called again to write the response.
 
 The logical state groups are component identity, feed quantity/composition,
 pressure, and temperature.
@@ -149,7 +186,18 @@ reapply other flows merely because Qwen copied them from established state.
 More complicated natural-language descriptions may still use the model's
 proposal, but every accepted fact remains subject to grounding.
 
-## Read-Only Questions
+When there is no active request, a singular model-proposed `target_field` is
+not allowed to truncate a multi-fact message. For example, if Qwen labels a
+complete initial feed statement with `target_field="component_names"` while
+also proposing grounded flows, pressure, and temperature, all proposed facts
+are sent to deterministic grounding. Unsupported or derived proposals are
+still rejected there.
+
+When an active request does exist, its field scope and deterministic direct-
+answer rules remain authoritative so that a short answer cannot populate
+unrelated fields.
+
+## Read-Only and Computational Questions
 
 The user may ask about accumulated feed information during intake. For
 example:
@@ -159,8 +207,8 @@ User: What is the feed pressure?
 Assistant: The feed pressure is 101325 Pa.
 ```
 
-Answers must be formatted from a read-only snapshot of committed state, not
-from model memory. A state query must not mutate the feed, run the VLE
+Stored-value answers must be formatted from a read-only snapshot of committed
+state, not from model memory. Such a state query must not run the VLE
 calculation, discard incomplete information, or replace the current pending
 request.
 
@@ -168,12 +216,24 @@ If the requested value is absent or incomplete, report that plainly. For
 example, a stored pressure magnitude without a unit should be reported as a
 value whose units have not yet been specified.
 
+The query targets `phase`, `vapor_fraction`, and `liquid_fraction` are the
+explicit exception to the no-calculation rule: after deterministic query-target
+verification, they run the read-only phase calculation described above. They
+are computed query targets, not stored user-input fields.
+
 ## Grounding Boundary
 
 Qwen's output is a proposal, never authoritative feed data. Numbers, units,
 component names, composition bases, identity operations, query targets, and
 reset intent must be accepted only when supported by the current user message
 or by an unambiguous answer to the active request.
+
+Numeric presence alone is not sufficient when it would associate a value with
+the wrong physical field. In particular, numbers presented as component flow
+rates must not ground a model-proposed composition unless the message explicitly
+uses composition/fraction wording or composition is the active request. This
+prevents copied flow values from invalidating an otherwise valid quantity
+group.
 
 The model must never calculate or propose derived totals, missing fractions,
 mass/mole conversions, or phase results. Those operations belong to
@@ -194,34 +254,46 @@ decision, grounding acceptance/rejection, state transition, function result,
 state difference, exit path, and reply. Debugging must not add model calls,
 BioSTEAM calculations, or state mutations.
 
+For a completed feed, the trace includes a dedicated
+`normal_boiling_point_order` section with the `101325 Pa` reference pressure,
+each component's `chemical.Tb` value and property source, the final order,
+ties, and status.
+
+For an explicit phase query, the trace includes a separate
+`feed_phase_evaluation` section with the actual temperature in K, pressure in
+Pa, component molar flows used, calculation type, phase, vapor and liquid
+fractions, status, and any structured error. This section demonstrates that
+the VLE calculation actually ran; boiling-point ordering alone is not evidence
+of phase evaluation.
+
 The trace includes full user/model content and may therefore contain
 sensitive process information.
 
 ## Output Boundary
 
-Once the feed is complete, the agent reports only the feed components
-ordered from lowest to highest normal boiling point (see
-tools/multicomponent-distillation-boiling-point-order-plan.md), looked up
-deterministically at a fixed reference pressure of 101325 Pa (1 atm) rather
-than the feed's own pressure. It does not designate a light or heavy key,
-route the feed, select a separation, or perform a distillation design. The
-feed-phase (equilibrium vapor/liquid fraction) calculation this superseded
-is still available internally (`multicomponent_feed_phase.py`) but is no
-longer the user-facing terminal reply.
+Once the feed is complete, the automatic completion reply reports only the
+feed components ordered from lowest to highest normal boiling point. It does
+not automatically report feed phase, designate light or heavy keys, route the
+feed, select a separation, or perform a distillation design.
 
-The phase-result restriction does not prevent concise missing-input questions,
-validation messages, or explicit read-only answers about accumulated feed
-inputs during the conversation.
+This default boundary does not prevent concise missing-input questions,
+validation messages, stored-state answers, or an explicit on-demand phase
+calculation. Boiling-point ordering and feed-phase evaluation are independent:
+the former uses component identities and normal `Tb` values at `101325 Pa`;
+the latter uses the committed mixture flows, feed temperature, and feed
+pressure.
 
 ## Known Follow-Up Work
 
-The following robustness work remains separate from the already implemented
-case-insensitive identity and direct pending-answer fixes:
+The following robustness work remains separate from the implemented
+case-insensitive identity, direct pending-answer, initial multi-fact binding,
+flow-versus-composition grounding, boiling-point-ordering, and on-demand phase
+query fixes:
 
 - distinguish a pending component-flow unit from a pending total-flow unit in
   the total-flow-plus-composition input route;
-- associate every number with its exact physical field and component in
-  general multi-fact messages, not merely with any matching numeric token;
+- extend exact number-to-field/component association beyond the implemented
+  protection that prevents flow-only wording from grounding composition;
 - verify reset, add, remove, and replace operations before allowing them to
   change or clear state;
 - prevent a newly mentioned flow/composition entry from silently adding an
