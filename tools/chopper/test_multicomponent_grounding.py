@@ -251,6 +251,16 @@ def test_query_target_field_vapor_and_liquid_fraction_wording():
     assert ground_query_target_field('what is the vapor fraction?', 'liquid_fraction') is False
 
 
+def test_query_target_field_boiling_point_and_separation_order_wording():
+    assert ground_query_target_field(
+        'what is the normal boiling point order?', 'boiling_point_order',
+    ) is True
+    assert ground_query_target_field(
+        'give me the order of separations', 'boiling_point_order',
+    ) is True
+    assert ground_query_target_field('what is the feed phase?', 'boiling_point_order') is False
+
+
 def test_phase_query_fields_constant_lists_all_three_targets():
     from multicomponent_grounding import PHASE_QUERY_FIELDS
     assert set(PHASE_QUERY_FIELDS) == {'phase', 'vapor_fraction', 'liquid_fraction'}

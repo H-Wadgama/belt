@@ -85,11 +85,16 @@ QUERY_ALIASES = {
     'phase': ('phase',),
     'vapor_fraction': ('vapor fraction', 'vapor frac'),
     'liquid_fraction': ('liquid fraction', 'liquid frac'),
+    'boiling_point_order': (
+        'boiling point order', 'boiling points order', 'normal boiling point',
+        'order of separation', 'order of separations', 'separation order',
+    ),
 }
 
 # Query target fields that trigger a live deterministic phase calculation
 # (`multicomponent_feed_phase`) instead of a read-only feed-state snapshot.
 PHASE_QUERY_FIELDS = ('phase', 'vapor_fraction', 'liquid_fraction')
+BOILING_ORDER_QUERY_FIELDS = ('boiling_point_order',)
 
 
 def _alias_present(alias, text_lower):

@@ -64,6 +64,28 @@ def test_multiturn_collection_reaches_completion():
     assert volatility['temperature_K'] == pytest.approx(350.0)
     assert len(volatility['saturation_pressures']) == 3
     assert len(volatility['adjacent_pairs']) == 2
+    critical = r['critical_temperature_check']
+    assert critical['valid'] is True
+    assert critical['ordinary_distillation_feasible'] is True
+    assert len(critical['components']) == 3
+
+
+def test_supercritical_component_stops_relative_volatility_model_but_completes_intake():
+    state = empty_feed_state()
+    r = tool.advance_feed_state(state, {
+        'component_names': ['Hydrogen', 'Methane', 'Methanol'],
+        'component_flows': {'Hydrogen': 10, 'Methane': 20, 'Methanol': 30},
+        'component_flow_units': 'kmol/hr',
+        'pressure': 1.0, 'pressure_units': 'atm',
+        'feed_temperature': 355, 'feed_temperature_units': 'K',
+    })
+    assert r['complete'] is True
+    assert r['valid'] is True
+    assert r['ordinary_distillation_feasible'] is False
+    assert r['relative_volatility'] is None
+    assert {x['component'] for x in r['critical_temperature_check']['violations']} == {
+        'Hydrogen', 'Methane',
+    }
 
 
 def test_bare_percent_composition_infers_basis_without_asking():

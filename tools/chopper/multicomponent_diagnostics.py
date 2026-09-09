@@ -44,6 +44,7 @@ def new_turn_record(turn_number, user_message):
         'rollback': None,
         'boiling_point_order': None,
         'product_specification': None,
+        'critical_temperature_check': None,
         'relative_volatility': None,
         'feed_phase_evaluation': None,
         'query_result': None,
@@ -222,6 +223,20 @@ def render_human_readable(record):
         lines.append(f"  assumption: {products.get('assumption')}")
         lines.append(f"  number_of_products: {products.get('number_of_products')}")
         lines.append(f"  products: {products.get('products')}")
+
+    critical = record.get('critical_temperature_check')
+    if critical:
+        lines.append('[critical_temperature_check]')
+        lines.append(f"  feed_temperature_K: {critical.get('feed_temperature_K')}")
+        lines.append(f"  components: {critical.get('components')}")
+        lines.append(f"  violations: {critical.get('violations')}")
+        lines.append(
+            '  ordinary_distillation_feasible: '
+            f"{critical.get('ordinary_distillation_feasible')}"
+        )
+        lines.append(f"  status: {critical.get('status')}")
+        if critical.get('error'):
+            lines.append(f"  error: {critical.get('error')} -- {critical.get('message')}")
 
     volatility = record.get('relative_volatility')
     if volatility:

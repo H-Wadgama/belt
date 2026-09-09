@@ -60,6 +60,7 @@ import ollama
 
 import multicomponent_diagnostics as diag
 import multicomponent_dialogue as dlg
+import multicomponent_boiling_point as boiling_point
 import multicomponent_feed_phase as feed_phase
 import multicomponent_feed_tool as tool
 import multicomponent_grounding as ground
@@ -142,10 +143,11 @@ target_field -- if the message clearly names ONE specific field (one of: \
 component_names, component_flows, composition, total_flow, pressure, \
 feed_temperature), name it; otherwise null. When intent is \
 query_current_state, target_field MUST be set to the field being asked \
-about -- this also includes phase, vapor_fraction, or liquid_fraction \
+about -- this also includes phase, vapor_fraction, liquid_fraction, or \
+boiling_point_order \
 when the user explicitly asks for the feed's equilibrium phase, vapor \
 fraction, or liquid fraction (e.g. "what is the phase of the feed?", \
-"what's the vapor fraction?"). These three are read-only computed \
+"what's the vapor fraction?", "what is the order of separations?"). These are read-only computed \
 results, never fact fields you should populate.
 
 component_identity_action -- 'none' unless the message explicitly adds, \
@@ -272,6 +274,21 @@ def _format_result_reply(result):
     The boiling-point order remains in the structured result for selecting
     adjacent pairs and diagnostics, but is not printed as a user-facing list.
     """
+    critical = result['critical_temperature_check']
+    if not critical['ordinary_distillation_feasible']:
+        details = ' '.join(
+            f"The feed temperature, {item['feed_temperature_K']:g} K, is above "
+            f"the critical temperature, {item['critical_temperature_K']:g} K, "
+            f"of {item['component']}."
+            for item in critical['violations']
+        )
+        return (
+            'Ordinary distillation is not feasible at this temperature condition. '
+            + details
+            + ' Distillation relies on the existence of vapor-liquid equilibrium, '
+            'which does not exist for these components at these temperature conditions.'
+        )
+
     product_spec = result['product_specification']
     volatility = result['relative_volatility']
     product_names = [product[0] for product in product_spec['products']]
@@ -303,6 +320,22 @@ def _format_phase_query_reply(result):
         f"Phase: {result['phase']}. "
         f"Vapor fraction: {result['vapor_fraction']:.4f}. "
         f"Liquid fraction: {result['liquid_fraction']:.4f}."
+    )
+
+
+def _handle_boiling_point_order_query(session, record):
+    """Calculate and report the normal-boiling-point order read-only."""
+    names = list(session['feed_state'].get('component_names') or [])
+    if len(names) < 3:
+        return 'The boiling-point order cannot be evaluated yet -- which components are in the feed?'
+    result = boiling_point.calculate_multicomponent_boiling_point_order(names)
+    if record is not None:
+        record['boiling_point_order'] = diag.to_jsonable(result)
+    if not result.get('valid'):
+        return f"Could not determine the boiling-point order: {result.get('message') or result.get('error')}"
+    return (
+        'Component order by normal boiling point (lowest to highest): '
+        + ', '.join(result['order_low_to_high']) + '.'
     )
 
 
@@ -431,6 +464,10 @@ def process_turn(client, session, user_message, debug_mode=None):
                 reply = _handle_phase_query(session, record)
                 exit_path = 'phase_query'
                 return reply
+            if verified and target_field in ground.BOILING_ORDER_QUERY_FIELDS:
+                reply = _handle_boiling_point_order_query(session, record)
+                exit_path = 'boiling_point_order_query'
+                return reply
             if verified:
                 snapshot = tool.query_feed_state(session['feed_state'], target_field)
                 answer = dlg.format_query_answer(target_field, snapshot)
@@ -535,6 +572,10 @@ def process_turn(client, session, user_message, debug_mode=None):
             record['rollback'] = not result['accepted_groups']
             if result.get('boiling_point_order') is not None:
                 record['boiling_point_order'] = diag.to_jsonable(result['boiling_point_order'])
+            if result.get('critical_temperature_check') is not None:
+                record['critical_temperature_check'] = diag.to_jsonable(
+                    result['critical_temperature_check']
+                )
             if result.get('relative_volatility') is not None:
                 record['relative_volatility'] = diag.to_jsonable(result['relative_volatility'])
             if result.get('product_specification') is not None:

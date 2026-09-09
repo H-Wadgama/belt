@@ -19,6 +19,7 @@ No LLM calls -- this module must never import `ollama` or `openai`.
 import copy
 
 from multicomponent_boiling_point import calculate_multicomponent_boiling_point_order
+from multicomponent_critical_temperature import evaluate_critical_temperatures
 from multicomponent_feed_state import (
     MIN_COMPONENTS,
     assess_candidate_transition,
@@ -78,6 +79,8 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
                                ties, property source, reference pressure).
         'product_specification': the current default assumption that every
                                component is required as an individual product.
+        'critical_temperature_check': every component Tc and any component
+                               for which the feed temperature exceeds Tc.
         'relative_volatility': component Psat values at feed temperature and
                                ideal-liquid relative volatility for internally
                                ordered adjacent pairs.
@@ -131,6 +134,37 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
         record_value(committed['feed_temperature']),
         record_unit(committed['feed_temperature']),
     )
+    products = [[name] for name in committed['component_names']]
+    product_specification = {
+        'assumption': 'all_components_separate_individual_products',
+        'number_of_products': len(products),
+        'products': products,
+    }
+    critical_result = evaluate_critical_temperatures(
+        committed['component_names'], temperature_K,
+    )
+    if not critical_result['valid']:
+        return {
+            **base, 'complete': False, 'valid': False,
+            'conflicts': [], 'validation_errors': [], 'missing_field': None,
+            'error': critical_result.get('error'),
+            'error_message': critical_result.get('message'),
+            'boiling_point_order': boiling_result,
+            'product_specification': product_specification,
+            'critical_temperature_check': critical_result,
+        }
+
+    if not critical_result['ordinary_distillation_feasible']:
+        return {
+            **base, 'complete': True, 'valid': True,
+            'conflicts': [], 'validation_errors': [], 'missing_field': None,
+            'boiling_point_order': boiling_result,
+            'product_specification': product_specification,
+            'critical_temperature_check': critical_result,
+            'ordinary_distillation_feasible': False,
+            'relative_volatility': None,
+        }
+
     volatility_result = calculate_adjacent_relative_volatilities(
         committed['component_names'], boiling_result['order_low_to_high'], temperature_K,
     )
@@ -144,17 +178,13 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
             'relative_volatility': volatility_result,
         }
 
-    products = [[name] for name in committed['component_names']]
-
     return {
         **base, 'complete': True, 'valid': True,
         'conflicts': [], 'validation_errors': [], 'missing_field': None,
         'boiling_point_order': boiling_result,
-        'product_specification': {
-            'assumption': 'all_components_separate_individual_products',
-            'number_of_products': len(products),
-            'products': products,
-        },
+        'product_specification': product_specification,
+        'critical_temperature_check': critical_result,
+        'ordinary_distillation_feasible': True,
         'relative_volatility': volatility_result,
     }
 

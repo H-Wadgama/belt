@@ -168,7 +168,11 @@ def test_initial_multifact_message_is_not_scoped_to_model_target_field(monkeypat
     assert record_value(state['total_flow']) == 290
     assert record_value(state['pressure']) == 1
     assert record_value(state['feed_temperature']) == 355
-    assert 'relative volatilities' in reply.lower()
+    assert 'ordinary distillation is not feasible' in reply.lower()
+    assert '355 k' in reply.lower()
+    assert 'hydrogen' in reply.lower()
+    assert 'methane' in reply.lower()
+    assert 'critical temperature' in reply.lower()
     assert 'boiling point' not in reply.lower()
 
 
@@ -442,6 +446,55 @@ def test_query_with_unverifiable_target_field_asks_for_clarification():
     client = ScriptedClient([_resp(intent='query_current_state', target_field='pressure')])
     reply = agent.process_turn(client, session, 'what is the total flow?')
     assert 'not sure' in reply.lower()
+
+
+def test_explicit_boiling_point_order_query_is_available_after_suppressed_completion():
+    session = _complete_feed_session()
+    state_before = json.dumps(session['feed_state'], default=str, sort_keys=True)
+    client = ScriptedClient([_resp(
+        intent='query_current_state', target_field='boiling_point_order',
+    )])
+
+    reply = agent.process_turn(client, session, 'what is the normal boiling point order?')
+
+    assert reply == (
+        'Component order by normal boiling point (lowest to highest): '
+        'Methanol, Ethanol, Water.'
+    )
+    assert json.dumps(session['feed_state'], default=str, sort_keys=True) == state_before
+    assert session['pending_request'] is None
+
+
+def test_phase_and_boiling_order_queries_remain_available_after_critical_temperature_gate():
+    session = dlg.create_session()
+    intake = ScriptedClient([_resp(
+        component_names=['Hydrogen', 'Methane', 'Methanol'],
+        component_flows={'Hydrogen': 10, 'Methane': 20, 'Methanol': 30},
+        component_flow_units='kmol/hr', pressure=1, pressure_units='atm',
+        feed_temperature=355, feed_temperature_units='K',
+    )])
+    warning = agent.process_turn(
+        intake, session,
+        'separate Hydrogen=10 kmol/hr, Methane=20 kmol/hr, and '
+        'Methanol=30 kmol/hr at 355 K and 1 atm',
+    )
+    assert 'ordinary distillation is not feasible' in warning.lower()
+
+    phase_client = ScriptedClient([_resp(
+        intent='query_current_state', target_field='phase',
+    )])
+    phase_reply = agent.process_turn(phase_client, session, 'what is the feed phase?')
+    assert phase_reply.startswith('Phase: ')
+    assert 'Vapor fraction:' in phase_reply
+
+    order_client = ScriptedClient([_resp(
+        intent='query_current_state', target_field='boiling_point_order',
+    )])
+    order_reply = agent.process_turn(
+        order_client, session, 'what is the order of separations?',
+    )
+    assert order_reply.startswith('Component order by normal boiling point')
+    assert all(name in order_reply for name in ('Hydrogen', 'Methane', 'Methanol'))
 
 
 # --- On-demand feed-phase evaluation (kept out of the default terminal -----

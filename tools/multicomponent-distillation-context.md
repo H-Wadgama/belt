@@ -84,6 +84,24 @@ not print a separate normal-boiling-point-order list. Missing or invalid Psat
 data causes a structured calculation failure; Qwen must not estimate or repair
 the property.
 
+## Critical-Temperature Feasibility Gate
+
+Before evaluating saturation pressures or relative volatilities, deterministic
+Python obtains `chemical.Tc` for every feed component and compares it with the
+committed feed temperature in K. If `T_feed > Tc` for any component, the
+ordinary-distillation path is marked infeasible at that temperature and the
+Psat/relative-volatility calculation is not run. The ordinary response names
+every offending component and reports both its critical temperature and the
+feed temperature. All component critical temperatures and the complete set of
+violations remain available in structured results and diagnostics.
+
+This gate does not disable or alter the explicit feed-phase query. Feed-phase
+evaluation remains a separate read-only calculation using the committed feed
+temperature, pressure, and molar flows. Likewise, when the user explicitly
+asks for the boiling-point or separation order, deterministic Python returns
+the component order based on normal boiling points even if the automatic
+ordinary-distillation path was rejected by the critical-temperature gate.
+
 ## Essential Inputs (Table 3-1 Analog, Multicomponent)
 
 1. **At least three component identities.**
@@ -286,8 +304,10 @@ For a completed feed, the trace includes a dedicated
 `normal_boiling_point_order` section with the `101325 Pa` reference pressure,
 each component's `chemical.Tb` value and property source, the final order,
 ties, and status. It also includes `product_specification` and
-`relative_volatility` sections with the individual-product assumption, product
-count, feed temperature, component Psat values, adjacent pairs, and ratios.
+`critical_temperature_check` sections with the individual-product assumption,
+product count, every component Tc, and any violations. When the critical-
+temperature gate passes, a `relative_volatility` section also records the feed
+temperature, component Psat values, adjacent pairs, and ratios.
 
 For an explicit phase query, the trace includes a separate
 `feed_phase_evaluation` section with the actual temperature in K, pressure in
@@ -308,6 +328,14 @@ adjacent pairs. It suppresses the standalone lowest-to-highest normal-boiling-
 point list. It does not automatically report feed phase, designate light or
 heavy keys, route the feed, select a separation, or perform a distillation
 design.
+
+The critical-temperature feasibility gate takes precedence over that ordinary
+completion output. If the feed temperature exceeds any component critical
+temperature, the reply instead reports that ordinary distillation is infeasible
+at the stated temperature, lists each offending component with `T_feed` and
+`Tc`, and explains that the required vapor-liquid equilibrium does not exist at
+those temperature conditions. Psat and relative-volatility values are
+suppressed because they are not evaluated after the gate fails.
 
 This default boundary does not prevent concise missing-input questions,
 validation messages, stored-state answers, or an explicit on-demand phase
