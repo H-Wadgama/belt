@@ -46,6 +46,7 @@ def new_turn_record(turn_number, user_message):
         'product_specification': None,
         'critical_temperature_check': None,
         'relative_volatility': None,
+        'shortcut_train': None,
         'feed_phase_evaluation': None,
         'query_result': None,
         'function_calls': [],
@@ -248,6 +249,22 @@ def render_human_readable(record):
         lines.append(f"  status: {volatility.get('status')}")
         if volatility.get('error'):
             lines.append(f"  error: {volatility.get('error')} -- {volatility.get('message')}")
+
+    train = record.get('shortcut_train')
+    if train:
+        lines.append('[shortcut_train]')
+        lines.append(f"  sequence: {train.get('sequence')}")
+        lines.append(f"  column_pressure_Pa: {train.get('column_pressure_Pa')}")
+        lines.append(f"  pressure_drop_Pa_per_column: {train.get('pressure_drop_Pa_per_column')}")
+        lines.append(f"  k: {train.get('k')}")
+        lines.append(f"  partial_condenser: {train.get('partial_condenser')}")
+        lines.append(f"  objective: {train.get('objective')}")
+        lines.append(f"  columns: {train.get('columns')}")
+        lines.append(f"  products: {train.get('products')}")
+        lines.append(f"  optimizer: {train.get('optimizer')}")
+        lines.append(f"  status: {train.get('status')}")
+        if train.get('error'):
+            lines.append(f"  error: {train.get('error')} -- {train.get('message')}")
 
     phase_eval = record.get('feed_phase_evaluation')
     if phase_eval:

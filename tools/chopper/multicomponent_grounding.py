@@ -89,12 +89,18 @@ QUERY_ALIASES = {
         'boiling point order', 'boiling points order', 'normal boiling point',
         'order of separation', 'order of separations', 'separation order',
     ),
+    'relative_volatility': (
+        'relative volatility', 'relative volatilities', 'volatility ratio',
+        'volatility ratios',
+    ),
+    'product_purities': ('purity', 'purities', 'pure', 'mol%', 'mol %'),
 }
 
 # Query target fields that trigger a live deterministic phase calculation
 # (`multicomponent_feed_phase`) instead of a read-only feed-state snapshot.
 PHASE_QUERY_FIELDS = ('phase', 'vapor_fraction', 'liquid_fraction')
 BOILING_ORDER_QUERY_FIELDS = ('boiling_point_order',)
+RELATIVE_VOLATILITY_QUERY_FIELDS = ('relative_volatility',)
 
 
 def _alias_present(alias, text_lower):
@@ -378,6 +384,38 @@ def ground_proposed_update(message, candidate_fields, known_component_names=(), 
             grounded['composition_basis'] = basis
         else:
             reject('composition_basis', f'basis {basis!r} is not explicitly worded in the message')
+
+    # --- product minimum mole purities (dict-shaped, per-entry) ------------
+    purities = candidate_fields.get('product_purities')
+    if purities is not None:
+        purity_was_requested = bool(
+            active_request and active_request.get('field') == 'product_purities'
+        )
+        purity_worded = any(
+            _alias_present(alias, message.lower())
+            for alias in QUERY_ALIASES['product_purities']
+        )
+        if not purity_was_requested and not purity_worded:
+            reject('product_purities', 'message does not identify the numbers as product purities')
+        elif not isinstance(purities, dict):
+            reject('product_purities', 'not a mapping of component name to minimum mole purity')
+        else:
+            kept = {}
+            kept_evidence = {}
+            for name, value in purities.items():
+                key = f'product_purities[{name}]'
+                if not _name_grounded(name, message, known_component_names):
+                    reject(key, 'component name is not an established feed component')
+                    continue
+                ev = number_evidence(value, message)
+                if ev is None:
+                    reject(key, f'purity value {value!r} not stated in the message')
+                else:
+                    kept[name] = value
+                    kept_evidence[name] = ev
+            if kept:
+                grounded['product_purities'] = kept
+                evidence['product_purities'] = kept_evidence
 
     # --- scalar numeric fields -----------------------------------------------
     for field in ('total_flow', 'pressure', 'feed_temperature'):

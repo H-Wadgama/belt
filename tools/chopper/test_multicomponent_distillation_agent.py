@@ -349,9 +349,9 @@ def test_partial_flows_with_changed_capitalization_advance_past_quantity():
     assert 'pressure' in reply.lower()
 
 
-# --- Full conversation reports products, Psat, and relative volatility -----
+# --- Full conversation asks for purity, then designs a direct train --------
 
-def test_full_conversation_reports_volatility_without_printing_boiling_point_order():
+def test_full_conversation_asks_for_purity_then_reports_shortcut_specifications():
     session = dlg.create_session()
     turns = [
         ('Water, ethanol, methanol.', _resp(component_names=['Water', 'Ethanol', 'Methanol'])),
@@ -366,14 +366,19 @@ def test_full_conversation_reports_volatility_without_printing_boiling_point_ord
         client = ScriptedClient([response])
         reply = agent.process_turn(client, session, user_text)
 
+    assert 'minimum molar purity' in reply.lower()
+    client = ScriptedClient([_resp(product_purities={
+        'Water': 0.9, 'Ethanol': 0.9, 'Methanol': 0.9,
+    })])
+    reply = agent.process_turn(client, session, 'at least 90 mol% for all products')
+
     assert 'boiling point' not in reply.lower()
-    assert '3 products' in reply.lower()
-    assert 'saturation pressures at 350 k' in reply.lower()
-    assert 'relative volatilities' in reply.lower()
-    assert 'psat' in reply.lower()
+    assert 'direct shortcutcolumn sequence completed' in reply.lower()
+    assert 'y_top=' in reply
+    assert 'x_bot=' in reply
     for name in ('water', 'ethanol', 'methanol'):
         assert name in reply.lower()
-    for forbidden in ('column', 'reflux', 'design', 'separation', 'phase', 'vapor fraction', 'liquid fraction'):
+    for forbidden in ('saturation pressure', 'relative volatil', 'phase:', 'vapor fraction', 'liquid fraction'):
         assert forbidden not in reply.lower()
 
 
@@ -462,7 +467,7 @@ def test_explicit_boiling_point_order_query_is_available_after_suppressed_comple
         'Methanol, Ethanol, Water.'
     )
     assert json.dumps(session['feed_state'], default=str, sort_keys=True) == state_before
-    assert session['pending_request'] is None
+    assert session['pending_request']['field'] == 'product_purities'
 
 
 def test_phase_and_boiling_order_queries_remain_available_after_critical_temperature_gate():
@@ -528,7 +533,7 @@ def test_explicit_phase_query_after_complete_feed_calculates_and_reports_phase()
     assert 'Liquid fraction: 0.' in reply
     # Read-only: the committed feed state is untouched by the query.
     assert json.dumps(session['feed_state'], default=str, sort_keys=True) == state_before
-    assert session['pending_request'] is None
+    assert session['pending_request']['field'] == 'product_purities'
 
 
 def test_explicit_phase_query_accepts_vapor_and_liquid_fraction_wording():
@@ -541,6 +546,24 @@ def test_explicit_phase_query_accepts_vapor_and_liquid_fraction_wording():
     client_l = ScriptedClient([_resp(intent='query_current_state', target_field='liquid_fraction')])
     reply_l = agent.process_turn(client_l, session, "what's the liquid fraction?")
     assert 'Liquid fraction: 0.' in reply_l
+
+
+def test_explicit_relative_volatility_query_reports_values_read_only():
+    session = _complete_feed_session()
+    pending_before = session['pending_request']
+    state_before = json.dumps(session['feed_state'], default=str, sort_keys=True)
+    client = ScriptedClient([_resp(
+        intent='query_current_state', target_field='relative_volatility',
+    )])
+    reply = agent.process_turn(
+        client, session,
+        'what are the relative volatilities of the adjacent binary pairs?',
+    )
+    assert reply.startswith('Adjacent-pair relative volatilities:')
+    assert 'Methanol/Ethanol:' in reply
+    assert 'Ethanol/Water:' in reply
+    assert json.dumps(session['feed_state'], default=str, sort_keys=True) == state_before
+    assert session['pending_request'] == pending_before
 
 
 def test_explicit_phase_query_before_feed_complete_reports_missing_input():

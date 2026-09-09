@@ -60,8 +60,9 @@ FIELD_GROUPS = {
     'pressure_units': 'pressure',
     'feed_temperature': 'temperature',
     'feed_temperature_units': 'temperature',
+    'product_purities': 'products',
 }
-GROUP_ORDER = ('identity', 'quantity', 'pressure', 'temperature')
+GROUP_ORDER = ('identity', 'quantity', 'pressure', 'temperature', 'products')
 
 
 def empty_feed_state():
@@ -77,6 +78,7 @@ def empty_feed_state():
         'composition_basis': None,
         'pressure': None,
         'feed_temperature': None,
+        'product_purities': {},
     }
 
 
@@ -221,12 +223,14 @@ def apply_user_update(state, update, *, turn_number=None, evidence=None):
             for name in removed_names:
                 state['component_flows'].pop(name, None)
                 state['composition'].pop(name, None)
+                state['product_purities'].pop(name, None)
         elif op == 'replace':
             state['component_names'] = names_arg
             state['component_flows'] = {}
             state['total_flow'] = None
             state['composition'] = {}
             state['composition_basis'] = None
+            state['product_purities'] = {}
         else:
             # None or 'initialize': only ever an idempotent restatement of
             # the identical set, or the first-ever identity. A differing
@@ -315,6 +319,19 @@ def apply_user_update(state, update, *, turn_number=None, evidence=None):
             state['feed_temperature']['unit'] = update['feed_temperature_units']
             if state['feed_temperature']['value'] is not None:
                 state['feed_temperature']['status'] = 'complete'
+
+    # --- product minimum mole purities -------------------------------------------
+    purity_arg = update.get('product_purities')
+    purity_evidence = evidence.get('product_purities') or {}
+    if purity_arg:
+        for name, value in purity_arg.items():
+            canonical_name = _canonical_component_name(state, name)
+            if canonical_name not in state['component_names']:
+                continue
+            state['product_purities'][canonical_name] = _record(
+                value, provenance='user_explicit', source_turn=turn_number,
+                evidence=purity_evidence.get(name),
+            )
 
     return state
 
@@ -502,6 +519,24 @@ def validate_feed_state(state):
             errors.append(_issue(f'{n} composition fraction must be a finite number; got {v!r}.', 'quantity', ('composition',)))
         elif not (0.0 <= v <= 1.0):
             errors.append(_issue(f'{n} composition fraction must be between 0 and 1; got {v:g}.', 'quantity', ('composition',)))
+
+    for n, r in state.get('product_purities', {}).items():
+        v = record_value(r)
+        if n not in names:
+            errors.append(_issue(
+                f'Product purity was given for unknown component {n!r}.',
+                'products', ('product_purities',),
+            ))
+        elif not _finite(v):
+            errors.append(_issue(
+                f'{n} product purity must be a finite number; got {v!r}.',
+                'products', ('product_purities',),
+            ))
+        elif not (0.0 < v <= 1.0):
+            errors.append(_issue(
+                f'{n} product purity must be greater than 0 and at most 1; got {v:g}.',
+                'products', ('product_purities',),
+            ))
 
     basis_value = record_value(state['composition_basis'])
     if state['composition'] and basis_value is not None and basis_value not in ('mole', 'mass'):

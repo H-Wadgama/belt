@@ -596,3 +596,23 @@ def test_empty_checked_facts_is_a_no_op():
     assert transition['accepted_groups'] == []
     assert transition['rejected_groups'] == {}
     assert transition['committed_state']['component_names'] == ['Water', 'Ethanol', 'Methanol']
+
+
+def test_product_purities_are_stored_as_component_measurements():
+    state = apply_user_update(empty_feed_state(), {
+        'component_names': ['Water', 'Ethanol', 'Glycerol'],
+        'product_purities': {'Water': 0.9, 'Ethanol': 0.95, 'Glycerol': 0.9},
+    }, turn_number=2)
+    assert record_value(state['product_purities']['Water']) == 0.9
+    assert state['product_purities']['Ethanol']['source_turn'] == 2
+
+
+def test_invalid_product_purity_group_is_rejected_transactionally():
+    state = apply_user_update(empty_feed_state(), {
+        'component_names': ['Water', 'Ethanol', 'Glycerol'],
+    })
+    transition = assess_candidate_transition(
+        state, {'product_purities': {'Water': 1.2}}, turn_number=2,
+    )
+    assert 'products' in transition['rejected_groups']
+    assert transition['committed_state']['product_purities'] == {}

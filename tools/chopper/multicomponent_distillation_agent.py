@@ -61,10 +61,13 @@ import ollama
 import multicomponent_diagnostics as diag
 import multicomponent_dialogue as dlg
 import multicomponent_boiling_point as boiling_point
+import multicomponent_critical_temperature as critical_temperature
 import multicomponent_feed_phase as feed_phase
 import multicomponent_feed_tool as tool
 import multicomponent_grounding as ground
-from multicomponent_feed_state import assess_feed_state
+import multicomponent_relative_volatility as relative_volatility
+from multicomponent_feed_state import assess_feed_state, record_unit, record_value
+from multicomponent_units import temperature_to_K
 
 MODEL = 'qwen3:8b'
 
@@ -86,6 +89,7 @@ _FACT_FIELD_SCHEMAS = {
     'pressure_units': {'anyOf': [{'type': 'null'}, {'type': 'string'}]},
     'feed_temperature': {'anyOf': [{'type': 'null'}, {'type': 'number'}]},
     'feed_temperature_units': {'anyOf': [{'type': 'null'}, {'type': 'string'}]},
+    'product_purities': {'anyOf': [{'type': 'null'}, {'type': 'object', 'additionalProperties': {'type': 'number'}}]},
 }
 _FACT_FIELDS = tuple(_FACT_FIELD_SCHEMAS)
 _META_FIELDS = ('intent', 'target_field', 'component_identity_action', 'evidence')
@@ -141,10 +145,10 @@ no engineering fact and asks no clear question.
 
 target_field -- if the message clearly names ONE specific field (one of: \
 component_names, component_flows, composition, total_flow, pressure, \
-feed_temperature), name it; otherwise null. When intent is \
+feed_temperature, product_purities), name it; otherwise null. When intent is \
 query_current_state, target_field MUST be set to the field being asked \
-about -- this also includes phase, vapor_fraction, liquid_fraction, or \
-boiling_point_order \
+about -- this also includes phase, vapor_fraction, liquid_fraction, \
+boiling_point_order, or relative_volatility \
 when the user explicitly asks for the feed's equilibrium phase, vapor \
 fraction, or liquid fraction (e.g. "what is the phase of the feed?", \
 "what's the vapor fraction?", "what is the order of separations?"). These are read-only computed \
@@ -159,7 +163,11 @@ Fact fields -- component_names, component_flows/composition (objects \
 mapping a component name to a number), component_flow_units, \
 total_flow_units, pressure_units, feed_temperature_units (strings), \
 total_flow, pressure, feed_temperature (numbers), composition_basis \
-("mole" or "mass", ONLY if the message explicitly says so).
+("mole" or "mass", ONLY if the message explicitly says so), and \
+product_purities (a component-to-minimum-mole-fraction mapping). Convert an \
+explicit product mol% to a fraction; if the user explicitly gives one target \
+for all/every product, repeat that grounded target for every established \
+component.
 
 evidence -- for each non-null fact field above, the literal substring of \
 the CURRENT message that states it (a string for a scalar field, or an \
@@ -289,25 +297,41 @@ def _format_result_reply(result):
             'which does not exist for these components at these temperature conditions.'
         )
 
-    product_spec = result['product_specification']
-    volatility = result['relative_volatility']
-    product_names = [product[0] for product in product_spec['products']]
-    psat_text = '; '.join(
-        f"{item['component']}: {item['Psat_Pa']:.6g} Pa"
-        for item in volatility['saturation_pressures']
-    )
-    pair_text = '; '.join(
-        f"{pair['more_volatile_component']}/{pair['less_volatile_component']}: "
-        f"{pair['relative_volatility']:.6g}"
-        for pair in volatility['adjacent_pairs']
-    )
-    return (
-        f"Assuming every feed component is required as a separate product: "
-        f"{product_spec['number_of_products']} products ({', '.join(product_names)}). "
-        f"Saturation pressures at {volatility['temperature_K']:g} K: {psat_text}. "
-        "Adjacent-pair relative volatilities for an ideal liquid "
-        f"(alpha = Psat(more volatile)/Psat(less volatile)): {pair_text}."
-    )
+    close_pairs = result.get('close_relative_volatility_pairs') or []
+    if close_pairs:
+        details = '; '.join(
+            f"{item['more_volatile_component']}/{item['less_volatile_component']}: "
+            f"alpha = {item['relative_volatility']:.6g}"
+            for item in close_pairs
+        )
+        return (
+            'Ordinary distillation is not preferred because these adjacent '
+            f'relative volatilities are below 1.05: {details}.'
+        )
+
+    train = result.get('shortcut_train')
+    if train:
+        column_text = ' '.join(
+            f"Column {column['column_number']} ({column['light_key']}/"
+            f"{column['heavy_key']}): y_top={column['y_top']:.6g}, "
+            f"x_bot={column['x_bot']:.6g}."
+            for column in train['columns']
+        )
+        product_text = '; '.join(
+            f"{product['component']}: {100 * product['achieved_mole_purity']:.4g} mol% "
+            f"(minimum {100 * product['target_minimum_mole_purity']:.4g} mol%)"
+            for product in train['products']
+        )
+        return (
+            'Direct ShortcutColumn sequence completed at 101325 Pa with zero '
+            'pressure drop, k=2, and partial_condenser=False. '
+            + column_text
+            + ' Product purities: ' + product_text + '. '
+            'The specifications minimize composition-specification severity '
+            'subject to the requested minimum purities.'
+        )
+
+    return 'Ordinary-distillation screening passed.'
 
 
 def _format_phase_query_reply(result):
@@ -337,6 +361,47 @@ def _handle_boiling_point_order_query(session, record):
         'Component order by normal boiling point (lowest to highest): '
         + ', '.join(result['order_low_to_high']) + '.'
     )
+
+
+def _handle_relative_volatility_query(session, record):
+    """Calculate and report adjacent ideal-liquid relative volatilities read-only."""
+    assessment = assess_feed_state(session['feed_state'])
+    if not assessment['ready']:
+        missing_field = assessment['missing_inputs'][0] if assessment['missing_inputs'] else None
+        pending = dlg.pending_request_for(missing_field) if missing_field else None
+        return (
+            'Relative volatilities cannot be evaluated yet -- '
+            + (dlg.format_pending_question(pending) if pending else 'more feed information is needed.')
+        )
+    state = assessment['state']
+    boiling = boiling_point.calculate_multicomponent_boiling_point_order(state['component_names'])
+    if not boiling.get('valid'):
+        return f"Could not determine relative volatilities: {boiling.get('message')}"
+    temperature_K = temperature_to_K(
+        record_value(state['feed_temperature']),
+        record_unit(state['feed_temperature']),
+    )
+    critical = critical_temperature.evaluate_critical_temperatures(
+        state['component_names'], temperature_K,
+    )
+    if not critical.get('valid'):
+        return f"Could not determine relative volatilities: {critical.get('message')}"
+    if not critical['ordinary_distillation_feasible']:
+        return _format_result_reply({'critical_temperature_check': critical})
+    volatility = relative_volatility.calculate_adjacent_relative_volatilities(
+        state['component_names'], boiling['order_low_to_high'], temperature_K,
+    )
+    if record is not None:
+        record['boiling_point_order'] = diag.to_jsonable(boiling)
+        record['critical_temperature_check'] = diag.to_jsonable(critical)
+        record['relative_volatility'] = diag.to_jsonable(volatility)
+    if not volatility.get('valid'):
+        return f"Could not determine relative volatilities: {volatility.get('message')}"
+    return 'Adjacent-pair relative volatilities: ' + '; '.join(
+        f"{item['more_volatile_component']}/{item['less_volatile_component']}: "
+        f"{item['relative_volatility']:.6g}"
+        for item in volatility['adjacent_pairs']
+    ) + '.'
 
 
 def _handle_phase_query(session, record):
@@ -468,6 +533,10 @@ def process_turn(client, session, user_message, debug_mode=None):
                 reply = _handle_boiling_point_order_query(session, record)
                 exit_path = 'boiling_point_order_query'
                 return reply
+            if verified and target_field in ground.RELATIVE_VOLATILITY_QUERY_FIELDS:
+                reply = _handle_relative_volatility_query(session, record)
+                exit_path = 'relative_volatility_query'
+                return reply
             if verified:
                 snapshot = tool.query_feed_state(session['feed_state'], target_field)
                 answer = dlg.format_query_answer(target_field, snapshot)
@@ -580,6 +649,8 @@ def process_turn(client, session, user_message, debug_mode=None):
                 record['relative_volatility'] = diag.to_jsonable(result['relative_volatility'])
             if result.get('product_specification') is not None:
                 record['product_specification'] = diag.to_jsonable(result['product_specification'])
+            if result.get('shortcut_train') is not None:
+                record['shortcut_train'] = diag.to_jsonable(result['shortcut_train'])
 
         if result['conflicts']:
             reply = 'Conflicting feed information was given: ' + ' '.join(c['message'] for c in result['conflicts'])

@@ -29,6 +29,7 @@ from multicomponent_feed_state import (
     record_value,
 )
 from multicomponent_relative_volatility import calculate_adjacent_relative_volatilities
+from multicomponent_shortcut_train import design_direct_shortcut_train
 from multicomponent_units import temperature_to_K
 
 
@@ -84,6 +85,8 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
         'relative_volatility': component Psat values at feed temperature and
                                ideal-liquid relative volatility for internally
                                ordered adjacent pairs.
+        'shortcut_train': optimized direct ShortcutColumn train after all
+                               product minimum mole purities are available.
         'error'              : only if the calculation itself failed (also
                                present alongside a failed 'boiling_point_order').
     """
@@ -178,6 +181,55 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
             'relative_volatility': volatility_result,
         }
 
+    close_pairs = [
+        pair for pair in volatility_result['adjacent_pairs']
+        if pair['relative_volatility'] < 1.05
+    ]
+    if close_pairs:
+        return {
+            **base, 'complete': True, 'valid': True,
+            'conflicts': [], 'validation_errors': [], 'missing_field': None,
+            'boiling_point_order': boiling_result,
+            'product_specification': product_specification,
+            'critical_temperature_check': critical_result,
+            'ordinary_distillation_feasible': False,
+            'relative_volatility': volatility_result,
+            'close_relative_volatility_pairs': close_pairs,
+            'shortcut_train': None,
+        }
+
+    purities = committed.get('product_purities') or {}
+    if not all(name in purities for name in committed['component_names']):
+        return {
+            **base, 'complete': False, 'valid': True,
+            'conflicts': [], 'validation_errors': [],
+            'missing_field': 'product_purities',
+            'boiling_point_order': boiling_result,
+            'product_specification': product_specification,
+            'critical_temperature_check': critical_result,
+            'ordinary_distillation_feasible': True,
+            'relative_volatility': volatility_result,
+            'close_relative_volatility_pairs': [],
+        }
+
+    train_result = design_direct_shortcut_train(
+        committed, boiling_result['order_low_to_high'],
+    )
+    if not train_result['valid']:
+        return {
+            **base, 'complete': False, 'valid': False,
+            'conflicts': [], 'validation_errors': [], 'missing_field': None,
+            'error': train_result.get('error'),
+            'error_message': train_result.get('message'),
+            'boiling_point_order': boiling_result,
+            'product_specification': product_specification,
+            'critical_temperature_check': critical_result,
+            'ordinary_distillation_feasible': True,
+            'relative_volatility': volatility_result,
+            'close_relative_volatility_pairs': [],
+            'shortcut_train': train_result,
+        }
+
     return {
         **base, 'complete': True, 'valid': True,
         'conflicts': [], 'validation_errors': [], 'missing_field': None,
@@ -186,6 +238,8 @@ def advance_feed_state(feed_state, checked_facts, turn_number=None, evidence=Non
         'critical_temperature_check': critical_result,
         'ordinary_distillation_feasible': True,
         'relative_volatility': volatility_result,
+        'close_relative_volatility_pairs': [],
+        'shortcut_train': train_result,
     }
 
 

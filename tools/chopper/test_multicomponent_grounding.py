@@ -300,3 +300,24 @@ def test_bare_composition_values_remain_allowed_for_active_composition_request()
     assert grounded['composition'] == {
         'water': 0.2, 'methanol': 0.3, 'ethanol': 0.5,
     }
+
+
+def test_product_purities_are_grounded_for_active_request():
+    proposed = {
+        'product_purities': {'Water': 0.9, 'Ethanol': 0.9, 'Glycerol': 0.9},
+    }
+    grounded, evidence, rejected = ground_proposed_update(
+        'at least 90 mol% for all products', proposed,
+        known_component_names=['Water', 'Ethanol', 'Glycerol'],
+        active_request={'field': 'product_purities', 'kind': 'value'},
+    )
+    assert grounded == proposed
+    assert set(evidence['product_purities']) == {'Water', 'Ethanol', 'Glycerol'}
+    assert rejected == {}
+
+
+def test_relative_volatility_query_alias_is_verified():
+    assert ground_query_target_field(
+        'what are the relative volatilities of the adjacent binary pairs?',
+        'relative_volatility',
+    ) is True

@@ -51,7 +51,8 @@ def test_multiturn_collection_reaches_completion():
     state = r['feed_state']
 
     r = tool.advance_feed_state(state, {'feed_temperature_units': 'K'})
-    assert r['complete'] is True
+    assert r['complete'] is False
+    assert r['missing_field'] == 'product_purities'
     boiling = r['boiling_point_order']
     assert boiling['valid'] is True
     assert set(boiling['order_low_to_high']) == {'Water', 'Ethanol', 'Methanol'}
@@ -68,6 +69,13 @@ def test_multiturn_collection_reaches_completion():
     assert critical['valid'] is True
     assert critical['ordinary_distillation_feasible'] is True
     assert len(critical['components']) == 3
+
+    r = tool.advance_feed_state(r['feed_state'], {
+        'product_purities': {'Water': 0.9, 'Ethanol': 0.9, 'Methanol': 0.9},
+    })
+    assert r['complete'] is True
+    assert r['shortcut_train']['valid'] is True
+    assert len(r['shortcut_train']['columns']) == 2
 
 
 def test_supercritical_component_stops_relative_volatility_model_but_completes_intake():
@@ -86,6 +94,42 @@ def test_supercritical_component_stops_relative_volatility_model_but_completes_i
     assert {x['component'] for x in r['critical_temperature_check']['violations']} == {
         'Hydrogen', 'Methane',
     }
+
+
+def test_close_relative_volatility_stops_before_purity_request_and_column_model(monkeypatch):
+    monkeypatch.setattr(tool, 'calculate_multicomponent_boiling_point_order', lambda names: {
+        'valid': True, 'order_low_to_high': list(names), 'status': 'complete',
+    })
+    monkeypatch.setattr(tool, 'evaluate_critical_temperatures', lambda names, temperature: {
+        'valid': True, 'ordinary_distillation_feasible': True,
+        'feed_temperature_K': temperature, 'components': [], 'violations': [],
+        'status': 'complete',
+    })
+    monkeypatch.setattr(tool, 'calculate_adjacent_relative_volatilities', lambda names, order, temperature: {
+        'valid': True, 'status': 'complete', 'temperature_K': temperature,
+        'saturation_pressures': [],
+        'adjacent_pairs': [
+            {'more_volatile_component': names[0], 'less_volatile_component': names[1],
+             'relative_volatility': 1.04},
+            {'more_volatile_component': names[1], 'less_volatile_component': names[2],
+             'relative_volatility': 2.0},
+        ],
+    })
+    monkeypatch.setattr(
+        tool, 'design_direct_shortcut_train',
+        lambda *args: pytest.fail('column model must not run after relative-volatility gate'),
+    )
+    state = empty_feed_state()
+    r = tool.advance_feed_state(state, {
+        'component_names': ['A', 'B', 'C'],
+        'component_flows': {'A': 10, 'B': 10, 'C': 10},
+        'component_flow_units': 'kmol/hr',
+        'pressure': 1, 'pressure_units': 'atm',
+        'feed_temperature': 300, 'feed_temperature_units': 'K',
+    })
+    assert r['complete'] is True
+    assert r['ordinary_distillation_feasible'] is False
+    assert len(r['close_relative_volatility_pairs']) == 1
 
 
 def test_bare_percent_composition_infers_basis_without_asking():

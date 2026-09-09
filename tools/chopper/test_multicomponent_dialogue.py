@@ -17,6 +17,7 @@ def _empty_proposal(**fields):
         'total_flow': None, 'total_flow_units': None, 'composition': None,
         'composition_basis': None, 'pressure': None, 'pressure_units': None,
         'feed_temperature': None, 'feed_temperature_units': None,
+        'product_purities': None,
     }
     base.update(fields)
     return base
@@ -222,6 +223,17 @@ def test_format_pending_question_includes_choices():
     pending = dlg.pending_request_for('pressure_units')
     text = dlg.format_pending_question(pending)
     assert 'atm' in text
+
+
+def test_pending_uniform_product_purity_applies_to_every_established_component():
+    state = apply_user_update(empty_feed_state(), {
+        'component_names': ['Water', 'Ethanol', 'Glycerol'],
+    })
+    session = _session_with_pending('product_purities', state)
+    binding = dlg.bind_direct_reply_to_pending(session, '90 mol% for all products')
+    assert binding['candidate_fields']['product_purities'] == {
+        'Water': 0.9, 'Ethanol': 0.9, 'Glycerol': 0.9,
+    }
 
 
 # --- Read-only query formatting -----------------------------------------------

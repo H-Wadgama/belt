@@ -108,6 +108,14 @@ def _format_feed_temperature(state):
     return _format_scalar(state['feed_temperature'], 'feed temperature')
 
 
+def _format_product_purities(state):
+    purities = state.get('product_purities') or {}
+    if not purities:
+        return 'No product-purity requirements have been given yet.'
+    parts = [f'{name}: {100 * record_value(record):g} mol%' for name, record in purities.items()]
+    return 'Minimum product purities: ' + '; '.join(parts) + '.'
+
+
 # The single declarative registry driving pending-question wording,
 # short-answer type compatibility, query-field verification, and
 # query-answer formatting (Section 10). `group` is imported from
@@ -168,6 +176,15 @@ FIELD_REGISTRY = {
         'query_aliases': QUERY_ALIASES['feed_temperature'],
         'formatter': _format_feed_temperature,
     },
+    'product_purities': {
+        'value_type': 'fraction_map',
+        'value_question': (
+            'What minimum molar purity is required for each product? You may '
+            'give one mol% target for all products or a separate target for each component.'
+        ),
+        'query_aliases': QUERY_ALIASES['product_purities'],
+        'formatter': _format_product_purities,
+    },
 }
 
 _FIELD_KEYS = {
@@ -177,6 +194,7 @@ _FIELD_KEYS = {
     'total_flow': ('total_flow', 'total_flow_units'),
     'pressure': ('pressure', 'pressure_units'),
     'feed_temperature': ('feed_temperature', 'feed_temperature_units'),
+    'product_purities': ('product_purities',),
 }
 _ALL_UPDATE_KEYS = {k for keys in _FIELD_KEYS.values() for k in keys}
 _KEY_TO_FIELD = {k: fname for fname, keys in _FIELD_KEYS.items() for k in keys}
@@ -224,6 +242,11 @@ def pending_request_for(missing_field, turn_number=None):
     if missing_field == 'feed_temperature_units':
         entry = FIELD_REGISTRY['feed_temperature']
         return _req('feed_temperature', 'unit', entry['unit_question'], entry['supported_units'])
+    if missing_field == 'product_purities':
+        return _req(
+            'product_purities', 'value',
+            FIELD_REGISTRY['product_purities']['value_question'],
+        )
     return _req(missing_field, 'value', f'Please provide {missing_field}.')
 
 
@@ -354,6 +377,28 @@ def _synthesize_short_answer(session, pending, raw_message):
 
     if kind == 'value' and field == 'component_flows':
         return _named_component_flow_answer(session, text)
+
+    if kind == 'value' and field == 'product_purities':
+        tokens = re.findall(
+            rf'({_NUMBER_PATTERN})\s*(?:mol(?:e|ar)?\s*)?%', text,
+            flags=re.IGNORECASE,
+        )
+        if len(tokens) == 1:
+            value = float(tokens[0]) / 100.0
+            return {
+                'product_purities': {
+                    name: value for name in session['feed_state']['component_names']
+                }
+            }
+        scalar = _BARE_MEASUREMENT_RE.fullmatch(text)
+        if scalar and not scalar.group(2).strip():
+            value = float(scalar.group(1))
+            if 0 < value <= 1:
+                return {
+                    'product_purities': {
+                        name: value for name in session['feed_state']['component_names']
+                    }
+                }
 
     return None
 

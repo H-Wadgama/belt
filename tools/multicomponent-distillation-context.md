@@ -9,8 +9,9 @@ Assume every feed sent to this agent contains **three or more nonzero-flow
 components**.
 
 This agent currently performs multicomponent feed intake, deterministic
-normal-boiling-point ordering, an ideal-liquid adjacent relative-volatility
-evaluation, and on-demand feed-phase evaluation. It does
+normal-boiling-point ordering, ideal-liquid adjacent relative-volatility
+screening, product-purity collection, a direct light-first BioSTEAM
+`ShortcutColumn` train, and on-demand feed-phase evaluation. It does
 not inherit the binary workflow's routing, column-design, RAG, trial, sweep,
 economic, or optimization machinery. Small shared thermodynamic helpers may
 be reused when doing so does not import those unrelated behaviors.
@@ -54,10 +55,10 @@ reported in diagnostics. If any component lacks a finite positive normal
 boiling point, the ordering fails structurally; the agent must not present a
 partial list as complete or ask Qwen to supply a missing property.
 
-The normal-boiling-point result does not automatically select light and heavy
-keys. It establishes the volatility ordering used internally to identify the
-adjacent binary pairs. The ordered component list is retained in structured
-results and diagnostics but is not printed in the ordinary completion reply.
+The normal-boiling-point result establishes the volatility ordering used
+internally to identify adjacent binary pairs and the keys for the fixed direct
+sequence. The ordered component list is retained in structured results and
+diagnostics but is not printed in the ordinary completion reply.
 
 ## Required Products and Relative Volatility
 
@@ -77,12 +78,11 @@ is:
 alpha(more volatile / less volatile) = Psat(more volatile) / Psat(less volatile)
 ```
 
-The ordinary completion reply reports the assumed number and identity of the
-individual products, every component saturation pressure in Pa, the evaluation
-temperature in K, and the relative volatility of every adjacent pair. It does
-not print a separate normal-boiling-point-order list. Missing or invalid Psat
-data causes a structured calculation failure; Qwen must not estimate or repair
-the property.
+The saturation pressures and relative volatilities remain internal during the
+automatic workflow. They are reported only for an explicit relative-volatility
+query or when a value below the feasibility threshold must be identified.
+Missing or invalid Psat data causes a structured calculation failure; Qwen must
+not estimate or repair the property.
 
 ## Critical-Temperature Feasibility Gate
 
@@ -120,6 +120,10 @@ ordinary-distillation path was rejected by the critical-temperature gate.
 4. **Feed pressure.** Its units must be explicitly stated.
 5. **Feed temperature.** Its units must be explicitly stated, and it must
    never be defaulted to the bubble point.
+6. **Minimum product mole purities**, collected only after the critical-
+   temperature and relative-volatility feasibility gates pass. The user may
+   provide one mol% target for every individual component product or separate
+   component-specific targets.
 
 The agent collects these inputs over as many user turns as necessary. A
 partial but valid input must remain available on later turns; the user must
@@ -130,6 +134,25 @@ not be required to repeat the entire feed description.
 Reflux is assumed to be a saturated liquid for later column-model development.
 This is not an input the current agent requests, and it has no effect on the
 current feed-intake, boiling-point-ordering, or on-demand phase calculations.
+
+The implemented column train uses a direct light-first sequence. For the
+normal-boiling-point order `C1, C2, ..., Cn`, it creates `n - 1` columns with
+adjacent keys `(C1, C2)`, `(C2, C3)`, ..., `(C[n-1], Cn)`. Every product except
+the least volatile is a distillate; the least volatile component is the final
+bottoms product.
+
+Every column is currently a BioSTEAM `ShortcutColumn` with `k=2`,
+`partial_condenser=False`, `P=101325 Pa`, zero assumed inter-column pressure
+drop, and composition specifications. These are fixed implementation
+assumptions, not user inputs.
+
+The user supplies total-stream minimum mole purities, not `y_top` or `x_bot`.
+Deterministic Python optimizes every column's `y_top` and `x_bot`, checks the
+actual component mole fraction in every final product stream, and reports the
+chosen values so the design can be reproduced independently in BioSTEAM. The
+current placeholder objective minimizes composition-specification severity
+subject to all purity constraints; it is not yet a recovery or economic
+optimization.
 
 ## Initially Supported Units
 
@@ -188,12 +211,12 @@ For each user turn:
 4. Valid logical groups are committed; a rejected group must not corrupt the
    previously committed state.
 5. Python deterministically returns the next question, validation message,
-   read-only state answer, on-demand phase result, or completed product and
-   relative-volatility evaluation. The model is not called again to write the
-   response.
+   read-only state answer, on-demand phase/volatility/order result, feasibility
+   warning, or completed ShortcutColumn train. The model is not called again to
+   write the response.
 
 The logical state groups are component identity, feed quantity/composition,
-pressure, and temperature.
+pressure, temperature, and product-purity requirements.
 
 Each stored measurement has one authoritative record containing its value,
 unit where applicable, completion status, provenance, source turn, and
@@ -321,21 +344,28 @@ sensitive process information.
 
 ## Output Boundary
 
-Once the feed is complete, the automatic completion reply reports the assumed
-individual products, their count, component Psat values at the feed
-temperature, and ideal-liquid relative volatilities for internally determined
-adjacent pairs. It suppresses the standalone lowest-to-highest normal-boiling-
-point list. It does not automatically report feed phase, designate light or
-heavy keys, route the feed, select a separation, or perform a distillation
-design.
+Once the feed facts are complete, the automatic workflow runs its feasibility
+gates without printing passing Psat, relative-volatility, or normal-boiling-
+point data. A feasible feed advances to product-purity collection and then to
+the direct ShortcutColumn design.
 
-The critical-temperature feasibility gate takes precedence over that ordinary
-completion output. If the feed temperature exceeds any component critical
+The critical-temperature feasibility gate takes precedence over column
+modeling. If the feed temperature exceeds any component critical
 temperature, the reply instead reports that ordinary distillation is infeasible
 at the stated temperature, lists each offending component with `T_feed` and
 `Tc`, and explains that the required vapor-liquid equilibrium does not exist at
 those temperature conditions. Psat and relative-volatility values are
 suppressed because they are not evaluated after the gate fails.
+
+When the critical-temperature gate passes, adjacent relative volatilities are
+calculated but suppressed from the automatic reply. If any adjacent value is
+below `1.05`, ordinary distillation is rejected before purity collection and
+the offending pairs and values are reported. If all pairs pass, the agent asks
+for minimum product mole purities. Once every product target is known, it
+builds and optimizes the direct ShortcutColumn train and reports each column's
+keys, `y_top`, `x_bot`, and every achieved product purity. An explicit relative-
+volatility query still reports all adjacent values without mutating state or
+discarding the pending purity request.
 
 This default boundary does not prevent concise missing-input questions,
 validation messages, stored-state answers, or an explicit on-demand phase

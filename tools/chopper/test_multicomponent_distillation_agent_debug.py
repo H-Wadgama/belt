@@ -239,6 +239,9 @@ def _run_to_completion(debug_mode):
             component_flow_units='kmol/hr')),
         ('1 atm.', _resp(pressure=1, pressure_units='atm')),
         ('350 K.', _resp(feed_temperature=350, feed_temperature_units='K')),
+        ('90 mol% for all products.', _resp(product_purities={
+            'Water': 0.9, 'Ethanol': 0.9, 'Methanol': 0.9,
+        })),
     ]
     reply = None
     for user_text, response in turns:
@@ -271,6 +274,9 @@ def test_completed_calculation_result_is_json_serializable_and_reports_volatilit
     assert len(result['relative_volatility']['adjacent_pairs']) == 2
     assert final['product_specification']['number_of_products'] == 3
     assert final['relative_volatility']['status'] == 'complete'
+    assert result['shortcut_train']['status'] == 'complete'
+    assert len(result['shortcut_train']['columns']) == 2
+    assert final['shortcut_train']['status'] == 'complete'
 
 
 def test_debug_human_trace_has_dedicated_normal_boiling_point_section(capsys):
