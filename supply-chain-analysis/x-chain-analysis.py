@@ -7,13 +7,7 @@ import numpy as np
 
 
 from lignin_saf.ligsaf_chemicals import create_chemicals
-from lignin_saf.settings.process_params import feed_parameters, additional_rcf
-from lignin_saf.settings.prices import prices
-from lignin_saf.settings.tea_params import operating_days, labor
-from lignin_saf.systems.rcf import create_rcf_system
-from lignin_saf.systems.rcf_oil_purification import create_rcf_oil_purification_system
-from lignin_saf.systems.monomer_purification import create_monomer_purification_system
-from lignin_saf.systems.hdo import create_hdo_system
+from scn_params import feed_parameters, prices
 from lignin_saf.systems.cellulosic_ethanol import create_cellulosic_ethanol_system
 from atj_saf.atj_bst.etj_ligfirst import create_etj_system_no_facilities
 from lignin_saf.cellulosic_tea import create_cellulosic_ethanol_tea
@@ -45,7 +39,6 @@ poplar_in = bst.Stream('Poplar_In',
 etoh_system = create_cellulosic_ethanol_system(ins=poplar_in, add_denaturant=False)
 etoh_system.simulate()
 
-
 # Removing the NH3 fraction of the ethanol output - in the future CBP will remove this anyways, so I've just modelled it as a splitter
 nh3_splitter = bst.units.Splitter(ins = F.T703.outs[0], split = {'NH3':1.0} )
 nh3_splitter.simulate()
@@ -56,6 +49,10 @@ etj_system = create_etj_system_no_facilities(ins = nh3_splitter.outs[1])
 etj_system.simulate()
 
 
+
+# Pretreatment wastewater and S401 stillage filtrate both go to WWT.
+
+etoh_ww = [F.pretreatment_wastewater, F.unit.S401.outs[1]]
 
 etoh_solids = [F.unit.S401.outs[0]]
 
@@ -71,6 +68,10 @@ gas_mixer= bst.Mixer('MIX_BT_gas', ins=(WWT.outs[0], F.ETJ_PSAWASTE_OUTS))
 BT.ins[0] = solids_to_BT.outs[0]  # Connecting sludge to BT solids feed
 BT.ins[1] = gas_mixer.outs[0]   # Connecting biogas from WW treatment and PSA waste gases from RCF
 
+
+
+
+
 h2_etj = bst.Stream()
 h2_etj.copy_like(F.ETJ_H2_IN)
 
@@ -84,6 +85,7 @@ etoh_etj_system = bst.System(
 )
 
 etoh_etj_system.simulate()
+
 
 F.ETJ_H2_IN.price = prices['hydrogen']   # 8.46 USD/kg
 F.ETJ_RN_OUT.price = prices['renewable_naphtha']   # 0.71 USD/kg
@@ -100,3 +102,34 @@ F.cooling_tower_chemicals.price = prices['CT_chemicals']
 
 
 integrated_tea = create_cellulosic_ethanol_tea(etoh_etj_system)
+
+
+# All the steps are assumed to be continuous even though hydrolysis and fermentation trains are batch, because the overall process operates continuously. Total = 11
+# Ethanol produyction operators are 20 because thats what it was in the Humbird reportr
+# For ETJ, 2 operators for the reactors, not treating them separately, as ETJ operations are rather conventional, (dehydration, hydrogenation atleast have been around for a while to my knowledge), 1 for 
+# the distillation column. Total operators: 3
+# 2 operators for the storage  - hydrogen storage will definitely need one I believe and 1 would be required for the rest, and 1 for biomass. Total operators: 3
+# 2 operators for WWT (I think complexity of feed streams and solids-liquids), and 2 for BT. Total operator: 4
+# Total operators per shift: 20 + 3 + 3 + 4 = 30
+
+num_operators_per_shift = 30
+num_shifts              = 5       # number of operator shifts (4 working + 1 relief)
+pay_rate                = 40      # [USD/hr] operator base pay rate
+
+DWandB             = num_operators_per_shift * num_shifts * 2080 * pay_rate
+Dsalaries_benefits = 0.15 * DWandB          # 15% of DW&B for salaried staff + benefits
+O_supplies         = 0.06 * DWandB          # 6% of DW&B for operating supplies
+technical_assistance = 5 * 75_000           # 5 technical staff @ $75,000/yr
+control_lab          = 5 * 80_000           # 5 lab/QC staff  @ $80,000/yr
+
+labor = DWandB + Dsalaries_benefits + O_supplies + technical_assistance + control_lab
+# [USD/yr] total annual labor cost; passed to tea.labor_cost after creating the TEA object
+
+# Baseline TEA: constant 330 days/yr (the historical default).
+baseline_tea = create_cellulosic_ethanol_tea(
+    etoh_etj_system,
+    operating_days=330,
+    duration=(2025, 2055),
+)
+baseline_tea.labor_cost = labor
+baseline_mjsp = round(((baseline_tea.solve_price(F.ETJ_SAF_OUT)*F.ETJ_SAF_OUT.rho)/264.172),2)

@@ -23,7 +23,7 @@ operating_days = 330    # [days/yr] scheduled operating days (0.9 operating fact
 # 2 operators for WWT (I think complexity of feed streams), and 1 for BT. Total operator: 3
 # Total operators per shift: 8 + 4 + 6 + 8 + 3 + 2 = 34
 
-num_operators_per_shift = 34
+num_operators_per_shift = 15
 num_shifts              = 5       # number of operator shifts (4 working + 1 relief)
 pay_rate                = 40      # [USD/hr] operator base pay rate
 
