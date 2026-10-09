@@ -28,8 +28,9 @@ just the parameters it needs (`scn_params.py`) and does not touch `lignin_saf/se
 
 | File | Purpose |
 |---|---|
-| `x-chain-analysis.py` | Entry-point script: builds and simulates the integrated system, solves MJSP |
-| `x-chain-analysis.ipynb` | Same analysis as an interactive notebook |
+| `x-chain-analysis.py` | Entry-point script: builds and simulates the integrated system, solves baseline MJSP, and runs the downtime-vs-feedstock-price-offset analysis (85% operating-factor scenario + breakeven feedstock-price search) |
+| `x-chain-analysis.ipynb` | ⚠️ **Stale.** Predates the downtime/breakeven addition above — does not mirror `x-chain-analysis.py`'s current content. Also scratch/exploratory as-is (leftover `break`/`BREAK` debug cells, duplicate prints). Needs a refresh pass before treating it as authoritative; see TODO. |
+| `supply-chain-script.py` | Standalone demo script (not an entry point for this manuscript's results) showing the `MultiYearCellulosicEthanolTEA` array-`operating_days` pattern for safely running two TEA scenarios on one shared system. Reference implementation for the pattern used in `x-chain-analysis.py`'s downtime scenario — see Conventions section above. |
 | `scn_params.py` | Local, editable copy of `feed_parameters` (flow/moisture/poplar_density) and feedstock price; everything else (chemical/utility prices) is reused from `lignin_saf.settings.prices` |
 
 **To vary the analysis:** edit `feed_parameters` or `feedstock_price_dry_ton` in
@@ -118,4 +119,6 @@ below.
 - Confirm `CEPCI = 840` (2026 basis) is the intended basis for this manuscript (differs
   from `541.7`/`800.8` used elsewhere in the repo).
 - Build out the actual feedstock-price-vs-demand sweep (currently only a single baseline
-  MJSP point is computed).
+  MJSP point plus the downtime-vs-feedstock-price-offset scenario are computed).
+- Refresh `x-chain-analysis.ipynb` to match `x-chain-analysis.py` (currently stale — see
+  Files table above).
