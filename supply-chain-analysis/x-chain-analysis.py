@@ -6,8 +6,10 @@ import pandas as pd
 import numpy as np
 
 
+from scipy.optimize import brentq
+
 from lignin_saf.ligsaf_chemicals import create_chemicals
-from scn_params import feed_parameters, prices
+from scn_params import feed_parameters, prices, feedstock_price_dry_ton, feedstock_price
 from lignin_saf.systems.cellulosic_ethanol import create_cellulosic_ethanol_system
 from atj_saf.atj_bst.etj_ligfirst import create_etj_system_no_facilities
 from lignin_saf.cellulosic_tea import create_cellulosic_ethanol_tea
@@ -133,3 +135,85 @@ baseline_tea = create_cellulosic_ethanol_tea(
 )
 baseline_tea.labor_cost = labor
 baseline_mjsp = round(((baseline_tea.solve_price(F.ETJ_SAF_OUT)*F.ETJ_SAF_OUT.rho)/264.172),2)
+
+
+# ─── Downtime scenario: 85% operating factor (310.25 days/yr) ────────────────────────
+# Baseline operating schedule is 330 days/yr (~90% operating factor, 0.90 * 365 = 328.5,
+# approximated in the model as 330). Here we model increased downtime: 85% operating
+# factor -> 0.85 * 365 = 310.25 days/yr, all else (feedstock price, system design) held
+# fixed. Fewer operating days means less annual production to spread fixed CAPEX/labor
+# costs over, so MJSP rises even though variable (feedstock) costs fall proportionally.
+#
+# downtime_tea is built as a MultiYearCellulosicEthanolTEA, triggered by passing an
+# *array* of operating_days (one constant entry per operating year) instead of a scalar.
+# CellulosicEthanolTEA (plain, scalar operating_days) reads/writes operating_hours
+# directly on the shared etoh_etj_system object, so a second plain instance would
+# silently overwrite baseline_tea's 330-day schedule (see cellulosic_tea.py docstring
+# and project memory: project_tea_shared_operating_hours_gotcha). MultiYearCellulosic-
+# EthanolTEA keeps a fully private operating_hours/sales/material_cost/utility_cost/
+# solve_price, so it coexists safely with baseline_tea on the same system -- no reset
+# of baseline_tea needed anywhere below.
+downtime_operating_days = 0.85 * 365   # = 310.25 days/yr
+n_operating_years = 2055 - 2025
+downtime_operating_days_schedule = np.full(n_operating_years, downtime_operating_days)
+
+downtime_tea = create_cellulosic_ethanol_tea(
+    etoh_etj_system,
+    operating_days=downtime_operating_days_schedule,
+    duration=(2025, 2055),
+)
+downtime_tea.labor_cost = labor
+downtime_mjsp = round(((downtime_tea.solve_price(F.ETJ_SAF_OUT)*F.ETJ_SAF_OUT.rho)/264.172),2)
+
+# Sanity check: baseline_tea must be unaffected by downtime_tea's creation/use.
+assert baseline_tea.operating_days == 330, 'baseline_tea was clobbered by downtime_tea!'
+
+print(f"Baseline MJSP  (330.00 days/yr, {feedstock_price_dry_ton} USD/dry ton feedstock): {baseline_mjsp} USD/gal")
+print(f"Downtime MJSP  ({downtime_operating_days} days/yr = 85% operating factor, same feedstock price): {downtime_mjsp} USD/gal")
+print(f"MJSP increase from downtime: {round(downtime_mjsp - baseline_mjsp, 2)} USD/gal "
+      f"({round(100*(downtime_mjsp/baseline_mjsp - 1), 1)}%)")
+
+
+# ─── Feedstock-price breakeven at restored (330-day) operation ───────────────────────
+# Question: if the plant could restore full 330-day operation (e.g. by paying a premium
+# for a more reliable/guaranteed feedstock supply instead of being downtime-constrained),
+# how much MORE could it afford to pay for feedstock and still be no worse off (same
+# MJSP) than the degraded 310.25-day / baseline-feedstock-price scenario above?
+#
+# Solve for feedstock price P' such that:
+#     MJSP(operating_days=330, feedstock_price=P') == downtime_mjsp
+# Stream prices don't affect the physical simulation (only TEA cash flows), so this is
+# a fast "isolated"-style perturbation: no re-simulation of etoh_etj_system is needed,
+# only repeated calls to baseline_tea.solve_price(). Because downtime_tea is a
+# MultiYearCellulosicEthanolTEA (private operating_hours, never touching
+# etoh_etj_system.operating_hours), baseline_tea is still correctly at 330 days here --
+# no reset needed before reusing it, unlike if downtime_tea had been a second plain
+# CellulosicEthanolTEA.
+
+def _mjsp_at_feedstock_price(price_usd_per_kg_wet):
+    F.Poplar_In.price = price_usd_per_kg_wet
+    return (baseline_tea.solve_price(F.ETJ_SAF_OUT) * F.ETJ_SAF_OUT.rho) / 264.172
+
+def _objective(price_usd_per_kg_wet):
+    return _mjsp_at_feedstock_price(price_usd_per_kg_wet) - downtime_mjsp
+
+# Expand the upper bracket until the objective changes sign (MJSP is monotonically
+# increasing in feedstock price), rather than assuming a fixed multiplier.
+lo, hi = feedstock_price, feedstock_price * 2
+while _objective(hi) < 0:
+    hi *= 2
+    if hi > feedstock_price * 100:
+        raise RuntimeError("Breakeven feedstock price not found within 100x baseline.")
+
+breakeven_feedstock_price = brentq(_objective, lo, hi)
+
+# Restore baseline feedstock price on the stream before any further use of the system/TEA.
+F.Poplar_In.price = feedstock_price
+
+# Conversion from USD/kg-wet to USD/dry-ton is linear, so the price ratio is preserved.
+breakeven_feedstock_price_dry_ton = feedstock_price_dry_ton * (breakeven_feedstock_price / feedstock_price)
+feedstock_price_premium_pct = 100 * (breakeven_feedstock_price_dry_ton / feedstock_price_dry_ton - 1)
+
+print(f"Breakeven feedstock price (330 days/yr, same MJSP as downtime scenario): "
+      f"{round(breakeven_feedstock_price_dry_ton, 2)} USD/dry ton "
+      f"(+{round(feedstock_price_premium_pct, 1)}% vs baseline {feedstock_price_dry_ton} USD/dry ton)")
