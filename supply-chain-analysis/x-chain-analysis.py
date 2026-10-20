@@ -217,3 +217,51 @@ feedstock_price_premium_pct = 100 * (breakeven_feedstock_price_dry_ton / feedsto
 print(f"Breakeven feedstock price (330 days/yr, same MJSP as downtime scenario): "
       f"{round(breakeven_feedstock_price_dry_ton, 2)} USD/dry ton "
       f"(+{round(feedstock_price_premium_pct, 1)}% vs baseline {feedstock_price_dry_ton} USD/dry ton)")
+
+
+# ─── Rotary dryer heat-utility cost scenario ──────────────────────────────────────────
+# Adds a standalone RotaryDryer facility (supply-chain-analysis/rotary_dryer.py) that is
+# NOT connected to any process stream -- given a process heat duty and inlet/outlet
+# temperature, it only calls BioSTEAM's Unit.add_heat_utility to select a heating/cooling
+# agent and price the utility (the same mechanism used by AdiabaticReactor in
+# atj_saf/atj_bst/atj_bst_units.py). No design/purchase cost is modeled for the dryer
+# itself -- this only adds a utility operating cost.
+#
+# The dryer is wrapped around etoh_etj_system in a new System object (rather than
+# mutating etoh_etj_system's facilities) so its cost is picked up via
+# System.cost_units/TEA.utility_cost without disturbing baseline_tea/downtime_tea or
+# their cached cost_units. Built as a MultiYearCellulosicEthanolTEA (array operating_days)
+# per this file's established convention for any new TEA added on top of shared units.
+#
+# TODO: placeholder duty/T_in/T_out/agent below -- replace with actual rotary-dryer values.
+from rotary_dryer import RotaryDryer
+
+dryer_duty_kJ_per_hr = 0.       # [kJ/hr] TODO: set actual process heat duty
+dryer_T_in           = 298.15   # [K] TODO: set actual inlet temperature
+dryer_T_out          = 298.15   # [K] TODO: set actual outlet temperature
+dryer_agent          = None     # e.g. 'low_pressure_steam', 'natural_gas'; None = auto-select
+
+rotary_dryer = RotaryDryer('RotaryDryer', duty=dryer_duty_kJ_per_hr,
+                           T_in=dryer_T_in, T_out=dryer_T_out, agent=dryer_agent)
+
+dryer_system = bst.System(
+    'Cellulosic_ETJ_with_dryer',
+    path=(etoh_etj_system,),
+    facilities=[rotary_dryer],
+)
+dryer_system.simulate()
+
+dryer_tea = create_cellulosic_ethanol_tea(
+    dryer_system,
+    operating_days=np.full(n_operating_years, 330),
+    duration=(2025, 2055),
+)
+dryer_tea.labor_cost = labor
+dryer_mjsp = round(((dryer_tea.solve_price(F.ETJ_SAF_OUT) * F.ETJ_SAF_OUT.rho) / 264.172), 2)
+
+# Sanity check: baseline_tea must be unaffected by dryer_tea's creation/use.
+assert baseline_tea.operating_days == 330, 'baseline_tea was clobbered by dryer_tea!'
+
+print(f"Rotary dryer heat utility cost: {round(rotary_dryer.utility_cost, 2)} USD/hr")
+print(f"MJSP with rotary dryer utility cost included: {dryer_mjsp} USD/gal "
+      f"(baseline: {baseline_mjsp} USD/gal)")

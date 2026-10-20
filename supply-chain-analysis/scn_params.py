@@ -18,7 +18,7 @@ feed_parameters = {
 
 # ─── Feedstock price (local copy of the calc in lignin_saf/settings/prices.py) ────────────────
 # Vary this to explore the feedstock-sourcing-distance vs. demand relationship.
-feedstock_price_dry_ton = 79.17  # [USD / dry short ton]
+feedstock_price_dry_ton = 68.2  # [USD / dry short ton]
 feedstock_price = feedstock_price_dry_ton / kg_per_ton / (1 + feed_parameters['moisture'])  # [USD/kg wet]
 
 # ─── Prices dict: all other prices reused from lignin_saf.settings.prices; Feedstock overridden ─
