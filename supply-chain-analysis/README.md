@@ -28,10 +28,12 @@ just the parameters it needs (`scn_params.py`) and does not touch `lignin_saf/se
 
 | File | Purpose |
 |---|---|
-| `x-chain-analysis.py` | Entry-point script: builds and simulates the integrated system, solves baseline MJSP, and runs the downtime-vs-feedstock-price-offset analysis (85% operating-factor scenario + breakeven feedstock-price search) |
+| `x-chain-analysis.py` | Entry-point script: builds and simulates the integrated system, solves baseline MJSP, runs the downtime-vs-feedstock-price-offset analysis (85% operating-factor scenario + breakeven feedstock-price search), and runs the rotary-dryer heat-utility-cost scenario + `energy_data.py` sensitivity sweep |
 | `x-chain-analysis.ipynb` | ⚠️ **Stale.** Predates the downtime/breakeven addition above — does not mirror `x-chain-analysis.py`'s current content. Also scratch/exploratory as-is (leftover `break`/`BREAK` debug cells, duplicate prints). Needs a refresh pass before treating it as authoritative; see TODO. |
 | `supply-chain-script.py` | Standalone demo script (not an entry point for this manuscript's results) showing the `MultiYearCellulosicEthanolTEA` array-`operating_days` pattern for safely running two TEA scenarios on one shared system. Reference implementation for the pattern used in `x-chain-analysis.py`'s downtime scenario — see Conventions section above. |
 | `scn_params.py` | Local, editable copy of `feed_parameters` (flow/moisture/poplar_density) and feedstock price; everything else (chemical/utility prices) is reused from `lignin_saf.settings.prices` |
+| `rotary_dryer.py` | `RotaryDryer(bst.Unit)` — standalone heat-utility-cost-only unit (zero ins/outs, no process-stream connections). Given a duty [kJ/hr] and process `T_in`/`T_out` [K], calls BioSTEAM's `Unit.add_heat_utility` in `_cost` to select/price a heating or cooling agent, the same mechanism `AdiabaticReactor` uses in `atj_saf/atj_bst/atj_bst_units.py`. Models no design/purchase cost — only a utility operating cost. |
+| `energy_data.py` | `energy_data` dict of `[min, max]` rotary-dryer heat duties [kJ/hr] by biomass storage scenario (`Outdoor-open`, `Outdoor-tarped`, `Indoor`), consumed by the heating-cost sensitivity sweep at the end of `x-chain-analysis.py`. |
 
 **To vary the analysis:** edit `feed_parameters` or `feedstock_price_dry_ton` in
 `scn_params.py`. Do not edit `lignin_saf/settings/process_params.py` or `prices.py` for
@@ -84,6 +86,23 @@ array-based pattern for any new scenario TEA added to this file so it stays that
 background: `project_tea_shared_operating_hours_gotcha` memory, and the History/notes entry
 below.
 
+**Rotary dryer `add_heat_utility` T_in/T_out sign convention:** BioSTEAM's
+`Unit.add_heat_utility(duty, T_in, T_out)` treats `T_in`/`T_out` as the pinch range of the
+*heating or cooling requirement itself*, not the physical flow direction of whatever hot/cold
+utility stream supplies it — the requirement always needs `T_in < T_out` for a heating duty
+(positive `duty`) or `T_in > T_out` for a cooling duty (negative `duty`), regardless of how the
+supplying stream itself warms or cools. `RotaryDryer` models a dryer heated by a hot flue-gas
+stream that itself enters at 250 °C and leaves at 104 °C (i.e. the flue gas cools as it gives up
+heat) — but since the *duty is a heating requirement* (positive, heat delivered to the biomass),
+the call must be `add_heat_utility(duty, T_in=104 C, T_out=250 C)` (pinch range low→high), which
+correctly makes BioSTEAM auto-select the `'natural_gas'` agent (BioSTEAM's built-in
+combustion/flue-gas heating agent — a good match for an actual hot-flue-gas supply). The naive
+literal reading — `T_in=250 C, T_out=104 C` with a *negative* duty, mirroring the flue gas's own
+250→104 cooling direction — is a trap: BioSTEAM treats that as a *cooling* requirement and
+auto-selects `'cooling_water'`, which is physically wrong (cooling water cannot operate at
+250–377 °C, and this should be a heating cost, not refrigeration). `x-chain-analysis.py` pins the
+agent explicitly to `'natural_gas'` rather than relying on auto-selection going forward.
+
 ## History / notes
 
 - Moved out of `lignin_saf/` on 2026-10-09 along with creating `scn_params.py`.
@@ -113,6 +132,38 @@ below.
   never touches the shared system attribute and `baseline_tea` needs no manual reset
   anywhere in the script. A runtime `assert baseline_tea.operating_days == 330` right
   after `downtime_tea` is built self-checks this invariant on every run.
+- 2026-10-20: `scn_params.py`'s `feedstock_price_dry_ton` had drifted to `119` USD/dry ton
+  (uncommitted, likely leftover from separate `uptime_sweep.py` experimentation) — reverted
+  to `68.2` USD/dry ton so `baseline_mjsp` matches the documented 9.60 USD/gal again. Note
+  the last *committed* value was actually `79.17` (the downtime-breakeven price from the
+  note above, committed on top of the original `68.2` in commit `8f9f0b9`) — worth deciding
+  whether `scn_params.py` should be committed back at `68.2` (true baseline) or `79.17`
+  before continuing other work in this file.
+- 2026-10-20: Added `rotary_dryer.py` (`RotaryDryer`, standalone heat-utility-only cost
+  unit) and wired it into `x-chain-analysis.py` as a new scenario. It is **not connected**
+  to any process stream — wrapped around `etoh_etj_system` in a new `dryer_system`/
+  `dryer_tea` (built via the Multi-Year TEA pattern above) rather than mutating
+  `etoh_etj_system`'s own facilities, so `baseline_tea`/`downtime_tea` and their cached
+  `cost_units` are untouched. See the T_in/T_out sign-convention note above for why the
+  dryer's heating duty is passed as `add_heat_utility(duty, T_in=104 C, T_out=250 C)` with
+  the `'natural_gas'` agent pinned explicitly.
+  - First scenario: duty = 160,416,666.67 kJ/hr → heat utility cost 874.56 USD/hr →
+    MJSP 9.87 USD/gal (+0.27 USD/gal vs. the 9.60 USD/gal baseline).
+  - Sensitivity sweep over `energy_data.py`'s `[min, max]` duty pairs per biomass storage
+    scenario, reusing `dryer_system`/`dryer_tea` rather than rebuilding/re-simulating
+    `etoh_etj_system` per value: since `rotary_dryer` has no connected streams, each step
+    just sets `rotary_dryer.duty` and calls `rotary_dryer.simulate()` (unit-level, not
+    `dryer_system.simulate()`), then re-reads `dryer_tea.solve_price(...)`. Additional
+    heating cost vs. the 9.60 USD/gal baseline, in USD/gal:
+
+    | Storage scenario | Min | Max |
+    |---|---|---|
+    | Outdoor-open | 0.2687 | 0.3615 |
+    | Outdoor-tarped | 0.1900 | 0.2558 |
+    | Indoor | 0.1359 | 0.1831 |
+
+    Wetter/less-protected biomass (outdoor, uncovered) requires the most drying energy and
+    so carries the largest MJSP penalty; indoor-stored (driest) biomass the least.
 
 ## TODO / open items
 
@@ -122,3 +173,9 @@ below.
   MJSP point plus the downtime-vs-feedstock-price-offset scenario are computed).
 - Refresh `x-chain-analysis.ipynb` to match `x-chain-analysis.py` (currently stale — see
   Files table above).
+- `RotaryDryer` is still a standalone/unconnected cost placeholder (duty supplied by hand,
+  not derived from an actual mass/energy balance on a connected biomass or flue-gas
+  stream) — decide whether this manuscript needs it wired into the real flowsheet instead.
+- Decide whether `scn_params.py`'s `feedstock_price_dry_ton` should be committed at `68.2`
+  (true baseline) or `79.17` (last committed value, the downtime-breakeven price) — see
+  2026-10-20 History/notes entry above.

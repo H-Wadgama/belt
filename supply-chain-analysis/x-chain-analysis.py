@@ -233,13 +233,22 @@ print(f"Breakeven feedstock price (330 days/yr, same MJSP as downtime scenario):
 # their cached cost_units. Built as a MultiYearCellulosicEthanolTEA (array operating_days)
 # per this file's established convention for any new TEA added on top of shared units.
 #
-# TODO: placeholder duty/T_in/T_out/agent below -- replace with actual rotary-dryer values.
+# Duty is a heating requirement (positive sign), supplied by a hot flue-gas stream that
+# enters the dryer at 250 C and leaves at 104 C after giving up heat to the biomass.
+# BioSTEAM's add_heat_utility models T_in/T_out as the pinch range of the HEATING
+# requirement itself (T_in < T_out), not the flue gas's own direction of travel -- passing
+# T_in=104 C/T_out=250 C here correctly makes BioSTEAM auto-select the 'natural_gas'
+# agent, which is BioSTEAM's built-in combustion/flue-gas heating agent (confirmed: with
+# agent=None this resolves to natural_gas, matching the hot-flue-gas description; passing
+# T_in=250 C/T_out=104 C with a negative duty instead resolves to 'cooling_water', which
+# is physically wrong for a 250-377 C flue gas).
+#
 from rotary_dryer import RotaryDryer
 
-dryer_duty_kJ_per_hr = 0.       # [kJ/hr] TODO: set actual process heat duty
-dryer_T_in           = 298.15   # [K] TODO: set actual inlet temperature
-dryer_T_out          = 298.15   # [K] TODO: set actual outlet temperature
-dryer_agent          = None     # e.g. 'low_pressure_steam', 'natural_gas'; None = auto-select
+dryer_duty_kJ_per_hr = 160416666.67       # [kJ/hr] heat duty delivered to the biomass
+dryer_T_in           = 104 + 273.15       # [K] pinch low end (104 C)
+dryer_T_out          = 250 + 273.15       # [K] pinch high end (250 C, flue gas inlet)
+dryer_agent          = 'natural_gas'      # explicit heat utility agent
 
 rotary_dryer = RotaryDryer('RotaryDryer', duty=dryer_duty_kJ_per_hr,
                            T_in=dryer_T_in, T_out=dryer_T_out, agent=dryer_agent)
@@ -265,3 +274,35 @@ assert baseline_tea.operating_days == 330, 'baseline_tea was clobbered by dryer_
 print(f"Rotary dryer heat utility cost: {round(rotary_dryer.utility_cost, 2)} USD/hr")
 print(f"MJSP with rotary dryer utility cost included: {dryer_mjsp} USD/gal "
       f"(baseline: {baseline_mjsp} USD/gal)")
+
+
+# ─── Additional heating cost sensitivity across energy_data.py scenarios ─────────────
+# For each biomass storage scenario (and its [min, max] duty pair) in energy_data.py,
+# compute the additional MJSP (USD/gal) attributable solely to the rotary dryer's
+# 'natural_gas' heat-utility cost at that duty, holding T_in/T_out fixed at the same
+# 104 C/250 C pinch used above (per instruction: "inlet and outlet temperature of
+# natural gas will be the same").
+#
+# Reuses the already-built dryer_system/dryer_tea rather than rebuilding/re-simulating
+# etoh_etj_system per duty value: rotary_dryer has no connected streams, so changing its
+# duty and re-simulating just that unit (rotary_dryer.simulate(), not dryer_system.simulate())
+# is sufficient -- no recycle loop in etoh_etj_system depends on it, and dryer_tea.utility_cost
+# reads rotary_dryer.utility_cost live via the already-cached dryer_system.cost_units.
+from energy_data import energy_data
+
+additional_heating_cost_usd_per_gal = {}
+for scenario, duty_values in energy_data.items():
+    scenario_results = []
+    for duty in duty_values:
+        rotary_dryer.duty = duty
+        rotary_dryer.simulate()
+        scenario_mjsp = (dryer_tea.solve_price(F.ETJ_SAF_OUT) * F.ETJ_SAF_OUT.rho) / 264.172
+        scenario_results.append(round(scenario_mjsp - baseline_mjsp, 4))
+    additional_heating_cost_usd_per_gal[scenario] = scenario_results
+
+# Sanity check: baseline_tea must still be unaffected after the sweep.
+assert baseline_tea.operating_days == 330, 'baseline_tea was clobbered by the energy_data sweep!'
+
+print("\nAdditional heating cost vs baseline MJSP (USD/gal), by storage scenario [min, max]:")
+for scenario, results in additional_heating_cost_usd_per_gal.items():
+    print(f"  {scenario}: {results}")
